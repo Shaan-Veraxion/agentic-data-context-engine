@@ -1,0 +1,38 @@
+///$tab Main
+SET ThousandSep=',';
+SET DateFormat='YYYY-MM-DD';
+LET vStartDate = '2025-01-01';
+LET vReloadDate = Date(Today(), 'YYYY-MM-DD');   // evaluated by Qlik at reload time
+
+LIB CONNECT TO 'Dremio_Sales';
+
+/* Customers come from the CRM schema.
+   A semicolon inside a comment; must not split the statement. */
+Customers:
+LOAD CustomerID, Upper(Name) AS CustomerName, Region;
+SQL SELECT CustomerID, Name, Region FROM "sales"."crm"."customers";
+
+RegionMap:
+MAPPING LOAD * INLINE [
+Region, RegionName
+N, North
+S, South
+];
+
+Orders:
+LOAD OrderID, CustomerID, Date(OrderDate) AS OrderDate, Amount,
+     If(Amount > 1000, 'Large', 'Small') AS OrderSize,
+     ApplyMap('RegionMap', Region, 'Unknown') AS RegionName,
+     '$(vReloadDate)' AS LoadedOn
+WHERE Status <> 'Cancelled';
+SQL SELECT OrderID, CustomerID, OrderDate, Amount, Status, Region
+FROM "sales"."erp"."orders_v2" WHERE OrderDate >= '$(vStartDate)';
+
+IF '$(vReloadDate)' >= '2026-01-01' THEN
+  TRACE Reloading the current year;
+END IF
+
+LEFT JOIN (Orders) LOAD CustomerID, Region AS CustomerRegion RESIDENT Customers;
+DROP TABLE Customers;
+STORE Orders INTO [lib://QVD/Orders.qvd] (qvd);
+REM Done - end of script;

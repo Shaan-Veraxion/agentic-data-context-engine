@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<QvdTableHeader>
+  <QvBuildNo>50689</QvBuildNo>
+  <CreatorDoc>Sales Overview.qvf</CreatorDoc>
+  <CreateUtcTime>2026-10-01 02:14:20</CreateUtcTime>
+  <SourceFileSize>-1</SourceFileSize>
+  <TableName>Orders</TableName>
+  <Fields>
+    <QvdFieldHeader>
+      <FieldName>OrderID</FieldName>
+      <BitOffset>0</BitOffset>
+      <BitWidth>16</BitWidth>
+      <NoOfSymbols>47902</NoOfSymbols>
+      <Tags><String>$numeric</String><String>$integer</String></Tags>
+    </QvdFieldHeader>
+    <QvdFieldHeader>
+      <FieldName>CustomerID</FieldName>
+      <NoOfSymbols>3011</NoOfSymbols>
+      <Tags><String>$numeric</String><String>$integer</String></Tags>
+    </QvdFieldHeader>
+    <QvdFieldHeader>
+      <FieldName>OrderDate</FieldName>
+      <NoOfSymbols>639</NoOfSymbols>
+      <Tags><String>$numeric</String><String>$date</String></Tags>
+    </QvdFieldHeader>
+    <QvdFieldHeader>
+      <FieldName>Amount</FieldName>
+      <NoOfSymbols>21544</NoOfSymbols>
+      <Tags><String>$numeric</String></Tags>
+    </QvdFieldHeader>
+    <QvdFieldHeader>
+      <FieldName>OrderSize</FieldName>
+      <NoOfSymbols>2</NoOfSymbols>
+      <Tags><String>$text</String></Tags>
+    </QvdFieldHeader>
+    <QvdFieldHeader>
+      <FieldName>RegionName</FieldName>
+      <NoOfSymbols>3</NoOfSymbols>
+      <Tags><String>$text</String></Tags>
+    </QvdFieldHeader>
+    <QvdFieldHeader>
+      <FieldName>LoadedOn</FieldName>
+      <NoOfSymbols>1</NoOfSymbols>
+      <Tags><String>$text</String></Tags>
+    </QvdFieldHeader>
+    <QvdFieldHeader>
+      <FieldName>CustomerRegion</FieldName>
+      <NoOfSymbols>4</NoOfSymbols>
+      <Tags><String>$text</String></Tags>
+    </QvdFieldHeader>
+  </Fields>
+  <RecordByteSize>12</RecordByteSize>
+  <NoOfRecords>47902</NoOfRecords>
+  <Lineage>
+    <LineageInfo>
+      <Discriminator>Dremio_Sales</Discriminator>
+      <Statement>SQL SELECT OrderID, CustomerID, OrderDate, Amount, Status, Region FROM "sales"."erp"."orders_v2" WHERE OrderDate &gt;= '2025-01-01'</Statement>
+    </LineageInfo>
+    <LineageInfo>
+      <Discriminator>RESIDENT Customers</Discriminator>
+    </LineageInfo>
+  </Lineage>
+  <Comment></Comment>
+</QvdTableHeader>

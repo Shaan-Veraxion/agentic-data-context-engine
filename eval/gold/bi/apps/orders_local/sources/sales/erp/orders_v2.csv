@@ -1,0 +1,10 @@
+OrderID,CustomerID,OrderDate,Amount,Status,Region
+101,1,2024-12-30,500,Shipped,N
+102,1,2025-01-05,1500,Shipped,N
+103,2,2025-02-10,800,Cancelled,S
+104,2,2025-02-11,1200,Shipped,S
+105,3,2025-03-01,300,Shipped,E
+106,4,2025-03-15,2500,Shipped,W
+107,6,2025-04-01,90,Shipped,N
+108,5,2025-04-02,1000,Shipped,
+109,1,2025-05-20,700,Returned,N

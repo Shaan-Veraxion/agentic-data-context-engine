@@ -1,0 +1,33 @@
+SET ThousandSep=',';
+LET vStartDate = '2025-01-01';
+LIB CONNECT TO 'Dremio_Sales';
+
+Customers:
+LOAD CustomerID, Upper(Name) AS CustomerName, Region;
+SQL SELECT CustomerID, Name, Region FROM "sales"."crm"."customers";
+
+RegionMap:
+MAPPING LOAD * INLINE [
+Region, RegionName
+N, North
+S, South
+E, East
+];
+
+Orders:
+LOAD OrderID, CustomerID, OrderDate, Amount,
+     If(Amount > 1000, 'Large', 'Small') AS OrderSize,
+     ApplyMap('RegionMap', Region, 'Unknown') AS RegionName
+WHERE Status <> 'Cancelled';
+SQL SELECT OrderID, CustomerID, OrderDate, Amount, Status, Region
+FROM "sales"."erp"."orders_v2" WHERE OrderDate >= '$(vStartDate)';
+
+LEFT JOIN (Orders) LOAD CustomerID, CustomerName RESIDENT Customers;
+
+CustomerTotals:
+LOAD CustomerID, Sum(Amount) AS TotalAmount, Count(OrderID) AS OrderCount
+RESIDENT Orders GROUP BY CustomerID;
+
+DROP TABLE Customers;
+STORE Orders INTO [lib://QVD/Orders.qvd] (qvd);
+STORE CustomerTotals INTO [lib://QVD/CustomerTotals.qvd] (qvd);
