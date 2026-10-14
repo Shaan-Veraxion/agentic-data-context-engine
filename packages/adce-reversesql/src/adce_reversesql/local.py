@@ -3,6 +3,8 @@
 - Logical SQL sources ("sales"."erp"."orders_v2") map to fixture files under <sources>/sales/erp/orders_v2.csv|parquet
 - QVD inputs ("__qvd__"."lib://QVD/Orders.qvd") map to QVD files, read with PyQvd
 - File inputs ("__file__"."lib://Data/x.csv") map to local files of the same name under <sources>/files/
+- Generated inputs ("__generated__"."Qvc.Calendar(start, end)") are generated in DuckDB
+- Dremio TO_DATE / TO_TIMESTAMP / TO_CHAR are rewritten to DuckDB's strptime / strftime
 The SQL is rewritten on its syntax tree (sqlglot) and transpiled to DuckDB; results are labelled venue 'local'.
 """
 from __future__ import annotations
@@ -18,7 +20,9 @@ from adce_core.ports import QueryResult
 from sqlglot import exp
 from sqlglot.expressions.core import Expr as SqlExpr
 
-from .compose import DIALECT, FILE_DB, QVD_DB
+from .compose import DIALECT, EXTENSION_RX, FILE_DB, GEN_DB, QVD_DB
+from .expressions import ExprContext, Translator, Untranslatable, _split_top
+from .formats import to_duckdb
 
 
 def _local(name: str) -> str:
@@ -74,8 +78,17 @@ class LocalVenue:
         missing: list[str] = []
 
         def rewrite(node: SqlExpr) -> SqlExpr:
-            if not isinstance(node, exp.Table) or not node.db:
+            if not isinstance(node, exp.Table):
+                return to_duckdb(node)
+            if not node.db:
                 return node
+            if node.db == GEN_DB:
+                gen = _generated(node.name)
+                if gen is None:
+                    missing.append(logical_path(node))
+                    return node
+                return exp.Subquery(this=gen, alias=node.args.get("alias") or exp.TableAlias(
+                    this=exp.to_identifier("gen")))
             if node.db in (QVD_DB, FILE_DB):
                 key = f"{node.db}:{PurePosixPath(node.name.replace(chr(92), '/')).name.lower()}"
             else:
@@ -96,3 +109,26 @@ class LocalVenue:
 
     def scalar(self, dremio_sql: str, label: str) -> Any:
         return self.run(dremio_sql, label).rows[0][0]
+
+
+def _generated(ref: str) -> SqlExpr | None:
+    """A generated input in DuckDB: Qvc.Calendar(start, end) is one row per day with a Date column."""
+    from adce_qlik.load_parser import LoadParseError, parse_load
+
+    m = EXTENSION_RX.match(f"EXTENSION {ref}")
+    if not m or m.group(1).lower() != "qvc.calendar":
+        return None
+    args = _split_top(m.group(2))
+    if len(args) != 2:
+        return None
+    try:
+        tr = Translator(ExprContext(alias="x", columns=[], mappings={}))
+        bounds = [tr.value(parse_load(f"LOAD {a} AS v").fields[0].expr) for a in args]  # type: ignore[arg-type]
+    except (LoadParseError, Untranslatable):
+        return None
+    lo, hi = (exp.Cast(this=b, to=exp.DataType.build("DATE")) for b in bounds)
+    series = exp.Anonymous(this="generate_series", expressions=[lo, hi, exp.Interval(
+        this=exp.Literal.string("1"), unit=exp.var("DAY"))])
+    tbl = exp.Table(this=series, alias=exp.TableAlias(this=exp.to_identifier("g"), columns=[exp.to_identifier("d")]))
+    return exp.select(exp.alias_(exp.Cast(this=exp.column("d"), to=exp.DataType.build("DATE")), "Date",
+                                 quoted=True)).from_(tbl)

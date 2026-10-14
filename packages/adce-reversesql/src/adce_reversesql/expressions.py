@@ -6,7 +6,10 @@ Qlik semantics that differ from plain SQL and are reproduced here:
 - relational and logical operators yield -1 (true) / 0 (false) when used as values
 - a non-boolean value used as a condition is true when it is non-zero
 - LIKE uses * and ? wildcards and is case-insensitive (ILIKE with % and _)
-- Date(), Time(), Timestamp(), Num(), Money(), Dual() only change formatting, so the value passes through unchanged
+- Date(), Time(), Timestamp(), Num(), Money(), Dual() only change formatting, so the value passes through unchanged;
+  inside '&' the text form is used: Date(x, fmt) is formatted (TO_CHAR) and Month(x) gives the month name from the
+  script's MonthNames
+- Date#() / Timestamp#() parse text with a Qlik format (TO_DATE / TO_TIMESTAMP with the Dremio format)
 - ApplyMap('Map', expr, default) is a left join to the mapping table (first match per key: MIN(value) per key,
   with key uniqueness checked at validation)
 Functions without a safe translation are reported as untranslatable (tier T2/T3) and go to the AI route or review.
@@ -18,6 +21,8 @@ from dataclasses import dataclass, field
 from adce_core.bi_ir import Expr
 from sqlglot import exp
 from sqlglot.expressions.core import Expr as SqlExpr
+
+from .formats import FormatError, dremio_call, month_names, qlik_to_dremio
 
 
 class Untranslatable(ValueError):
@@ -43,11 +48,15 @@ class ExprContext:
     joins: list[MappingJoin] = field(default_factory=list)
     unknown_fields: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    variables: dict[str, str] = field(default_factory=dict)  # script settings: MonthNames, DateFormat, ...
+    row_column: str | None = None  # row-number column of a generated source (RecNo / RowNo)
 
 
 BOOLEAN_OPS = {"=", "<>", "<", ">", "<=", ">=", "AND", "OR", "XOR", "NOT", "LIKE", "PRECEDES", "FOLLOWS"}
 PASS_THROUGH = {"date", "time", "timestamp", "num", "money", "dual", "interval"}  # formatting only
 NON_DETERMINISTIC = {"now", "today", "rand", "recno", "rowno"}
+FILE_FUNCTIONS = {"filetime", "filesize", "filename", "filepath", "filebasename", "filedir", "fileextension",
+                  "qvdcreatetime", "qvdnoofrecords", "qvdnooffields", "qvdtablename", "qvdfieldname"}
 
 _SIMPLE = {  # Qlik function -> (SQL function, number of args accepted)
     "upper": ("UPPER", 1), "lower": ("LOWER", 1), "trim": ("TRIM", 1), "ltrim": ("LTRIM", 1),
@@ -57,6 +66,8 @@ _SIMPLE = {  # Qlik function -> (SQL function, number of args accepted)
     "alt": ("COALESCE", None), "sum": ("SUM", 1), "min": ("MIN", 1), "max": ("MAX", 1), "avg": ("AVG", 1),
     "count": ("COUNT", 1), "year": ("YEAR", 1), "month": ("MONTH", 1), "day": ("DAY", 1),
 }
+PERIOD_FUNCTIONS = {"quarterstart": "QUARTER", "quarterend": "QUARTER", "yearstart": "YEAR", "yearend": "YEAR",
+                    "monthstart": "MONTH", "monthend": "MONTH"}
 _AGG = {"sum", "min", "max", "avg", "count", "concat", "only", "mode", "median"}
 
 
@@ -140,6 +151,8 @@ class Translator:
         op = e.name or ""
         a, b = self._val(e.args[0]), self._val(e.args[1])
         if op == "&":
+            a, b = self._text(e.args[0], a), self._text(e.args[1], b)
+
             def text(x: SqlExpr) -> SqlExpr:
                 if isinstance(x, exp.DPipe) or (isinstance(x, exp.Literal) and x.is_string):
                     return x  # already non-null text
@@ -156,9 +169,53 @@ class Translator:
             return exp.Div(this=a, expression=exp.Nullif(this=b, expression=exp.Literal.number(0)))
         raise Untranslatable(f"operator {op}")
 
+    def _text(self, e: Expr, value: SqlExpr) -> SqlExpr:
+        """The text form Qlik uses when a dual value is concatenated."""
+        name = (e.name or "").lower() if e.kind == "call" else ""
+        if name == "month" and len(e.args) == 1:
+            names = month_names(self.ctx.variables.get("MonthNames"))
+            return exp.Case(this=value, ifs=[exp.If(this=exp.Literal.number(i + 1), true=exp.Literal.string(n))
+                                             for i, n in enumerate(names)])
+        if name in ("date", "timestamp") and e.args:
+            fmt_e = e.args[1] if len(e.args) > 1 else None
+            if fmt_e is not None and fmt_e.kind != "string":
+                raise Untranslatable(f"{e.name}() with a non-literal format")
+            fmt = str(fmt_e.value) if fmt_e is not None else \
+                self.ctx.variables.get("DateFormat" if name == "date" else "TimestampFormat")
+            if fmt:
+                try:
+                    return dremio_call("TO_CHAR", self._val(e.args[0]), exp.Literal.string(qlik_to_dremio(fmt)))
+                except FormatError as x:
+                    raise Untranslatable(f"{e.name}() format {fmt!r}: {x}") from x
+        return value
+
     def _call(self, e: Expr) -> SqlExpr:
         name = (e.name or "").lower()
         args = e.args
+        if name in ("recno", "rowno") and not args and self.ctx.row_column:
+            return exp.column(self.ctx.row_column, table=self.ctx.alias, quoted=True)
+        if name in FILE_FUNCTIONS:
+            raise Untranslatable(f"{e.name}() reads file metadata at reload time", "T3")
+        if name in ("date#", "timestamp#") and len(args) == 2:
+            if args[1].kind != "string":
+                raise Untranslatable(f"{e.name}() with a non-literal format")
+            try:
+                fmt = qlik_to_dremio(str(args[1].value))
+            except FormatError as x:
+                raise Untranslatable(f"{e.name}() format: {x}") from x
+            fn = "TO_DATE" if name == "date#" else "TO_TIMESTAMP"
+            return dremio_call(fn, exp.Cast(this=self._val(args[0]), to=exp.DataType.build("VARCHAR")),
+                               exp.Literal.string(fmt))
+        if name == "yearname" and 1 <= len(args) <= 3:
+            return self._yearname(args)
+        if name in PERIOD_FUNCTIONS and len(args) == 1:
+            return self._period(name, args[0])
+        if name == "pick" and len(args) >= 2:
+            sel = self._val(args[0])
+            return exp.Case(this=sel, ifs=[exp.If(this=exp.Literal.number(i), true=self._val(a))
+                                           for i, a in enumerate(args[1:], start=1)])
+        if name in ("match", "mixmatch", "wildmatch") and len(args) >= 2:
+            return self._match(name, args)
         if name in NON_DETERMINISTIC:
             self.ctx.notes.append(f"{e.name}() is not deterministic; results depend on load order or time")
             if name == "today":
@@ -191,8 +248,6 @@ class Translator:
             return cls(this=self._val(args[0]))
         if name in ("daystart", "dayname") and len(args) == 1:
             return exp.Cast(this=self._val(args[0]), to=exp.DataType.build("DATE"))
-        if name == "monthstart" and len(args) == 1:
-            return exp.DateTrunc(this=self._val(args[0]), unit=exp.Literal.string("MONTH"))
         if name == "text" and len(args) == 1:
             return exp.Cast(this=self._val(args[0]), to=exp.DataType.build("VARCHAR"))
         if name == "num#" or name == "evaluate":
@@ -216,6 +271,62 @@ class Translator:
             return exp.func(fn, *[self._val(a) for a in args], dialect="dremio")
         raise Untranslatable(f"function {e.name}()", "T2")
 
+    def _period(self, name: str, arg: Expr) -> SqlExpr:
+        """QuarterStart / YearStart / MonthStart and their ...End: calendar periods (FirstMonthOfYear = 1)."""
+        unit = PERIOD_FUNCTIONS[name]
+        if unit != "MONTH" and self.ctx.variables.get("FirstMonthOfYear", "1") not in ("1", ""):
+            raise Untranslatable(f"{name}() with FirstMonthOfYear other than 1")
+        start = exp.DateTrunc(this=self._val(arg), unit=exp.Literal.string(unit))
+        if name.endswith("start"):
+            return start
+        months = {"QUARTER": 3, "YEAR": 12, "MONTH": 1}[unit]
+        # Qlik returns the last millisecond of the period; its date part is the period's last day
+        nxt = exp.Add(this=start, expression=exp.Interval(this=exp.Literal.string(str(months)), unit=exp.var("MONTH")))
+        return exp.Sub(this=nxt, expression=exp.Interval(this=exp.Literal.string("1"), unit=exp.var("DAY")))
+
+    def _match(self, name: str, args: list[Expr]) -> SqlExpr:
+        """Match / MixMatch / WildMatch: position of the first matching value, 0 when none matches."""
+        subject = self._val(args[0])
+        ifs = []
+        for i, a in enumerate(args[1:], start=1):
+            if name == "wildmatch":
+                if a.kind != "string":
+                    raise Untranslatable("WildMatch with a non-literal pattern")
+                pat = str(a.value).replace("%", "\\%").replace("_", "\\_").replace("*", "%").replace("?", "_")
+                cond: SqlExpr = exp.ILike(this=subject.copy(), expression=exp.Literal.string(pat))
+            elif name == "mixmatch":
+                cond = exp.EQ(this=exp.Lower(this=subject.copy()), expression=exp.Lower(this=self._val(a)))
+            else:
+                cond = exp.EQ(this=subject.copy(), expression=self._val(a))
+            ifs.append(exp.If(this=cond, true=exp.Literal.number(i)))
+        return exp.Case(ifs=ifs, default=exp.Literal.number(0))
+
+    def _yearname(self, args: list[Expr]) -> SqlExpr:
+        """YearName(date [, shift [, first_month]]): 'YYYY', or 'YYYY-YYYY' for a fiscal year."""
+        consts = []
+        for a in args[1:]:
+            if a.kind != "number":
+                raise Untranslatable("YearName() with a non-constant shift or first month")
+            consts.append(int(float(str(a.value))))
+        shift = consts[0] if consts else 0
+        first = consts[1] if len(consts) > 1 else 1
+        d = self._val(args[0])
+
+        def year(offset: int) -> SqlExpr:
+            y: SqlExpr = exp.Year(this=d.copy())
+            if offset:
+                y = exp.Add(this=y, expression=exp.Literal.number(offset))
+            return exp.Cast(this=y, to=exp.DataType.build("VARCHAR"))
+
+        if first <= 1:
+            return year(shift)
+
+        def span(o: int) -> SqlExpr:
+            return exp.DPipe(this=exp.DPipe(this=year(o), expression=exp.Literal.string("-")), expression=year(o + 1))
+
+        in_next = exp.GTE(this=exp.Month(this=d.copy()), expression=exp.Literal.number(first))
+        return exp.Case(ifs=[exp.If(this=in_next, true=span(shift))], default=span(shift - 1))
+
     def _applymap(self, e: Expr) -> SqlExpr:
         args = e.args
         if len(args) < 2 or args[0].kind != "string":
@@ -230,3 +341,27 @@ class Translator:
         # Qlik: no match returns the default if given, otherwise the key itself
         fallback = self._val(args[2]) if len(args) > 2 else self._val(args[1])
         return exp.Case(ifs=[exp.If(this=matched, true=fallback)], default=mapped)
+
+
+def _split_top(text: str) -> list[str]:
+    """Split a Qlik argument list on top-level commas (not inside quotes or parentheses)."""
+    out, depth, cur, q = [], 0, "", ""
+    for ch in text:
+        if q:
+            cur += ch
+            q = "" if ch == q else q
+            continue
+        if ch in "'\"[":
+            q = "]" if ch == "[" else ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            out.append(cur.strip())
+            cur = ""
+            continue
+        cur += ch
+    if cur.strip():
+        out.append(cur.strip())
+    return out
