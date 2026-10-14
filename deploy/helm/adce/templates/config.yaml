@@ -7,6 +7,19 @@ data:
   {{- range $k, $v := .Values.config }}
   {{ $k }}: {{ $v | quote }}
   {{- end }}
+  {{- if .Values.gateway.config }}
+  ADCE_GATEWAY_CONFIG: /etc/adce/gateway.toml
+  {{- end }}
+{{- if .Values.gateway.config }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-gateway
+  labels: {{- include "adce.labels" . | nindent 4 }}
+data:
+  gateway.toml: {{ .Values.gateway.config | quote }}
+{{- end }}
 {{- if not .Values.secrets.existingSecret }}
 ---
 apiVersion: v1

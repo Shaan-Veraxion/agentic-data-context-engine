@@ -25,6 +25,11 @@ config:
   ADCE_KEYCLOAK_ISSUER: https://auth.example.com/realms/adce
   GRAPHITI_TELEMETRY_ENABLED: "false"
 
+# Model gateway: which providers and models answer each tier (TOML, see deploy/gateway/*.toml). Empty: Claude on
+# Vertex AI with ADCE_VERTEX_PROJECT. Provider keys (e.g. ANTHROPIC_API_KEY, GROQ_API_KEY) go in the secret below.
+gateway:
+  config: ""
+
 # Secret values: reference an existing secret (recommended; e.g. synced from Secret Manager), or let the chart
 # create one from secrets.values (development only).
 secrets:

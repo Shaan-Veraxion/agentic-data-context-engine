@@ -1,0 +1,10 @@
+# Claude through the Anthropic API with an API key (ANTHROPIC_API_KEY in the environment or secret).
+
+[providers.anthropic]
+kind = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[models]
+strong = "anthropic:claude-opus-5-5"
+standard = "anthropic:claude-sonnet-5-5"
+light = "anthropic:claude-haiku-4-5"

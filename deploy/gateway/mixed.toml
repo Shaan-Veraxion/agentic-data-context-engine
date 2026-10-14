@@ -1,0 +1,23 @@
+# Claude on Vertex AI for the hard routes, a cheaper OpenAI-compatible model for light work, with fallbacks.
+
+[providers.vertex]
+kind = "anthropic_vertex"
+project_env = "ADCE_VERTEX_PROJECT"
+region = "global"
+
+[providers.groq]
+kind = "openai_compatible"
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+structured_output = "json_object"
+
+[models]
+strong = "vertex:claude-opus-5-5"
+standard = "vertex:claude-sonnet-5-5"
+light = "groq:<model id>"
+
+[routes.classify_file]
+fallbacks = ["vertex:claude-haiku-4-5"]
+
+[routes.translate_statement]
+fallbacks = ["strong"]

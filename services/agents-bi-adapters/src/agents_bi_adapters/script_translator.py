@@ -79,15 +79,15 @@ class ScriptTranslator(BaseAgent):
 
     async def _ask(self, ctx: AgentContext, text: str, reason: str,
                    columns: list[str] | None) -> StatementTranslation | None:
-        from adce_gateway.gateway import GatewayRefusal, OutputInvalid, ReplayMiss
+        from adce_gateway.gateway import BudgetExceeded, GatewayRefusal, OutputInvalid, ProviderError, ReplayMiss
 
         try:
             res = await ctx.gateway.call("translate_statement",  # type: ignore[union-attr]
                                          {"statement": text, "why_rules_failed": reason,
                                           "input_relation": "src", "input_columns": columns},
                                          StatementTranslation, task=f"{ctx.run_id}:translate")
-        except (ReplayMiss, GatewayRefusal, OutputInvalid):
-            return None
+        except (ReplayMiss, GatewayRefusal, OutputInvalid, ProviderError, BudgetExceeded):
+            return None  # the statement stays untranslated and goes to the review queue
         out = res.output
         assert isinstance(out, StatementTranslation)
         return out if out.translatable and out.sql.strip() else None

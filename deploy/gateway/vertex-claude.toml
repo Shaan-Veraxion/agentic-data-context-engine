@@ -1,0 +1,13 @@
+# Claude on Google Cloud Vertex AI. This is also what the gateway uses when no file is configured.
+# Credentials: Google application-default credentials (workload identity in GKE, `gcloud auth application-default
+# login` locally). The account needs the Vertex AI User role and the Claude models enabled in Model Garden.
+
+[providers.vertex]
+kind = "anthropic_vertex"
+project_env = "ADCE_VERTEX_PROJECT"
+region = "global"            # or a region where all three models are offered, for data residency
+
+[models]
+strong = "vertex:claude-opus-5-5"
+standard = "vertex:claude-sonnet-5-5"
+light = "vertex:claude-haiku-4-5"

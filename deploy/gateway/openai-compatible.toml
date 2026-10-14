@@ -1,0 +1,44 @@
+# Any OpenAI-compatible chat-completions API. One provider block per API; keys come from the named variables.
+# Replace each <model id> with a model from the provider's own list. Outputs are always validated against the
+# expected schema; a provider that cannot follow it is retried once, then the item goes to review.
+#
+# structured_output: "json_schema" when the API enforces JSON Schema (OpenAI, Azure OpenAI, some Groq models),
+#                    "json_object" for JSON mode only, "none" when neither is supported.
+
+[providers.groq]
+kind = "openai_compatible"
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+structured_output = "json_object"
+
+[providers.openai]
+kind = "openai_compatible"
+api_key_env = "OPENAI_API_KEY"         # base_url defaults to OpenAI
+structured_output = "json_schema"
+reasoning_effort = true                 # send the route's effort to reasoning models
+
+[providers.gemini]
+kind = "openai_compatible"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+api_key_env = "GEMINI_API_KEY"
+structured_output = "json_object"
+
+[providers.local]
+kind = "openai_compatible"
+base_url = "http://localhost:11434/v1"  # Ollama; vLLM serves on :8000/v1
+structured_output = "json_object"
+max_tokens_param = "max_tokens"
+
+[models]
+strong = "openai:<model id>"
+standard = "groq:<model id>"
+light = "groq:<model id>"
+
+# Optional: fall back to another provider when the first is unavailable.
+[routes.translate_statement]
+fallbacks = ["gemini:<model id>"]
+
+# Optional: prices in USD per million tokens, so budgets and cost reports include these models.
+# [prices."groq:<model id>"]
+# input = 0.0
+# output = 0.0

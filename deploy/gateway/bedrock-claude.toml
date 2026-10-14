@@ -1,0 +1,11 @@
+# Claude on Amazon Bedrock. Credentials: the standard AWS chain (role, profile or AWS_* variables).
+# Bedrock model ids differ from Anthropic's; use the ids (or inference profiles) enabled in your account.
+
+[providers.bedrock]
+kind = "anthropic_bedrock"
+region = "eu-central-1"
+
+[models]
+strong = "bedrock:<bedrock id of Claude Opus>"
+standard = "bedrock:<bedrock id of Claude Sonnet>"
+light = "bedrock:<bedrock id of Claude Haiku>"

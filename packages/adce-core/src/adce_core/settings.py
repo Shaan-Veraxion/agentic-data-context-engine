@@ -22,9 +22,12 @@ class Settings(BaseSettings):
     s3_bucket: str = "adce"
     s3_region: str = "us-east-1"
 
-    # Model access through Google Cloud Vertex AI. "replay" answers from recordings (tests, CI, offline work);
-    # "record" calls Vertex and stores the response; "live" calls Vertex only.
+    # Model access through the model gateway. "replay" answers from recordings (tests, CI, offline work);
+    # "record" calls the provider and stores the response; "live" calls the provider.
+    # gateway_config: a gateway.toml naming providers (Anthropic, Vertex AI, Bedrock, any OpenAI-compatible API)
+    # and the model for each tier; without it, Claude on Vertex AI (vertex_project, vertex_region).
     gateway_mode: Literal["replay", "record", "live"] = "replay"
+    gateway_config: str | None = None
     vertex_project: str | None = None
     vertex_region: str = "global"
     gateway_replay_dir: str = "eval/recordings"

@@ -1,9 +1,9 @@
 [project]
 name = "adce-gateway"
 version = "0.1.0"
-description = "ADCE model gateway: Claude on Google Vertex AI with routes, privacy guard, memoization, record/replay, budgets"
+description = "ADCE model gateway: provider-neutral (Anthropic, Vertex AI, Bedrock, OpenAI-compatible) with routes, privacy guard, memoization, record/replay, budgets"
 requires-python = ">=3.12"
-dependencies = ["adce-core", "anthropic[vertex]>=1.13"]
+dependencies = ["adce-core", "anthropic[vertex,bedrock]>=1.13", "openai>=1.60"]
 
 [project.optional-dependencies]
 tracing = ["langfuse>=3.10,<4"]

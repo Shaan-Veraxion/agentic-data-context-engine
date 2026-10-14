@@ -20,7 +20,7 @@ spec:
         app.kubernetes.io/instance: {{ $.Release.Name }}
         app.kubernetes.io/name: {{ $name }}
       annotations:
-        checksum/config: {{ toJson $.Values.config | sha256sum }}
+        checksum/config: {{ toJson (list $.Values.config $.Values.gateway) | sha256sum }}
     spec:
       serviceAccountName: {{ $.Values.serviceAccount.name }}
       securityContext: {{- toYaml $.Values.podSecurityContext | nindent 8 }}
@@ -58,6 +58,15 @@ spec:
           {{- end }}
           securityContext: {{- toYaml $.Values.securityContext | nindent 12 }}
           resources: {{- toYaml $svc.resources | nindent 12 }}
+          {{- if and $.Values.gateway.config (ne $svc.image "workbench") }}
+          volumeMounts:
+            - { name: gateway-config, mountPath: /etc/adce, readOnly: true }
+          {{- end }}
+      {{- if and $.Values.gateway.config (ne $svc.image "workbench") }}
+      volumes:
+        - name: gateway-config
+          configMap: { name: {{ $.Release.Name }}-gateway }
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service
