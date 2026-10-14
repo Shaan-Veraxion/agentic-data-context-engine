@@ -1,0 +1,14 @@
+Abbr:
+MAPPING LOAD * INLINE [
+From, To
+St, Street
+Rd, Road
+];
+
+LIB CONNECT TO 'Dremio_Shop';
+
+Addr:
+LOAD Id, MapSubString('Abbr', Line) AS FullLine;
+SQL SELECT Id, Line FROM "shop"."raw"."addresses";
+
+STORE Addr INTO [lib://QVD/Addr.qvd] (qvd);

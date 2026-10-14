@@ -8,13 +8,19 @@ translation_memory facts and reused by later runs of any app. AI-assisted SQL st
 """
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 from adce_core.agent import AgentContext, AgentKind, AgentResult, AgentSpec, BaseAgent
 from adce_core.artifacts import content_key, put_json
 from adce_core.facts import Evidence, Fact, Trust
-from adce_reversesql.ai_loop import MemoryEntry, TranslationMemory, normalise, repair_with_ai, translate_with_ai
+from adce_reversesql.ai_loop import (
+    MemoryEntry,
+    TranslationMemory,
+    memory_key,
+    memory_stats,
+    repair_with_ai,
+    translate_with_ai,
+)
 from adce_reversesql.compose import compose
 from adce_reversesql.runtime import load_translation, validator_from_files
 
@@ -24,7 +30,8 @@ from .bi_extractor import table_key
 class ScriptTranslator(BaseAgent):
     spec = AgentSpec(number=28, name="bi_script_translator", version="0.1.0", kind=AgentKind.HYBRID,
                      triggers=["bi_ir.ready"], emits=["bi_transform.ready"],
-                     writes=["bi_transform", "translation_memory"], routes=["translate_statement", "diagnose_mismatch"])
+                     writes=["bi_transform", "translation_memory", "memory_check"],
+                     routes=["translate_statement", "diagnose_mismatch"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         result = AgentResult()
@@ -68,6 +75,7 @@ class ScriptTranslator(BaseAgent):
             for e in memory.entries:
                 if id(e) not in known:
                     await self._remember(ctx, result, e)
+            await self._record_checks(ctx, result, memory)
             if overrides:
                 t = compose(loaded.app, overrides)
         key = put_json(ctx.artifacts, content_key(f"apps/{ctx.app_id}/translation",
@@ -100,23 +108,45 @@ class ScriptTranslator(BaseAgent):
         return result
 
     async def _memory(self, ctx: AgentContext) -> TranslationMemory:
-        """The translation memory from knowledge facts: the latest entry per statement, without disproved ones."""
+        """The translation memory from knowledge facts: the latest entry per statement, without disproved ones,
+        marked proven when its re-checks (memory_check facts) passed on two or more apps and never failed."""
         latest: dict[str, Any] = {}
         for f in await ctx.kg.facts(kind="translation_memory"):
             latest[f.subject] = f
+        stats = memory_stats(await ctx.kg.facts(kind="memory_check"))
         mem = TranslationMemory()
-        for f in latest.values():
+        for subject, f in latest.items():
             if f.value.get("status") != "disproved":
-                mem.entries.append(MemoryEntry(**{k: f.value[k] for k in ("statement", "input_columns", "sql",
-                                                                          "status", "app_id", "replaces_rule")
-                                                  if k in f.value}))
+                e = MemoryEntry(**{k: f.value[k] for k in ("statement", "input_columns", "sql", "status", "app_id",
+                                                           "replaces_rule") if k in f.value})
+                st = stats.get(subject.removeprefix("memory:"), {})
+                confirmed = set(st.get("passed_apps", ())) | ({e.app_id} if e.status == "ai_validated" else set())
+                e.proven = len(confirmed) >= 2 and not st.get("failed_apps")
+                mem.entries.append(e)
         return mem
 
+    async def _record_checks(self, ctx: AgentContext, result: AgentResult, memory: TranslationMemory) -> None:
+        """Every reuse of a learned answer was checked on this app's data: keep the result, and retire an answer
+        the data disproved (the latest translation_memory fact for it says disproved)."""
+        for c in memory.checks:
+            await self.propose(ctx, Fact(
+                kind="memory_check", subject=f"memory:{c['key']}", trust=Trust.VALIDATED if c["passed"] and
+                c["level"] in ("V3", "V4", "V5") else Trust.INFERRED,
+                value={"app_id": ctx.app_id, "run_id": ctx.run_id, "passed": c["passed"], "level": c["level"],
+                       "problems": c["problems"]},
+                evidence=[Evidence(kind="query_result", ref=f"{ctx.app_id}:{ctx.run_id}")]), result)
+        for e in memory.disproved:
+            await self.propose(ctx, Fact(
+                kind="translation_memory", subject=f"memory:{memory_key(e.statement, e.input_columns)}",
+                trust=Trust.INFERRED, value={"statement": e.statement, "input_columns": e.input_columns,
+                                             "sql": e.sql, "status": "disproved", "app_id": ctx.app_id,
+                                             "replaces_rule": e.replaces_rule},
+                evidence=[Evidence(kind="query_result", ref=f"{ctx.app_id}:{ctx.run_id}")]), result)
+
     async def _remember(self, ctx: AgentContext, result: AgentResult, e: MemoryEntry) -> None:
-        key = hashlib.sha256((normalise(e.statement) + "|" + ",".join(e.input_columns or [])).encode()).hexdigest()
         await self.propose(ctx, Fact(
-            kind="translation_memory", subject=f"memory:{key[:24]}", trust=Trust.VALIDATED
-            if e.status == "ai_validated" else Trust.INFERRED,
+            kind="translation_memory", subject=f"memory:{memory_key(e.statement, e.input_columns)}",
+            trust=Trust.VALIDATED if e.status == "ai_validated" else Trust.INFERRED,
             value={"statement": e.statement, "input_columns": e.input_columns, "sql": e.sql, "status": e.status,
                    "app_id": e.app_id, "replaces_rule": e.replaces_rule},
             evidence=[Evidence(kind="query_result" if e.status == "ai_validated" else "rule_check",

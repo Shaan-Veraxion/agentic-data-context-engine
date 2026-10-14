@@ -1,0 +1,38 @@
+id: llm/date_custom_monthnames
+title: Date# with month names set by the script (MonthNames)
+covers:
+- llm
+- date#
+- monthnames
+- script_settings
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+levels:
+  D: V4
+expect: {}
+when:
+- if:
+    ai: 'off'
+  levels:
+    D: V0
+  expect:
+    check:
+      failing:
+        D:
+        - translated
+        - composed
+    rows: false

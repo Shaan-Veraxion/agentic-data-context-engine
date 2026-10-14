@@ -242,6 +242,11 @@ class Translator:
         if name in ("date#", "timestamp#") and len(args) == 2:
             if args[1].kind != "string":
                 raise Untranslatable(f"{e.name}() with a non-literal format")
+            english = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+            script_months = [n.lower()[:3] for n in month_names(self.ctx.variables.get("MonthNames"))]
+            if "MMM" in str(args[1].value) and script_months != english:
+                # SQL date parsing knows English month names only; the script reads its own (MonthNames)
+                raise Untranslatable(f"{e.name}() reads month names the script sets in MonthNames", "T2")
             try:
                 fmt = qlik_to_dremio(str(args[1].value))
             except FormatError as x:

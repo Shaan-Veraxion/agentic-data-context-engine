@@ -68,6 +68,39 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 1 if totals.get("fail") or totals.get("error") or totals.get("xpass") else 0
 
 
+def cmd_eval(args: argparse.Namespace) -> int:
+    from .evaluate import ARMS, eval_cases
+
+    arms = args.arms.split(",")
+    unknown = set(arms) - set(ARMS)
+    if unknown:
+        raise SystemExit(f"unknown arms {sorted(unknown)}; known: {sorted(ARMS)}")
+    cases = eval_cases(tuple(args.cases.split(","))) if args.cases else eval_cases()
+    asyncio.run(_eval(args, arms, cases))
+    return 0
+
+
+async def _eval(args: argparse.Namespace, arms: list[str], cases: list[Any]) -> None:
+    from .evaluate import run_trial, summarise, write
+
+    rows: list[dict[str, Any]] = []
+    path = None
+    for trial in range(1, args.trials + 1):
+        for c in cases:
+            for arm in arms:
+                row: dict[str, Any] = await run_trial(c, arm) | {"trial": trial}
+                rows.append(row)
+                path = write(rows, args.name) if path is None else path
+                path.write_text(json.dumps({"summary": summarise(rows), "trials": rows}, indent=1, default=str),
+                                encoding="utf-8")  # saved after every trial
+                mark = "ok " if row["correct"] else ("n/a" if not row["valid"] else "BAD")
+                print(f"{mark} t{trial} {arm:6} {c.id:35} calls={row['model_calls']} tools={row['tool_calls']} "
+                      f"tokens={row['input_tokens'] + row['output_tokens']} {row['seconds']}s "
+                      f"{'; '.join(row['failed_checks'][:2])} {'; '.join(row['errors'][:1])[:120]}", flush=True)
+    print(json.dumps(summarise(rows), indent=1))
+    print(f"results: {path}")
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -93,6 +126,12 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--json", help="write the results to this file")
     r.add_argument("-v", "--verbose", action="store_true")
     r.set_defaults(fn=cmd_run)
+    e = sub.add_parser("eval", help="LLM evaluation: live runs in arms (plain, tools), fresh each trial")
+    e.add_argument("--arms", default="plain,tools")
+    e.add_argument("--trials", type=int, default=1)
+    e.add_argument("--cases", help="comma-separated case id prefixes (default: llm/ plus the LLM gold apps)")
+    e.add_argument("--name", default="llm-tools")
+    e.set_defaults(fn=cmd_eval)
     s = sub.add_parser("serve")
     s.add_argument("--port", type=int, default=8765)
     s.set_defaults(fn=cmd_serve)

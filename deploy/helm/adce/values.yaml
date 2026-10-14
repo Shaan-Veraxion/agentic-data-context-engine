@@ -48,6 +48,8 @@ services:
     port: 8700
     replicas: 2
     health: /health
+    # agents read and write knowledge only through kg-mcp (ADR-2)
+    env: { ADCE_KG_TRANSPORT: mcp, ADCE_KG_MCP_URL: "http://adce-kg-mcp:8701/mcp" }
     resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { memory: 2Gi } }
   kg-mcp:
     enabled: true
@@ -73,6 +75,15 @@ services:
     health: /
     env: { ADCE_API_INTERNAL: "http://adce-api-gateway:8700" }
     resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 512Mi } }
+
+# Learning over time: re-run every application from its uploads, so learned answers are re-checked on more and
+# newer data (proven / disproved) and skipped statements are tried again (services/orchestrator/.../learning.py)
+learning:
+  enabled: true
+  schedule: "0 3 * * *"
+  command: ["python", "-m", "orchestrator.learning", "rerun"]
+  env: { ADCE_KG_TRANSPORT: mcp, ADCE_KG_MCP_URL: "http://adce-kg-mcp:8701/mcp" }
+  resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { memory: 2Gi } }
 
 migrations:
   enabled: true

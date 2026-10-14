@@ -304,7 +304,9 @@ class ModelGateway:
                 transcript.add(c, text, err)
                 results.append((c, text))
             client.add_results(conv, results)
-        raise OutputInvalid(f"{b.key}: no valid {SUBMIT} after {max_turns} turns")
+        err = OutputInvalid(f"{b.key}: no valid {SUBMIT} after {max_turns} turns")
+        err.usage, err.tool_calls = total, transcript.steps  # type: ignore[attr-defined]  # kept for evaluation
+        raise err
 
     def _finish(self, route: Route, b: Binding, key: str, inputs: dict[str, Any], out: BaseModel, usage: Usage,
                 model: str, task: str, t0: float, attempts: list[str], transcript: Transcript | None = None,

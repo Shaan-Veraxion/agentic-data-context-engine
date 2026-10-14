@@ -1,0 +1,9 @@
+SET MonthNames='jan;feb;mar;apr;mai;jun;jul;aug;sep;okt;nov;des';
+LIB CONNECT TO 'Dremio_Shop';
+
+D:
+LOAD Id, Num(Month(Date#(Day, 'DD MMM YYYY'))) AS Mo,
+     Year(Date#(Day, 'DD MMM YYYY')) AS Yr;
+SQL SELECT Id, Day FROM "shop"."raw"."days";
+
+STORE D INTO [lib://QVD/D.qvd] (qvd);

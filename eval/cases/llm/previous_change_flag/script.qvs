@@ -1,0 +1,13 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+Events:
+LOAD EventID, Status;
+SQL SELECT EventID, Status FROM "shop"."raw"."events";
+
+Flags:
+NOCONCATENATE LOAD EventID, Status,
+     If(IsNull(Previous(Status)) or Status <> Previous(Status), 1, 0) AS Changed
+RESIDENT Events ORDER BY EventID;
+
+DROP TABLE Events;
+STORE Flags INTO [lib://QVD/Flags.qvd] (qvd);

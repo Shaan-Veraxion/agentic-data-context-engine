@@ -161,19 +161,24 @@ class Reconciler:
             return tv
         tv.level = Level.V1
         try:
-            self._count(r.final_cte or "", f"v2:{table}")
+            # the whole result, not COUNT(*): an engine may skip computing columns a count does not need, and a
+            # failing expression (e.g. a date that does not parse) must fail here
+            self.venue.run(self.t.render(r.final_cte or "", comments=False), f"v2:{table}")
         except Exception as e:  # noqa: BLE001 - an execution failure is the V2 result
             tv.errors.append(f"execution: {str(e).splitlines()[0]}")
             return tv
         tv.level = Level.V2
 
-        self._mapping_keys(tv)
-        rows_checks = self._row_counts(tv, r)
-        if rows_checks and all(c.ok for c in rows_checks):
-            tv.level = Level.V3
-            data_checks = self._data(tv, r)
-            if data_checks and all(c.ok for c in data_checks):
-                tv.level = Level.V4
+        try:
+            self._mapping_keys(tv)
+            rows_checks = self._row_counts(tv, r)
+            if rows_checks and all(c.ok for c in rows_checks):
+                tv.level = Level.V3
+                data_checks = self._data(tv, r)
+                if data_checks and all(c.ok for c in data_checks):
+                    tv.level = Level.V4
+        except Exception as e:  # noqa: BLE001 - a step or stored version that fails to run keeps the level reached
+            tv.errors.append(f"execution: {str(e).splitlines()[0]}")
         return tv
 
     # ------------------------------------------------------------------ V3

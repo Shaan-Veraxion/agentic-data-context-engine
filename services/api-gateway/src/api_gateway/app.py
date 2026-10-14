@@ -35,6 +35,8 @@ class Services:
     review: ReviewService
     checkpointer: Any | None = None
     gateway: Any | None = None
+    kg_mcp_url: str | None = None  # agents reach knowledge through kg-mcp at this URL (settings.kg_transport=mcp)
+    llm_tools: bool = False
 
 
 def services(request: Request) -> Services:
@@ -95,7 +97,9 @@ def create_app(svc: Services | None = None, cors_origins: list[str] | None = Non
         async with AsyncPostgresSaver.from_conn_string(s.pg_dsn) as saver:
             await saver.setup()
             app.state.services = Services(kg=kg, artifacts=artifacts_from_settings(s),
-                                          review=ReviewService(store, kg), checkpointer=saver, gateway=gateway)
+                                          review=ReviewService(store, kg), checkpointer=saver, gateway=gateway,
+                                          kg_mcp_url=s.kg_mcp_url if s.kg_transport == "mcp" else None,
+                                          llm_tools=s.llm_tools)
             try:
                 yield
             finally:
@@ -143,9 +147,19 @@ def create_app(svc: Services | None = None, cors_origins: list[str] | None = Non
             raise HTTPException(409, "no files uploaded for this app")
         files = [{"name": upload_name(k), "key": k} for k in keys]
         run_id = uuid.uuid4().hex[:12]
-        out = await run_pipeline(app_id=app_id, run_id=run_id, files=files, app_name=req.app_name,
-                                 deps=Deps(kg=s.kg, artifacts=s.artifacts, gateway=s.gateway),
-                                 checkpointer=s.checkpointer)
+
+        async def run(kg: Any) -> Any:
+            return await run_pipeline(app_id=app_id, run_id=run_id, files=files, app_name=req.app_name,
+                                      deps=Deps(kg=kg, artifacts=s.artifacts, gateway=s.gateway,
+                                                llm_tools=s.llm_tools), checkpointer=s.checkpointer)
+
+        if s.kg_mcp_url:  # ADR-2: agents read and write knowledge only through kg-mcp
+            from kg_mcp.client import McpKG
+
+            async with McpKG.connect(s.kg_mcp_url) as kg:
+                out = await run(kg)
+        else:
+            out = await run(s.kg)
         new_items = await s.review.refresh(app_id)
         return {"run_id": run_id, "status": out.get("status"), "tables": out.get("tables", []),
                 "levels": out.get("levels", {}), "pending": out.get("pending", []),

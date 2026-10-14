@@ -1,0 +1,38 @@
+id: llm/subfield_last_count
+title: SubField with a negative index (from the end) and SubStringCount
+covers:
+- llm
+- subfield
+- substringcount
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+levels:
+  P: V4
+expect: {}
+oracle_note: SubField(s, d, -1) is the last part; without the delimiter it is the whole text
+when:
+- if:
+    ai: 'off'
+  levels:
+    P: V0
+  expect:
+    check:
+      failing:
+        P:
+        - translated
+        - composed
+    rows: false

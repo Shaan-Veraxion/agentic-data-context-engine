@@ -1,0 +1,39 @@
+id: llm/mapsubstring_inline
+title: MapSubString with a mapping table loaded earlier in the script
+covers:
+- llm
+- mapsubstring
+- mapping
+- script_context
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+levels:
+  Addr: V4
+expect: {}
+oracle_note: 'every occurrence is replaced, also inside words: ''3 Stone Ave'' becomes ''3 Streetone Ave'''
+when:
+- if:
+    ai: 'off'
+  levels:
+    Addr: V0
+  expect:
+    check:
+      failing:
+        Addr:
+        - translated
+        - composed
+    rows: false

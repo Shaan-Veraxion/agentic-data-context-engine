@@ -1,0 +1,39 @@
+id: llm/previous_change_flag
+title: Previous() over ORDER BY flags each change of status
+covers:
+- llm
+- previous
+- order_by
+- resident
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+levels:
+  Flags: V4
+expect: {}
+oracle_note: rows in EventID order; the first row has no previous row, so it is flagged
+when:
+- if:
+    ai: 'off'
+  levels:
+    Flags: V0
+  expect:
+    check:
+      failing:
+        Flags:
+        - translated
+        - composed
+    rows: false

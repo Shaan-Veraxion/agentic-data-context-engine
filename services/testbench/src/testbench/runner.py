@@ -119,7 +119,7 @@ class RunResult:
                 "passed": sum(c.ok for c in self.checks), "failed": sum(not c.ok for c in self.checks)}
 
 
-def make_gateway(ai: str) -> Any | None:
+def make_gateway(ai: str, recordings: Path | None = None) -> Any | None:
     """off: no model (rules only). replay: recorded answers in eval/recordings, no key, no network.
     live: the configured provider (deploy/compose/.env), answers recorded in .adce/recordings and reused."""
     if ai == "off":
@@ -136,7 +136,7 @@ def make_gateway(ai: str) -> Any | None:
     _env_file(str(ROOT / "deploy" / "compose" / ".env"))
     s = Settings()
     config = load_config(s.gateway_config) if s.gateway_config else default_config(s.vertex_region)
-    return ModelGateway("record", Recordings(ROOT / ".adce" / "recordings"), config=config)
+    return ModelGateway("record", Recordings(recordings or ROOT / ".adce" / "recordings"), config=config)
 
 
 def _jsonable(x: Any) -> Any:
@@ -164,6 +164,7 @@ class Runner:
         self.tmp = Path(tempfile.mkdtemp(prefix="adce-bench-"))
         self.store = LocalArtifactStore(self.tmp / "artifacts")
         self.state: dict[str, Any] = {}
+        self.recordings: Path | None = None  # live runs: where answers are recorded (evaluation: a fresh folder)
 
     def upload(self) -> list[dict[str, Any]]:
         files = []
@@ -176,7 +177,7 @@ class Runner:
         chain = resolve_chain(self.selected)
         res = RunResult(case=self.case.id, variant=self.variant, chain=[n for n, _ in chain])
         app_id = self.case.id.replace("/", "_")
-        gateway = make_gateway(self.variant.ai)
+        gateway = make_gateway(self.variant.ai, self.recordings)
         calls: list[dict[str, Any]] = []
         if gateway is not None:
             _log_calls(gateway, calls)
@@ -237,8 +238,9 @@ class Runner:
             out["traceback"] = traceback.format_exc()
             return out
         self._absorb(n, r.outputs)
-        if hasattr(ctx.kg, "flush"):
-            await ctx.kg.flush()  # McpKG buffers writes
+        flush = getattr(ctx.kg, "flush", None)
+        if flush is not None:
+            await flush()  # McpKG buffers writes
         facts = (await self.kg.facts())[before:]
         keys = list(r.artifacts) + [v for k in ("sql_keys", "chart_keys", "files")
                                     if isinstance(r.outputs.get(k), dict) for v in r.outputs[k].values()]
@@ -360,7 +362,8 @@ class Runner:
                 for p in parts:
                     add(Check("publish", f"{name} contains {p!r}", text is not None and p in text, p,
                               "file missing" if text is None else None))
-        if "translate" in ran and self.variant.data in ("full", "no_qvd", "no_log", "script_only"):
+        rows_wanted = expect.get("rows", True) is not False
+        if "translate" in ran and self.variant.data in ("full", "no_qvd", "no_log", "script_only") and rows_wanted:
             self._rows(res)
 
     def _translation_doc(self) -> dict[str, Any]:
@@ -437,6 +440,9 @@ def _log_calls(gateway: Any, calls: list[dict[str, Any]]) -> None:
             r = await inner(route, inputs, output_model, **kw)
         except Exception as e:  # noqa: BLE001 - recorded, then re-raised for the agent to handle
             entry["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+            u = getattr(e, "usage", None)  # a tool conversation that ended without an answer still used tokens
+            entry.update({"input_tokens": getattr(u, "input_tokens", None), "output_tokens": getattr(u, "output_tokens",
+                          None), "tools": getattr(e, "tool_calls", None)})
             calls.append(entry)
             raise
         u = r.usage

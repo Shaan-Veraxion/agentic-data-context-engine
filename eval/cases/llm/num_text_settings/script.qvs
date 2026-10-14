@@ -1,0 +1,9 @@
+SET ThousandSep='.';
+SET DecimalSep=',';
+LIB CONNECT TO 'Dremio_Shop';
+
+Pay:
+LOAD PayID, Num#(AmountText) AS Amount;
+SQL SELECT PayID, AmountText FROM "shop"."raw"."payments";
+
+STORE Pay INTO [lib://QVD/Pay.qvd] (qvd);

@@ -77,6 +77,8 @@ def write_case(spec: Spec, root: Path = CASES) -> Path:
              "levels": levels, "expect": spec.expect}
     if spec.oracle_note:
         meta["oracle_note"] = spec.oracle_note
+    if spec.when:
+        meta["when"] = spec.when
     (d / "case.yaml").write_text(yaml.safe_dump(meta, sort_keys=False, width=120), encoding="utf-8")
     return d
 

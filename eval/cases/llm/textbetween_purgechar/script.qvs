@@ -1,0 +1,7 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+L:
+LOAD Id, TextBetween(Label, '[', ']') AS Tag, PurgeChar(Code, '-/') AS CleanCode;
+SQL SELECT Id, Label, Code FROM "shop"."raw"."labels";
+
+STORE L INTO [lib://QVD/L.qvd] (qvd);

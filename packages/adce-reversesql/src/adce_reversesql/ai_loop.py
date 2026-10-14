@@ -66,6 +66,14 @@ class MemoryEntry:
     app_id: str = ""
     uses: int = 0
     replaces_rule: bool = False  # a validated correction of what the rules produce for this statement
+    proven: bool = False  # passed on two or more apps' data and never failed (knowledge service: memory_check)
+
+
+def memory_key(statement: str, input_columns: list[str] | None) -> str:
+    """Stable id of a memory entry: the normalised statement and its input columns."""
+    import hashlib
+
+    return hashlib.sha256((normalise(statement) + "|" + ",".join(input_columns or [])).encode()).hexdigest()[:24]
 
 
 class TranslationMemory:
@@ -75,6 +83,9 @@ class TranslationMemory:
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = Path(path) if path else None
         self.entries: list[MemoryEntry] = []
+        # each reuse re-checks an entry on the current app's data; the results are kept as knowledge over time
+        self.checks: list[dict[str, Any]] = []
+        self.disproved: list[MemoryEntry] = []
         if self.path and self.path.exists():
             self.entries = [MemoryEntry(**e) for e in json.loads(self.path.read_text(encoding="utf-8"))]
 
@@ -109,6 +120,12 @@ class TranslationMemory:
 
     def forget(self, entry: MemoryEntry) -> None:
         self.entries = [e for e in self.entries if e is not entry]
+        self.disproved.append(entry)
+
+    def checked(self, entry: MemoryEntry, app_id: str, passed: bool, level: str | None,
+                problems: list[str] | None = None) -> None:
+        self.checks.append({"key": memory_key(entry.statement, entry.input_columns), "statement": entry.statement,
+                            "app_id": app_id, "passed": passed, "level": level, "problems": (problems or [])[:5]})
 
     def add(self, entry: MemoryEntry) -> None:
         old = self.exact(entry.statement, entry.input_columns)
@@ -186,6 +203,7 @@ async def translate_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory,
                     continue
                 # a correction proven on another app's data is re-checked on this app's data before it is used
                 status = "memory_fix_unverified"
+                level, problems = None, []
                 if validator is not None:
                     t_fix = compose(app, {**overrides, op.statement: fix.sql})
                     if table.name in t_fix.tables and not t_fix.tables[table.name].untranslated:
@@ -194,7 +212,11 @@ async def translate_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory,
                             "memory_fix" if level in ("V3", "V4", "V5") else "memory_fix_unverified")
                 o = Outcome(table.name, op.statement, f"{op.span.file}:{op.span.start_line}-{op.span.end_line}",
                             "learned correction of the rules", status, fix.sql)
-                if status != "memory_fix_rejected":
+                if status != "memory_fix_unverified":
+                    memory.checked(fix, app.app_id, status == "memory_fix", level, problems)
+                if status == "memory_fix_rejected":
+                    memory.forget(fix)  # proven wrong on this app's data: not a general correction
+                else:
                     overrides[op.statement] = fix.sql
                     fix.uses += 1
                 outcomes.append(o)
@@ -231,6 +253,8 @@ async def _one(app: BIApp, u: Untranslated, overrides: dict[int, str], gateway: 
     hit = memory.exact(u.text, u.input_columns)
     if hit is not None:
         ok, problems, level = _verify(app, u, hit.sql, overrides, validator)
+        if level is not None or not ok:
+            memory.checked(hit, app.app_id, ok, level, problems)
         if ok:
             hit.uses += 1
             o.status, o.sql = "memory", hit.sql
@@ -437,8 +461,10 @@ def statement_tools(app: BIApp, u: Untranslated, overrides: dict[int, str], vali
 
     def check(args: dict[str, Any]) -> Any:
         ok, problems, level = _verify(app, u, str(args.get("sql", "")), overrides, validator)
-        return {"ok": ok, "level": level, "problems": problems[:15],
-                "validated_against_data": validator is not None}
+        out = {"ok": ok, "level": level, "problems": problems[:15], "validated_against_data": validator is not None}
+        if ok:
+            out["next"] = "this SQL passes: call submit_answer with it now"
+        return out
 
     return [_tool("check_sql", "Run your candidate SQL (reading src) through the same checks and local data "
                   "validation your final answer will face. Returns ok, the level reached and the problems.",
@@ -456,9 +482,22 @@ def repair_tools(app: BIApp, table: str, stmts: list[dict[str, Any]], overrides:
         if not bad:
             t2 = compose(app, {**overrides, target["statement"]: sql})
             bad = [x.reason for x in t2.tables[table].untranslated] or validator(t2, table)[1]
-        return {"ok": not bad, "problems": bad[:15]}
+        return {"ok": not bad, "problems": bad[:15]} | ({"next": "this fix passes: call submit_answer with it now"}
+                                                        if not bad else {})
 
     return [_tool("check_fix", "Replace one statement's SQL and run the table against its evidence again. "
                   "Returns ok and the comparisons that still fail.",
                   {"statement": {"type": "integer"}, "sql": {"type": "string"}}, ["statement", "sql"], check),
             _statements_tool(app)]
+
+
+def memory_stats(checks: list[Any]) -> dict[str, dict[str, Any]]:
+    """memory_check facts -> per memory key: apps where it passed and where it failed, and how often it was checked."""
+    out: dict[str, dict[str, Any]] = {}
+    for f in checks:
+        v = f.value
+        st = out.setdefault(f.subject.removeprefix("memory:"), {"passed_apps": set(), "failed_apps": set(),
+                                                                "checks": 0})
+        st["checks"] += 1
+        (st["passed_apps"] if v.get("passed") else st["failed_apps"]).add(v.get("app_id"))
+    return out

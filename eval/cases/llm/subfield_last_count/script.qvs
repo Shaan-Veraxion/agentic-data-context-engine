@@ -1,0 +1,7 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+P:
+LOAD Id, SubField(Path, '/', -1) AS Leaf, SubStringCount(Path, '/') AS Depth;
+SQL SELECT Id, Path FROM "shop"."raw"."paths";
+
+STORE P INTO [lib://QVD/P.qvd] (qvd);

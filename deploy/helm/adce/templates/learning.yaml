@@ -1,0 +1,43 @@
+{{- if .Values.learning.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-learning
+  labels: {{- include "adce.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.learning.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ .Values.serviceAccount.name }}
+          securityContext: {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: learning
+              image: {{ include "adce.image" (dict "root" . "kind" "python") }}
+              command: {{- toYaml .Values.learning.command | nindent 16 }}
+              {{- include "adce.env" . | nindent 14 }}
+              {{- with .Values.learning.env }}
+              env:
+                {{- range $k, $v := . }}
+                - name: {{ $k }}
+                  value: {{ $v | quote }}
+                {{- end }}
+              {{- end }}
+              securityContext: {{- toYaml .Values.securityContext | nindent 16 }}
+              resources: {{- toYaml .Values.learning.resources | nindent 16 }}
+              {{- if .Values.gateway.config }}
+              volumeMounts:
+                - { name: gateway-config, mountPath: /etc/adce, readOnly: true }
+              {{- end }}
+          {{- if .Values.gateway.config }}
+          volumes:
+            - name: gateway-config
+              configMap: { name: {{ .Release.Name }}-gateway }
+          {{- end }}
+{{- end }}

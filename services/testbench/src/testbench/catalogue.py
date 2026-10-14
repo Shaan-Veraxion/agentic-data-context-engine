@@ -40,6 +40,7 @@ class Spec:
     chain: list[int] = field(default_factory=lambda: list(FULL_CHAIN))
     variants: dict[str, list[str]] = field(default_factory=lambda: {"ai": ["off"], "data": list(DATA_VARIANTS)})
     oracle_note: str = ""
+    when: list[dict[str, Any]] = field(default_factory=list)  # variant-specific expectations (cases.Case.when)
 
 
 HEAD = "LIB CONNECT TO 'Dremio_Shop';\n\n"
@@ -423,6 +424,8 @@ def specs() -> list[Spec]:
         fetched=[4],
         oracle_note="lines fetched after CROSSTABLE counts the unpivoted rows"))
 
+    out += llm_specs()
+
     # ---------------------------------------------------------------- intake (agent 1 alone)
     out.append(Spec(
         "intake/classify_bundle", "Classify a typical upload bundle", ["intake", "classification"],
@@ -433,4 +436,106 @@ def specs() -> list[Spec]:
         variants={"ai": ["off"], "data": ["full"]},
         expect={"intake": {"classes": {"script.qvs": "script", "reload.log": "reload_log",
                                        "sources/shop/raw/orders.csv": "source_extract"}}}))
+    return out
+
+
+def llm_specs() -> list[Spec]:
+    """Statements the rules cannot translate (or translate wrongly): the LLM pathway's evaluation set. In CI they
+    run with AI off (expected: not translated); `adce-bench eval` runs them live, with and without tools."""
+    out: list[Spec] = []
+    yield_specs = out
+    off = {"ai": ["off"], "data": ["full"]}
+
+    pays = [(1, "1.234,50"), (2, "99,00"), (3, "12.000,75"), (4, "0,5")]
+    out.append(Spec(
+        "llm/num_text_settings", "Num# without a format follows the script's ThousandSep and DecimalSep",
+        ["llm", "num#", "script_settings"],
+        "SET ThousandSep='.';\nSET DecimalSep=',';\n" + HEAD + "Pay:\nLOAD PayID, Num#(AmountText) AS Amount;\n"
+        'SQL SELECT PayID, AmountText FROM "shop"."raw"."payments";\n\n' + _store("Pay"),
+        sources={"shop/raw/payments": Table(["PayID", "AmountText"], pays)},
+        outputs={"Pay": Table(["PayID", "Amount"],
+                              [(i, float(t.replace(".", "").replace(",", "."))) for i, t in pays])},
+        fetched=[4], variants=off))
+
+    labels = [(1, "order [EU] 12", "A-1/2"), (2, "[US] item", "B--7"), (3, "x [APAC]", "C/9-9")]
+    out.append(Spec(
+        "llm/textbetween_purgechar", "TextBetween and PurgeChar",
+        ["llm", "textbetween", "purgechar"],
+        HEAD + "L:\nLOAD Id, TextBetween(Label, '[', ']') AS Tag, PurgeChar(Code, '-/') AS CleanCode;\n"
+        'SQL SELECT Id, Label, Code FROM "shop"."raw"."labels";\n\n' + _store("L"),
+        sources={"shop/raw/labels": Table(["Id", "Label", "Code"], labels)},
+        outputs={"L": Table(["Id", "Tag", "CleanCode"],
+                            [(i, lb[lb.index("[") + 1:lb.index("]")], "".join(ch for ch in c if ch not in "-/"))
+                             for i, lb, c in labels])},
+        fetched=[3], variants=off))
+
+    paths = [(1, "/eu/de/berlin"), (2, "a/b"), (3, "root")]
+    out.append(Spec(
+        "llm/subfield_last_count", "SubField with a negative index (from the end) and SubStringCount",
+        ["llm", "subfield", "substringcount"],
+        HEAD + "P:\nLOAD Id, SubField(Path, '/', -1) AS Leaf, SubStringCount(Path, '/') AS Depth;\n"
+        'SQL SELECT Id, Path FROM "shop"."raw"."paths";\n\n' + _store("P"),
+        sources={"shop/raw/paths": Table(["Id", "Path"], paths)},
+        outputs={"P": Table(["Id", "Leaf", "Depth"], [(i, p.split("/")[-1], p.count("/")) for i, p in paths])},
+        fetched=[3], variants=off,
+        oracle_note="SubField(s, d, -1) is the last part; without the delimiter it is the whole text"))
+
+    events = [(3, "closed"), (1, "open"), (5, "open"), (2, "open"), (4, "closed")]
+    ordered = sorted(events)
+    changed = [(i, s, 1 if k == 0 or s != ordered[k - 1][1] else 0) for k, (i, s) in enumerate(ordered)]
+    out.append(Spec(
+        "llm/previous_change_flag", "Previous() over ORDER BY flags each change of status",
+        ["llm", "previous", "order_by", "resident"],
+        HEAD + "Events:\nLOAD EventID, Status;\n" + 'SQL SELECT EventID, Status FROM "shop"."raw"."events";\n\n'
+        "Flags:\nNOCONCATENATE LOAD EventID, Status,\n"
+        "     If(IsNull(Previous(Status)) or Status <> Previous(Status), 1, 0) AS Changed\n"
+        "RESIDENT Events ORDER BY EventID;\n\nDROP TABLE Events;\n" + _store("Flags"),
+        sources={"shop/raw/events": Table(["EventID", "Status"], events)},
+        outputs={"Flags": Table(["EventID", "Status", "Changed"], changed)},
+        fetched=[5, 5], variants=off,
+        oracle_note="rows in EventID order; the first row has no previous row, so it is flagged"))
+
+    lines = [(1, "1 Main St"), (2, "22 Hill Rd"), (3, "3 Stone Ave")]
+    abbr = [("St", "Street"), ("Rd", "Road")]
+
+    def map_sub(s: str) -> str:
+        out_s, i = "", 0
+        while i < len(s):  # left to right, every occurrence, replaced text is not scanned again
+            hit = next(((f, t) for f, t in abbr if s.startswith(f, i)), None)
+            if hit:
+                out_s += hit[1]
+                i += len(hit[0])
+            else:
+                out_s += s[i]
+                i += 1
+        return out_s
+
+    out.append(Spec(
+        "llm/mapsubstring_inline", "MapSubString with a mapping table loaded earlier in the script",
+        ["llm", "mapsubstring", "mapping", "script_context"],
+        "Abbr:\nMAPPING LOAD * INLINE [\nFrom, To\nSt, Street\nRd, Road\n];\n\n" + HEAD +
+        "Addr:\nLOAD Id, MapSubString('Abbr', Line) AS FullLine;\n"
+        'SQL SELECT Id, Line FROM "shop"."raw"."addresses";\n\n' + _store("Addr"),
+        sources={"shop/raw/addresses": Table(["Id", "Line"], lines)},
+        outputs={"Addr": Table(["Id", "FullLine"], [(i, map_sub(s)) for i, s in lines])},
+        fetched=[2, 3], variants=off,
+        oracle_note="every occurrence is replaced, also inside words: '3 Stone Ave' becomes '3 Streetone Ave'"))
+
+    months = "jan;feb;mar;apr;mai;jun;jul;aug;sep;okt;nov;des"
+    days = [(1, "05 mai 2024"), (2, "17 okt 2023"), (3, "01 jan 2025")]
+    names: list[str] = [str(m) for m in months.split(";")]
+    out.append(Spec(
+        "llm/date_custom_monthnames", "Date# with month names set by the script (MonthNames)",
+        ["llm", "date#", "monthnames", "script_settings"],
+        f"SET MonthNames='{months}';\n" + HEAD + "D:\nLOAD Id, Num(Month(Date#(Day, 'DD MMM YYYY'))) AS Mo,\n"
+        "     Year(Date#(Day, 'DD MMM YYYY')) AS Yr;\n"
+        'SQL SELECT Id, Day FROM "shop"."raw"."days";\n\n' + _store("D"),
+        sources={"shop/raw/days": Table(["Id", "Day"], days)},
+        outputs={"D": Table(["Id", "Mo", "Yr"],
+                            [(i, names.index(d.split()[1]) + 1, int(d.split()[2])) for i, d in days])},
+        fetched=[3], variants=off))
+    for sp in yield_specs:  # with AI off the rules leave the table untranslated: nothing to run or compare
+        table = next(iter(sp.outputs))
+        sp.when = [{"if": {"ai": "off"}, "levels": {table: "V0"},
+                    "expect": {"check": {"failing": {table: ["translated", "composed"]}}, "rows": False}}]
     return out
