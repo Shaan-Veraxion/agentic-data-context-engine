@@ -1,0 +1,28 @@
+id: loads/let_variable_arithmetic
+title: LET variable used inside an expression
+covers:
+- let_variable
+- dollar_expansion
+- arithmetic
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+  - no_qvd
+  - no_log
+  - script_only
+levels:
+  Orders: V4
+expect: {}

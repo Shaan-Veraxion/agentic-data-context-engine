@@ -1,0 +1,7 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+Orders:
+LOAD OrderID, Customer, Qty, Price, Qty * Price AS Amount, Upper(Customer) AS CustomerUpper;
+SQL SELECT OrderID, Customer, Qty, Price FROM "shop"."raw"."orders";
+
+STORE Orders INTO [lib://QVD/Orders.qvd] (qvd);

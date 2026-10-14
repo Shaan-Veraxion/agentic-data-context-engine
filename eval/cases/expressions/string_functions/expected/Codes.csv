@@ -1,0 +1,5 @@
+Clean,NameLen,NameLower,Prefix,Suffix,Middle,Compact,DashPos
+Alpha,5,alpha,AB,-X,123,AB123X,3
+Beta,4,beta,CD,YY,45-,CD45YY,3
+gamma,5,gamma,EF,-Z,678,EF6789Z,3
+delta,5,delta,GH,H9,,GH9,0

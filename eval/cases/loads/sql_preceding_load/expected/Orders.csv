@@ -1,0 +1,6 @@
+OrderID,Customer,Qty,Price,Amount,CustomerUpper
+1,acme,2,10.5,21.0,ACME
+2,bolt,1,99.0,99.0,BOLT
+3,acme,5,3.5,17.5,ACME
+4,zed,3,7.0,21.0,ZED
+5,bolt,10,1.25,12.5,BOLT

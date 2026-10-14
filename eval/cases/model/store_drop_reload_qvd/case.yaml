@@ -1,0 +1,30 @@
+id: model/store_drop_reload_qvd
+title: STORE, DROP, then read the stored QVD back with a filter
+covers:
+- store
+- drop_table
+- qvd_load
+- where
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+  - no_qvd
+  - no_log
+  - script_only
+levels:
+  Orders: V4
+  Big: V4
+expect: {}

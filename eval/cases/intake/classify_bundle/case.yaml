@@ -1,0 +1,22 @@
+id: intake/classify_bundle
+title: Classify a typical upload bundle
+covers:
+- intake
+- classification
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+levels: {}
+expect:
+  intake:
+    classes:
+      script.qvs: script
+      reload.log: reload_log
+      sources/shop/raw/orders.csv: source_extract

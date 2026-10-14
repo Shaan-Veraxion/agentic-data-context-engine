@@ -1,0 +1,9 @@
+Budget:
+CROSSTABLE(Month, Amount)
+LOAD * INLINE [
+Region, Jan, Feb
+EU, 10, 20
+US, 30, 40
+];
+
+STORE Budget INTO [lib://QVD/Budget.qvd] (qvd);

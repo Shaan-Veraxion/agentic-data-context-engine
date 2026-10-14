@@ -1,0 +1,13 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+Orders:
+LOAD OrderID, CustomerID, Qty;
+SQL SELECT OrderID, CustomerID, Qty FROM "shop"."raw"."orders2";
+
+Customers:
+LEFT KEEP (Orders)
+LOAD CustomerID, CustomerName, Region;
+SQL SELECT CustomerID, CustomerName, Region FROM "shop"."raw"."customers";
+
+STORE Orders INTO [lib://QVD/Orders.qvd] (qvd);
+STORE Customers INTO [lib://QVD/Customers.qvd] (qvd);

@@ -1,0 +1,27 @@
+id: model/rename_and_drop_fields
+title: RENAME FIELD and DROP FIELD after the load
+covers:
+- rename_field
+- drop_field
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+  - no_qvd
+  - no_log
+  - script_only
+levels:
+  Orders: V4
+expect: {}

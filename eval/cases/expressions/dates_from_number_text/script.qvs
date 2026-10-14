@@ -1,0 +1,9 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+Events:
+LOAD EventID, Year(Date#(EventDay, 'YYYYMMDD')) AS Yr,
+     Num(Month(Date#(EventDay, 'YYYYMMDD'))) AS Mo,
+     Text(Date(Date#(EventDay, 'YYYYMMDD'), 'DD/MM/YYYY')) AS DayText;
+SQL SELECT EventID, EventDay FROM "shop"."raw"."events";
+
+STORE Events INTO [lib://QVD/Events.qvd] (qvd);

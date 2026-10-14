@@ -1,0 +1,12 @@
+Scores:
+LOAD Name, Score, If(Score >= 50, 'pass', 'fail') AS Result,
+     If(Score >= 80, 'A', If(Score >= 50, 'B', 'C')) AS Grade
+INLINE [
+Name, Score
+ann, 91
+bob, 50
+cid, 49
+dan, 75
+];
+
+STORE Scores INTO [lib://QVD/Scores.qvd] (qvd);

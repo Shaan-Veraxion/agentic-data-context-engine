@@ -1,0 +1,9 @@
+SET vMinQty = 3;
+LIB CONNECT TO 'Dremio_Shop';
+
+BigOrders:
+LOAD OrderID, Customer, Qty
+WHERE Qty >= $(vMinQty);
+SQL SELECT OrderID, Customer, Qty FROM "shop"."raw"."orders";
+
+STORE BigOrders INTO [lib://QVD/BigOrders.qvd] (qvd);

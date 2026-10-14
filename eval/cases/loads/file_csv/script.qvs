@@ -1,0 +1,6 @@
+Prices:
+LOAD Sku, ListPrice, ListPrice * 2 AS DoublePrice
+FROM [lib://Files/prices.csv]
+(txt, utf8, embedded labels, delimiter is ',');
+
+STORE Prices INTO [lib://QVD/Prices.qvd] (qvd);

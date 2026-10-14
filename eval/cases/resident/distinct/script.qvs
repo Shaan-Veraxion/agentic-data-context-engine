@@ -1,0 +1,11 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+Orders:
+LOAD OrderID, Customer;
+SQL SELECT OrderID, Customer FROM "shop"."raw"."orders";
+
+Customers:
+NOCONCATENATE LOAD DISTINCT Customer RESIDENT Orders;
+
+DROP TABLE Orders;
+STORE Customers INTO [lib://QVD/Customers.qvd] (qvd);

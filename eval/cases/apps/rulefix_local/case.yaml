@@ -1,0 +1,13 @@
+title: A rule translation that runs but is wrong ('P' & 20 gives P20.0); the diagnosis corrects it (agent 26 route)
+covers: [llm, diagnose_mismatch, number_to_text, v4_fingerprint]
+oracle: hand  # the app's make_fixture.py
+app: ../../../gold/bi/apps/rulefix_local
+chain: [1, 27, 28, 24, 25, 26, 20]
+variants: {ai: ["off", "replay"], data: ["full"]}
+levels: {Products: V4}
+expect:
+  translate: {ai_status: {Products: ai_repaired}}
+when:
+  - if: {ai: "off"}
+    levels: {Products: V3}
+    expect: {translate: {ai_status: {}}}

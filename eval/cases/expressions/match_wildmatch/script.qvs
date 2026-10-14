@@ -1,0 +1,8 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+R:
+LOAD Region, Code, Match(Region, 'EU', 'US') AS M, MixMatch(Region, 'eu', 'us') AS MM,
+     WildMatch(Code, 'AB*', '*Z') AS W;
+SQL SELECT Region, Code FROM "shop"."raw"."regions";
+
+STORE R INTO [lib://QVD/R.qvd] (qvd);

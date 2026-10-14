@@ -1,0 +1,5 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+T:
+LOAD OrderID;
+SQL SELECT OrderID FROM "shop"."raw"."orders";

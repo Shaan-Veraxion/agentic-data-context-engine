@@ -1,0 +1,28 @@
+id: loads/inline_if_nested
+title: INLINE load with nested If
+covers:
+- inline
+- if
+- nested_if
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+  - no_qvd
+  - no_log
+  - script_only
+levels:
+  Scores: V4
+expect: {}

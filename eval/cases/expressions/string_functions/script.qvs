@@ -1,0 +1,9 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+Codes:
+LOAD Trim(Name) AS Clean, Len(Trim(Name)) AS NameLen, Lower(Trim(Name)) AS NameLower,
+     Left(Code, 2) AS Prefix, Right(Code, 2) AS Suffix, Mid(Code, 4, 3) AS Middle,
+     Replace(Code, '-', '') AS Compact, Index(Code, '-') AS DashPos;
+SQL SELECT Name, Code FROM "shop"."raw"."codes";
+
+STORE Codes INTO [lib://QVD/Codes.qvd] (qvd);

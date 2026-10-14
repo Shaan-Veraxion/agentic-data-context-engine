@@ -1,0 +1,26 @@
+id: model/rename_table
+title: RENAME TABLE before the STORE
+covers:
+- rename_table
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+  - no_qvd
+  - no_log
+  - script_only
+levels:
+  Facts: V4
+expect: {}

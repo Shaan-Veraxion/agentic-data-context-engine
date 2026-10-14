@@ -1,0 +1,14 @@
+RegionMap:
+MAPPING LOAD * INLINE [
+Code, Name
+EU, Europe
+US, United States
+];
+
+LIB CONNECT TO 'Dremio_Shop';
+
+Customers:
+LOAD CustomerID, ApplyMap('RegionMap', Region, 'Unknown') AS RegionName;
+SQL SELECT CustomerID, Region FROM "shop"."raw"."customers2";
+
+STORE Customers INTO [lib://QVD/Customers.qvd] (qvd);

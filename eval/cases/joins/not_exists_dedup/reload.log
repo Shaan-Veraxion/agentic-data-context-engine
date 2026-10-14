@@ -1,0 +1,8 @@
+20261001T040000.000+0000 Execution started.
+20261001T040000.001+0000 0001  LIB CONNECT TO 'Dremio_Shop'
+20261001T040000.003+0000 0003  Customers:
+20261001T040000.004+0000 0004  LOAD CustomerID, CustomerName, Region WHERE NOT Exists(CustomerID)
+20261001T040000.005+0000 0005  SQL SELECT CustomerID, CustomerName, Region FROM "shop"."raw"."customers_dup"
+20261001T040000.005+0000       3 Lines fetched
+20261001T040000.007+0000 0007  STORE Customers INTO [lib://QVD/Customers.qvd] (qvd)
+20261001T040000.999+0000       Execution finished.

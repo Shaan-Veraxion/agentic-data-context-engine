@@ -1,0 +1,7 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+Customers:
+LOAD CustomerID, CustomerName, Region WHERE NOT Exists(CustomerID);
+SQL SELECT CustomerID, CustomerName, Region FROM "shop"."raw"."customers_dup";
+
+STORE Customers INTO [lib://QVD/Customers.qvd] (qvd);

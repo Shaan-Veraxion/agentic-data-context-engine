@@ -1,0 +1,30 @@
+id: expressions/null_handling
+title: IsNull (-1/0 booleans), Alt, If on NULL
+covers:
+- isnull
+- alt
+- 'null'
+- qlik_boolean
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+  - no_qvd
+  - no_log
+  - script_only
+levels:
+  Disc: V4
+expect: {}
+oracle_note: Qlik true is -1, false is 0

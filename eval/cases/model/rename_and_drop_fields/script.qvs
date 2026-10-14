@@ -1,0 +1,10 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+Orders:
+LOAD OrderID, Customer, Qty, Price;
+SQL SELECT OrderID, Customer, Qty, Price FROM "shop"."raw"."orders";
+
+RENAME FIELD Qty TO Quantity;
+DROP FIELD Price;
+
+STORE Orders INTO [lib://QVD/Orders.qvd] (qvd);

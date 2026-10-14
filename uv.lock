@@ -21,6 +21,7 @@ members = [
     "adce-orchestrator",
     "adce-qlik",
     "adce-reversesql",
+    "adce-testbench",
 ]
 
 [[package]]
@@ -307,6 +308,37 @@ requires-dist = [
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pyqvd", specifier = ">=2.3" },
     { name = "sqlglot", specifier = ">=25" },
+]
+
+[[package]]
+name = "adce-testbench"
+version = "0.1.0"
+source = { editable = "services/testbench" }
+dependencies = [
+    { name = "adce-agents-bi-adapters" },
+    { name = "adce-agents-ingestion" },
+    { name = "adce-agents-reversesql" },
+    { name = "adce-core" },
+    { name = "adce-gateway" },
+    { name = "adce-orchestrator" },
+    { name = "adce-reversesql" },
+    { name = "fastapi" },
+    { name = "pyyaml" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "adce-agents-bi-adapters", editable = "services/agents-bi-adapters" },
+    { name = "adce-agents-ingestion", editable = "services/agents-ingestion" },
+    { name = "adce-agents-reversesql", editable = "services/agents-reversesql" },
+    { name = "adce-core", editable = "packages/adce-core" },
+    { name = "adce-gateway", editable = "packages/adce-gateway" },
+    { name = "adce-orchestrator", editable = "services/orchestrator" },
+    { name = "adce-reversesql", editable = "packages/adce-reversesql" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "pyyaml", specifier = ">=6" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 
 [[package]]

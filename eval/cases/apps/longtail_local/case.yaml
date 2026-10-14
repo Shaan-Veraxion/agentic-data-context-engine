@@ -1,0 +1,15 @@
+title: Statements the rules cannot translate; the LLM pathway translates and validates them (agent 28)
+covers: [llm, translate_statement, subfield, keepchar, num#, class, previous, peek, running_total]
+oracle: hand  # the app's make_fixture.py
+app: ../../../gold/bi/apps/longtail_local
+chain: [1, 27, 28, 24, 25, 26, 20]
+variants: {ai: ["off", "replay"], data: ["full"]}
+levels: {Sales: V4, Running: V4}
+expect:
+  translate: {untranslated: 0, ai_status: {Sales: ai_validated, Running: ai_validated}}
+when:
+  - if: {ai: "off"}
+    levels: {Sales: V0, Running: V0}
+    expect:
+      translate: {untranslated: 2, ai_status: {}}
+      check: {failing: {Sales: [translated, composed], Running: [translated, composed]}}

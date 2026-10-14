@@ -1,0 +1,9 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+Nums:
+LOAD Id, X, Floor(X) AS F, Ceil(X) AS C, Round(X) AS R, Round(X, 0.5) AS RHalf,
+     Fabs(X) AS A, Mod(Id * 7, 3) AS M, Div(Id * 7, 2) AS D,
+     Mod(Id * 7 - 20, 3) AS MNeg, Div(Id * 7 - 20, 3) AS DNeg;
+SQL SELECT Id, X FROM "shop"."raw"."nums";
+
+STORE Nums INTO [lib://QVD/Nums.qvd] (qvd);

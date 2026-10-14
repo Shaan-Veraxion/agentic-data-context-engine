@@ -1,0 +1,29 @@
+id: resident/aggregations_more
+title: Avg, Min, Count(DISTINCT) by a computed group
+covers:
+- avg
+- min
+- count_distinct
+- group_by_expression
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+  - no_qvd
+  - no_log
+  - script_only
+levels:
+  G: V4
+expect: {}

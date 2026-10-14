@@ -1,0 +1,27 @@
+id: joins/left_join
+title: 'LEFT JOIN: unmatched orders keep NULL customer fields'
+covers:
+- left_join
+- join
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+  - no_qvd
+  - no_log
+  - script_only
+levels:
+  Orders: V4
+expect: {}

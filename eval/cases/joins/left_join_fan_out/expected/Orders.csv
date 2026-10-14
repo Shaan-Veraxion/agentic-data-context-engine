@@ -1,0 +1,7 @@
+OrderID,CustomerID,Qty,CustomerName,Region
+1,C1,2,Acme,EU
+1,C1,2,Acme,APAC
+2,C2,1,Bolt,US
+3,C1,5,Acme,EU
+3,C1,5,Acme,APAC
+4,C9,3,,

@@ -1,0 +1,6 @@
+OrderID,Customer,Qty,Price
+1,acme,2,10.5
+2,bolt,1,99.0
+3,acme,5,3.5
+4,zed,3,7.0
+5,bolt,10,1.25

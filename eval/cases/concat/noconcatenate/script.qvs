@@ -1,0 +1,16 @@
+A:
+LOAD * INLINE [
+Region, Amount
+EU, 100
+US, 200
+];
+
+B:
+NOCONCATENATE LOAD * INLINE [
+Region, Amount
+APAC, 50
+LATAM, 25
+];
+
+STORE A INTO [lib://QVD/A.qvd] (qvd);
+STORE B INTO [lib://QVD/B.qvd] (qvd);

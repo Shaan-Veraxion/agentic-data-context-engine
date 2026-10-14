@@ -1,0 +1,27 @@
+id: joins/not_exists_dedup
+title: WHERE NOT Exists(key) on the key being loaded keeps the first row per key
+covers:
+- exists
+- not_exists
+- dedup
+- load_order
+status: known_gap
+gap: needs the source's row order (first row per key); SQL sources have no order unless the script gives one
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+levels:
+  Customers: V4
+expect: {}

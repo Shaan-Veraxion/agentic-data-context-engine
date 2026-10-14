@@ -1,0 +1,12 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+O:
+LOAD OrderID, CustomerID, Qty, If(CustomerID = 'C9', 'C9', 'known') AS Grp;
+SQL SELECT OrderID, CustomerID, Qty FROM "shop"."raw"."orders2";
+
+G:
+LOAD Grp, Avg(Qty) AS AvgQty, Min(Qty) AS MinQty, Count(DISTINCT CustomerID) AS Customers
+RESIDENT O GROUP BY Grp;
+
+DROP TABLE O;
+STORE G INTO [lib://QVD/G.qvd] (qvd);

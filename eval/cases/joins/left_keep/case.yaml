@@ -1,0 +1,28 @@
+id: joins/left_keep
+title: LEFT KEEP filters the second table to keys of the first, tables stay separate
+covers:
+- left_keep
+- keep
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+  - no_qvd
+  - no_log
+  - script_only
+levels:
+  Orders: V4
+  Customers: V4
+expect: {}

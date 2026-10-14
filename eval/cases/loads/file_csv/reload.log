@@ -1,0 +1,8 @@
+20261001T040000.000+0000 Execution started.
+20261001T040000.001+0000 0001  Prices:
+20261001T040000.002+0000 0002  LOAD Sku, ListPrice, ListPrice * 2 AS DoublePrice
+20261001T040000.003+0000 0003  FROM [lib://Files/prices.csv]
+20261001T040000.004+0000 0004  (txt, utf8, embedded labels, delimiter is ',')
+20261001T040000.004+0000       3 Lines fetched
+20261001T040000.006+0000 0006  STORE Prices INTO [lib://QVD/Prices.qvd] (qvd)
+20261001T040000.999+0000       Execution finished.

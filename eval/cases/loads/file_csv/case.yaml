@@ -1,0 +1,27 @@
+id: loads/file_csv
+title: Load from a delimited file (lib:// path) with a field computed
+covers:
+- file_load
+- csv
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+  - no_qvd
+  - no_log
+  - script_only
+levels:
+  Prices: V4
+expect: {}

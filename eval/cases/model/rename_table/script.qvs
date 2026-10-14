@@ -1,0 +1,9 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+Orders:
+LOAD OrderID, Customer;
+SQL SELECT OrderID, Customer FROM "shop"."raw"."orders";
+
+RENAME TABLE Orders TO Facts;
+
+STORE Facts INTO [lib://QVD/Facts.qvd] (qvd);

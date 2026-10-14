@@ -1,0 +1,8 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+Disc:
+LOAD Id, Discount, IsNull(Discount) AS NoDiscount, Alt(Discount, 0) AS DiscountOrZero,
+     If(IsNull(Discount), 'missing', 'ok') AS Flag;
+SQL SELECT Id, Discount FROM "shop"."raw"."discounts";
+
+STORE Disc INTO [lib://QVD/Disc.qvd] (qvd);

@@ -1,0 +1,21 @@
+title: Orders app end to end, with charts and exported reports (front-end agents 21, 22, 23, 29)
+covers: [sql_select, left_join, group_by, mapping, store, charts, exports, v5]
+oracle: hand  # the app's make_fixture.py computes QVDs, reload log and exports in plain Python
+app: ../../../gold/bi/apps/orders_local
+chain: [1, 27, 28, 24, 25, 26, 20, 23, 29, 21, 22]
+variants: {ai: ["off", "replay"], data: ["full", "no_qvd", "script_only"]}
+levels: {Orders: V4, CustomerTotals: V4}
+expect:
+  extract: {metrics: {coverage: 1.0, issues: 0, tables: 4}}
+  translate: {untranslated: 0}
+  reconcile: {metrics: {charts_v5: 2}}
+  joins: {metrics: {associations: 1, model_issues: 0, visuals_planned: 3}}
+  measures: {metrics: {measures: 8, translated: 8}}
+  reports: {metrics: {tables: 2}}
+  metrics: {metrics: {exports: 2, mapped: 2}}
+  publish: {pack_contains: {validation.md: ["| Orders | V4 | local |", "## Charts against exported reports"]}}
+when:
+  - if: {data: no_qvd}
+    expect: {publish: {pack_contains: {validation.md: ["| Orders | V3 | local |", "## Charts against exported reports"]}}}
+  - if: {data: script_only}
+    expect: {publish: {pack_contains: {}}, reconcile: {metrics: {}}, reports: {metrics: {tables: 0}}, metrics: {metrics: {exports: 0, mapped: 0}}}

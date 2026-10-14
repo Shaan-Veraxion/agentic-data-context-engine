@@ -1,0 +1,8 @@
+LET vRate = 0.5;
+LIB CONNECT TO 'Dremio_Shop';
+
+Orders:
+LOAD OrderID, Price, Price * (1 + $(vRate)) AS Gross;
+SQL SELECT OrderID, Price FROM "shop"."raw"."orders";
+
+STORE Orders INTO [lib://QVD/Orders.qvd] (qvd);

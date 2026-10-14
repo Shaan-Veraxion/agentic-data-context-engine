@@ -1,0 +1,9 @@
+20261001T040000.000+0000 Execution started.
+20261001T040000.001+0000 0001  LIB CONNECT TO 'Dremio_Shop'
+20261001T040000.003+0000 0003  Disc:
+20261001T040000.004+0000 0004  LOAD Id, Discount, IsNull(Discount) AS NoDiscount, Alt(Discount, 0) AS DiscountOrZero,
+20261001T040000.005+0000 0005       If(IsNull(Discount), 'missing', 'ok') AS Flag
+20261001T040000.006+0000 0006  SQL SELECT Id, Discount FROM "shop"."raw"."discounts"
+20261001T040000.006+0000       4 Lines fetched
+20261001T040000.008+0000 0008  STORE Disc INTO [lib://QVD/Disc.qvd] (qvd)
+20261001T040000.999+0000       Execution finished.

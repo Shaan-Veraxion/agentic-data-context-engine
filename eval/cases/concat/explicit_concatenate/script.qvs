@@ -1,0 +1,14 @@
+Sales:
+LOAD * INLINE [
+Region, Amount
+EU, 100
+US, 200
+];
+
+CONCATENATE (Sales)
+LOAD * INLINE [
+Region, Amount, Channel
+APAC, 50, web
+];
+
+STORE Sales INTO [lib://QVD/Sales.qvd] (qvd);

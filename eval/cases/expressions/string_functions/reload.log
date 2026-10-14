@@ -1,0 +1,10 @@
+20261001T040000.000+0000 Execution started.
+20261001T040000.001+0000 0001  LIB CONNECT TO 'Dremio_Shop'
+20261001T040000.003+0000 0003  Codes:
+20261001T040000.004+0000 0004  LOAD Trim(Name) AS Clean, Len(Trim(Name)) AS NameLen, Lower(Trim(Name)) AS NameLower,
+20261001T040000.005+0000 0005       Left(Code, 2) AS Prefix, Right(Code, 2) AS Suffix, Mid(Code, 4, 3) AS Middle,
+20261001T040000.006+0000 0006       Replace(Code, '-', '') AS Compact, Index(Code, '-') AS DashPos
+20261001T040000.007+0000 0007  SQL SELECT Name, Code FROM "shop"."raw"."codes"
+20261001T040000.007+0000       4 Lines fetched
+20261001T040000.009+0000 0009  STORE Codes INTO [lib://QVD/Codes.qvd] (qvd)
+20261001T040000.999+0000       Execution finished.

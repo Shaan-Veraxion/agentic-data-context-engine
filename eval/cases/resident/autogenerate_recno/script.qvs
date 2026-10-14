@@ -1,0 +1,4 @@
+Seq:
+LOAD RecNo() AS N, RecNo() * 2 AS Double AUTOGENERATE 5;
+
+STORE Seq INTO [lib://QVD/Seq.qvd] (qvd);

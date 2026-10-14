@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADCE Test Bench</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1d2330; --muted: #667085; --line: #e3e6eb; --soft: #f0f2f5;
+  --accent: #3157d5; --accent-ink: #ffffff; --pass: #1f8a4c; --pass-bg: #e3f4ea; --fail: #c4321c; --fail-bg: #fbe6e2;
+  --warn: #a56a00; --warn-bg: #fdf1d8; --info-bg: #e8eefc; --code-bg: #f4f5f7;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12151b; --panel: #1a1e26; --ink: #e6e8ec; --muted: #98a2b3; --line: #2b313c; --soft: #222833;
+    --accent: #7d9bff; --accent-ink: #0d1020; --pass: #5fd08f; --pass-bg: #18352a; --fail: #ff8a75; --fail-bg: #3d1f1a;
+    --warn: #f0b850; --warn-bg: #3a2e14; --info-bg: #1f2a45; --code-bg: #141821;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12151b; --panel: #1a1e26; --ink: #e6e8ec; --muted: #98a2b3; --line: #2b313c; --soft: #222833;
+  --accent: #7d9bff; --accent-ink: #0d1020; --pass: #5fd08f; --pass-bg: #18352a; --fail: #ff8a75; --fail-bg: #3d1f1a;
+  --warn: #f0b850; --warn-bg: #3a2e14; --info-bg: #1f2a45; --code-bg: #141821;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+header nav { display: flex; gap: 4px; flex-wrap: wrap; }
+header nav button { background: none; border: 1px solid transparent; color: var(--muted); padding: 6px 10px; border-radius: 6px; cursor: pointer; font: inherit; }
+header nav button.on { color: var(--ink); border-color: var(--line); background: var(--soft); }
+.totals { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.layout { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh - 53px); }
+aside { border-right: 1px solid var(--line); background: var(--panel); padding: 10px; overflow: auto; max-height: calc(100vh - 53px); position: sticky; top: 53px; }
+aside input { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; }
+.suite { margin-top: 12px; }
+.suite h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 4px 4px; }
+.case { display: flex; gap: 8px; align-items: center; padding: 5px 6px; border-radius: 6px; cursor: pointer; }
+.case:hover { background: var(--soft); }
+.case.on { background: var(--info-bg); }
+.case .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dots { display: flex; gap: 2px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+.dot.pass { background: var(--pass); } .dot.fail, .dot.error, .dot.xpass { background: var(--fail); } .dot.xfail { background: var(--warn); }
+main { padding: 16px 20px 60px; min-width: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+.card h2 { font-size: 15px; margin: 0 0 8px; }
+.card h4 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); font-weight: 600; }
+.muted { color: var(--muted); }
+.chip { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--soft); border: 1px solid var(--line); font-size: 12px; margin: 2px 4px 2px 0; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+.badge.pass { background: var(--pass-bg); color: var(--pass); } .badge.fail, .badge.error, .badge.xpass { background: var(--fail-bg); color: var(--fail); }
+.badge.xfail, .badge.warn { background: var(--warn-bg); color: var(--warn); } .badge.info { background: var(--info-bg); color: var(--accent); }
+.badge.k-D { background: var(--soft); color: var(--muted); } .badge.k-H { background: var(--info-bg); color: var(--accent); } .badge.k-L { background: #efe4fb; color: #7a3fc4; }
+.controls { display: flex; gap: 14px; flex-wrap: wrap; align-items: end; }
+.controls label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+select, .controls input, textarea { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; }
+textarea { font-family: var(--mono); font-size: 12.5px; width: 100%; min-height: 90px; }
+button.primary { background: var(--accent); color: var(--accent-ink); border: 0; padding: 8px 14px; border-radius: 6px; cursor: pointer; font: inherit; font-weight: 600; }
+button.ghost { background: var(--panel); color: var(--ink); border: 1px solid var(--line); padding: 7px 12px; border-radius: 6px; cursor: pointer; font: inherit; }
+button:disabled { opacity: .55; cursor: progress; }
+.agents { display: flex; flex-wrap: wrap; gap: 6px; }
+.agent { border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; cursor: pointer; user-select: none; background: var(--panel); font-size: 13px; }
+.agent .n { font-weight: 700; margin-right: 4px; }
+.agent.on { border-color: var(--accent); background: var(--info-bg); }
+.agent.auto { border-style: dashed; border-color: var(--accent); }
+.arrow { color: var(--muted); align-self: center; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; position: sticky; top: 0; background: var(--panel); }
+td.ok { color: var(--pass); font-weight: 700; } td.bad { color: var(--fail); font-weight: 700; }
+tr.bad td { background: var(--fail-bg); } tr.miss td { background: var(--fail-bg); } tr.extra td { background: var(--warn-bg); }
+.scroll { overflow: auto; max-height: 420px; border: 1px solid var(--line); border-radius: 8px; }
+pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow: auto; font: 12.5px/1.5 var(--mono); margin: 6px 0; max-height: 480px; white-space: pre; }
+pre.wrap { white-space: pre-wrap; }
+.lines { counter-reset: ln; }
+.lines span { display: block; } .lines span::before { counter-increment: ln; content: counter(ln); display: inline-block; width: 3em; color: var(--muted); text-align: right; margin-right: 1em; }
+details { border: 1px solid var(--line); border-radius: 8px; margin: 8px 0; background: var(--panel); }
+details > summary { cursor: pointer; padding: 8px 12px; list-style: none; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: "▸"; color: var(--muted); }
+details[open] > summary::before { content: "▾"; }
+details > .body { padding: 4px 14px 12px; }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 10px; flex-wrap: wrap; }
+.tabs button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 7px 10px; cursor: pointer; color: var(--muted); font: inherit; }
+.tabs button.on { color: var(--ink); border-bottom-color: var(--accent); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.matrix td.cell { text-align: center; cursor: pointer; font-weight: 600; font-size: 12px; }
+.matrix td.pass { background: var(--pass-bg); color: var(--pass); } .matrix td.fail, .matrix td.error, .matrix td.xpass { background: var(--fail-bg); color: var(--fail); }
+.matrix td.xfail { background: var(--warn-bg); color: var(--warn); } .matrix td.run { color: var(--muted); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; font-size: 13px; }
+.kv div:nth-child(odd) { color: var(--muted); }
+.note { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 8px 12px; margin: 8px 0; font-size: 13px; }
+.empty { color: var(--muted); padding: 30px; text-align: center; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+@media (max-width: 860px) { .layout { grid-template-columns: 1fr; } aside { position: static; max-height: 260px; border-right: 0; border-bottom: 1px solid var(--line); } .grid2 { grid-template-columns: 1fr; } main { padding: 12px 16px 40px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>ADCE Test Bench</h1>
+  <nav id="nav">
+    <button data-view="case" class="on">Cases</button>
+    <button data-view="matrix">Matrix</button>
+    <button data-view="playground">Playground</button>
+    <button data-view="agents">Agents</button>
+    <button data-view="memory">Memory</button>
+  </nav>
+  <div class="totals" id="totals"></div>
+  <button class="ghost" id="theme" title="Theme">◐</button>
+</header>
+<div class="layout">
+  <aside>
+    <input id="search" placeholder="Filter cases (id, construct, agent)…">
+    <div id="list"></div>
+  </aside>
+  <main id="main"><div class="empty">Loading…</div></main>
+</div>
+<script>
+const S = { meta: null, cases: [], current: null, detail: null, sel: null, result: null, view: "case", matrix: {}, pg: null };
+const $ = (s, el = document) => el.querySelector(s);
+const esc = v => String(v ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmt = v => v === null || v === undefined ? "<span class=muted>∅</span>" : typeof v === "object" ? esc(JSON.stringify(v)) : esc(v);
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  if (!r.ok) throw new Error((await r.text()) || r.statusText);
+  return r.json();
+}
+const agentBy = n => S.meta.agents.find(a => a.number === n);
+const KIND = { D: "deterministic", H: "hybrid (rules + AI)", L: "LLM-led" };
+function store(k, v) { try { localStorage.setItem("bench." + k, JSON.stringify(v)); } catch (e) {} }
+function load(k, d) { try { const v = localStorage.getItem("bench." + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }
+
+// ---------------------------------------------------------------- theme
+(function () { const t = load("theme", null); if (t) document.documentElement.dataset.theme = t; })();
+$("#theme").onclick = () => {
+  const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  const next = cur === "dark" ? "light" : "dark"; document.documentElement.dataset.theme = next; store("theme", next);
+};
+
+// ---------------------------------------------------------------- list
+function lastStatus(c) { return (c.last || []).filter(l => !l.chain).map(l => l.status); }
+function renderTotals() {
+  const all = S.cases.flatMap(lastStatus), n = s => all.filter(x => x === s).length;
+  $("#totals").innerHTML = all.length ? `<span class="badge pass">${n("pass")} pass</span> <span class="badge fail">${n("fail") + n("error") + n("xpass")} fail</span> <span class="badge xfail">${n("xfail")} known gaps</span> <span class="muted">${S.cases.length} cases</span>`
+    : `<span class="muted">${S.cases.length} cases · not run yet</span>`;
+}
+function renderList() {
+  const q = $("#search").value.toLowerCase();
+  const groups = {};
+  for (const c of S.cases) {
+    const hay = (c.id + " " + c.title + " " + c.covers.join(" ") + " " + c.chain.join(" ")).toLowerCase();
+    if (q && !hay.includes(q)) continue;
+    (groups[c.suite] ||= []).push(c);
+  }
+  $("#list").innerHTML = Object.entries(groups).map(([s, cs]) => `<div class="suite"><h3>${esc(s)} · ${cs.length}</h3>${cs.map(c =>
+    `<div class="case ${S.current === c.id ? "on" : ""}" data-id="${esc(c.id)}" title="${esc(c.title)}"><span class="nm">${esc(c.id.split("/").slice(1).join("/") || c.id)}</span>${c.status === "known_gap" ? '<span class="badge xfail">gap</span>' : ""}<span class="dots">${lastStatus(c).map(s => `<span class="dot ${s}"></span>`).join("")}</span></div>`).join("")}</div>`).join("") || '<div class="empty">No case matches.</div>';
+  for (const el of document.querySelectorAll(".case")) el.onclick = () => openCase(el.dataset.id);
+  renderTotals();
+}
+$("#search").oninput = renderList;
+
+// ---------------------------------------------------------------- navigation
+for (const b of document.querySelectorAll("#nav button")) b.onclick = () => show(b.dataset.view);
+function show(view) {
+  S.view = view;
+  for (const b of document.querySelectorAll("#nav button")) b.classList.toggle("on", b.dataset.view === view);
+  ({ case: renderCase, matrix: renderMatrix, playground: renderPlayground, agents: renderAgents, memory: renderMemory })[view]();
+}
+
+// ---------------------------------------------------------------- agent chain picker
+function chainPicker(selected, onChange) {
+  const wrap = document.createElement("div");
+  wrap.className = "agents";
+  async function draw() {
+    const auto = selected.length ? (await api("/api/chain?agents=" + selected.join(","))).filter(x => x.auto).map(x => x.number) : [];
+    wrap.innerHTML = S.meta.agents.map(a => `<span class="agent ${selected.includes(a.number) ? "on" : auto.includes(a.number) ? "auto" : ""}" data-n="${a.number}" title="${esc(a.name)} · ${KIND[a.kind]}${a.needs.length ? " · needs " + a.needs.join(", ") : ""}"><span class="n">${a.number === 0 ? "▶" : a.number}</span>${esc(a.step)} <span class="badge k-${a.kind}">${a.kind}</span></span>`).join("");
+    for (const el of wrap.querySelectorAll(".agent")) el.onclick = () => {
+      const n = +el.dataset.n;
+      if (n === 0) selected.splice(0, selected.length, ...(selected.includes(0) ? [] : [0]));
+      else { const z = selected.indexOf(0); if (z >= 0) selected.splice(z, 1); const i = selected.indexOf(n); i >= 0 ? selected.splice(i, 1) : selected.push(n); }
+      onChange && onChange(selected); draw();
+    };
+  }
+  draw();
+  return wrap;
+}
+
+// ---------------------------------------------------------------- case view
+async function openCase(id, variant) {
+  S.current = id; S.result = null; S.view = "case";
+  for (const b of document.querySelectorAll("#nav button")) b.classList.toggle("on", b.dataset.view === "case");
+  renderList();
+  S.detail = await api("/api/case/" + encodeURI(id));
+  const v = S.detail.variants || {};
+  S.sel = { agents: [...S.detail.chain], ai: variant?.ai || (v.ai || ["off"])[0], data: variant?.data || (v.data || ["full"])[0], memory: "fresh" };
+  store("current", id);
+  history.replaceState(null, "", "#case=" + encodeURIComponent(id));
+  renderCase();
+  if (variant) runCurrent();
+}
+function renderCase() {
+  const d = S.detail, m = $("#main");
+  if (!d) { m.innerHTML = '<div class="empty">Pick a case on the left, or open the Matrix to run everything.</div>'; return; }
+  const sel = S.sel;
+  m.innerHTML = `
+  <div class="card">
+    <div class="row"><h2 style="margin:0">${esc(d.title)}</h2>${d.status === "known_gap" ? '<span class="badge xfail">known gap</span>' : ""}<span class="badge info">oracle: ${esc(d.oracle)}</span>${d.private ? '<span class="badge warn">private</span>' : ""}</div>
+    <div class="muted" style="margin:4px 0 6px">${esc(d.id)}${d.app ? " · uses " + esc(d.app) : ""}</div>
+    <div>${d.covers.map(c => `<span class="chip">${esc(c)}</span>`).join("")}</div>
+    ${d.gap ? `<div class="note">Known gap: ${esc(d.gap)}</div>` : ""}
+    ${d.oracle_note ? `<div class="muted" style="margin-top:6px">Oracle: ${esc(d.oracle_note)}</div>` : ""}
+  </div>
+  <div class="card">
+    <h2>Run</h2>
+    <h4>Agents (click to select; dashed = added because a selected agent needs it; ▶ = whole LangGraph pipeline)</h4>
+    <div id="picker"></div>
+    <div class="controls" style="margin-top:12px">
+      <label>AI<select id="ai">${S.meta.ai_modes.map(x => `<option ${x === sel.ai ? "selected" : ""}>${x}</option>`).join("")}</select></label>
+      <label>Data uploaded<select id="data">${S.meta.data_variants.map(x => `<option ${x === sel.data ? "selected" : ""}>${x}</option>`).join("")}</select></label>
+      <label>Memory<select id="mem"><option value="fresh">fresh</option><option value="session" ${sel.memory === "session" ? "selected" : ""}>session (shared)</option></select></label>
+      <button class="primary" id="run">Run</button>
+      <button class="ghost" id="runall">Run this case's variants</button>
+      <button class="ghost" id="approve" title="Accept the last run's levels (and rows, if the case has no hand oracle) as expectations">Approve result</button>
+    </div>
+    <div class="muted" style="margin-top:8px;font-size:12px">AI: <b>off</b> rules only · <b>replay</b> recorded answers (no key) · <b>live</b> calls the configured provider (uses quota; answers are recorded). Data: <b>full</b> everything · <b>no_qvd</b> up to V3 · <b>no_log</b> QVD headers only · <b>script_only</b> script + sources (V2) · <b>script_bare</b> script alone (V1).</div>
+    <div id="caseruns"></div>
+  </div>
+  <div id="result"></div>
+  <div class="card"><h2>Inputs</h2><div class="tabs" id="ftabs"></div><div id="fview"></div></div>`;
+  $("#picker").appendChild(chainPicker(sel.agents));
+  $("#ai").onchange = e => sel.ai = e.target.value;
+  $("#data").onchange = e => sel.data = e.target.value;
+  $("#mem").onchange = e => sel.memory = e.target.value;
+  $("#run").onclick = runCurrent;
+  $("#runall").onclick = runCaseVariants;
+  $("#approve").onclick = approveCurrent;
+  renderCaseRuns();
+  renderFiles();
+  if (S.result) renderResult(S.result, $("#result"));
+}
+function renderCaseRuns() {
+  const last = S.detail.last || [];
+  $("#caseruns").innerHTML = last.length ? `<h4>Last runs</h4><div class="row">${last.map(l => `<span class="badge ${l.status}" style="cursor:pointer" data-ai="${l.variant.ai}" data-data="${l.variant.data}" title="click to run again">${esc(l.variant.ai)} · ${esc(l.variant.data)}${l.chain ? " · agents " + l.chain.join(",") : ""} · ${l.status}</span>`).join("")}</div>` : "";
+  for (const el of document.querySelectorAll("#caseruns .badge")) el.onclick = () => { S.sel.ai = el.dataset.ai; S.sel.data = el.dataset.data; renderCase(); runCurrent(); };
+}
+function renderFiles() {
+  const d = S.detail;
+  const files = [{ name: "case.yaml", kind: "text", text: d.case_yaml }, ...d.files, ...d.expected];
+  const cur = S.fileSel && files.find(f => f.name === S.fileSel) ? S.fileSel : (files.find(f => f.name.endsWith(".qvs")) || files[0]).name;
+  $("#ftabs").innerHTML = files.map(f => `<button class="${f.name === cur ? "on" : ""}" data-f="${esc(f.name)}">${esc(f.name)}</button>`).join("");
+  for (const b of document.querySelectorAll("#ftabs button")) b.onclick = () => { S.fileSel = b.dataset.f; renderFiles(); };
+  const f = files.find(x => x.name === cur);
+  $("#fview").innerHTML = fileView(f);
+}
+function fileView(f) {
+  if (!f) return "";
+  if (f.kind === "text") return f.name.endsWith(".qvs") ? `<pre class="lines">${esc(f.text).split("\n").map(l => `<span>${l || " "}</span>`).join("")}</pre>` : `<pre class="wrap">${esc(f.text)}</pre>`;
+  if (f.kind === "table") return `<div class="muted" style="margin-bottom:4px">${f.total} rows${f.total > f.rows.length ? ", first " + f.rows.length + " shown" : ""}</div>` + table(f.columns, f.rows);
+  return `<div class="muted">${esc(f.name)} · ${f.bytes} bytes ${f.error ? "· " + esc(f.error) : ""}</div>`;
+}
+function table(cols, rows, cls) {
+  return `<div class="scroll"><table><thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>${rows.map((r, i) => `<tr class="${cls ? cls(r, i) : ""}">${r.map(v => `<td>${fmt(v)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+async function runCurrent() {
+  const btn = $("#run"); if (btn) { btn.disabled = true; btn.textContent = "Running…"; }
+  $("#result").innerHTML = '<div class="card"><div class="muted">Running ' + esc(S.current) + "…</div></div>";
+  try {
+    S.result = await api("/api/run", { case: S.current, agents: S.sel.agents, ai: S.sel.ai, data: S.sel.data, memory: S.sel.memory });
+    renderResult(S.result, $("#result"));
+    await refreshCases();
+  } catch (e) { $("#result").innerHTML = `<div class="card note">${esc(e.message)}</div>`; }
+  if (btn) { btn.disabled = false; btn.textContent = "Run"; }
+}
+async function runCaseVariants() {
+  const v = S.detail.variants || {};
+  for (const ai of v.ai || ["off"]) for (const data of v.data || ["full"]) {
+    S.sel.ai = ai; S.sel.data = data;
+    $("#ai").value = ai; $("#data").value = data;
+    await runCurrent();
+  }
+}
+async function approveCurrent() {
+  if (!confirm("Write this run's levels (and output rows when the case has no hand oracle) into case.yaml?")) return;
+  try {
+    const r = await api("/api/cases/approve", { case: S.current, ai: S.sel.ai, data: S.sel.data });
+    alert("Approved. Levels: " + JSON.stringify(r.levels) + (r.expected_rows_written.length ? "\nExpected rows written: " + r.expected_rows_written.join(", ") : ""));
+    S.detail = await api("/api/case/" + encodeURI(S.current)); renderCase();
+  } catch (e) { alert(e.message); }
+}
+async function refreshCases() {
+  S.cases = await api("/api/cases"); renderList();
+  if (S.detail) { const c = S.cases.find(x => x.id === S.current); if (c) { S.detail.last = c.last; renderCaseRuns(); } }
+}
+
+// ---------------------------------------------------------------- result
+function renderResult(r, el) {
+  const bad = r.checks.filter(c => !c.ok), good = r.checks.filter(c => c.ok);
+  const calls = (r.gateway && r.gateway.calls) || [];
+  el.innerHTML = `
+  <div class="card">
+    <div class="row"><h2 style="margin:0">Result</h2><span class="badge ${r.status}">${r.status.toUpperCase()}</span>
+      <span class="muted">${r.passed} checks passed · ${r.failed} failed · ${r.seconds}s · ai=${esc(r.variant.ai)} data=${esc(r.variant.data)}${calls.length ? " · " + calls.length + " model call(s)" : ""}</span></div>
+    <div class="tabs" id="rtabs"></div><div id="rview"></div>
+  </div>`;
+  const tabs = [["checks", `Checks (${r.checks.length})`], ["agents", `Agents (${r.steps.length})`], ["rows", `Rows (${Object.keys(r.rows).length})`], ["sql", "SQL"]];
+  if (calls.length) tabs.push(["calls", `Model calls (${calls.length})`]);
+  let cur = load("rtab", "checks"); if (!tabs.find(t => t[0] === cur)) cur = "checks";
+  const draw = () => {
+    $("#rtabs", el).innerHTML = tabs.map(([k, l]) => `<button class="${k === cur ? "on" : ""}" data-k="${k}">${l}</button>`).join("");
+    for (const b of el.querySelectorAll("#rtabs button")) b.onclick = () => { cur = b.dataset.k; store("rtab", cur); draw(); };
+    const v = $("#rview", el);
+    if (cur === "checks") v.innerHTML = r.checks.length ? `<table><thead><tr><th></th><th>Section</th><th>Check</th><th>Expected</th><th>Got</th><th></th></tr></thead><tbody>${[...bad, ...good].map(c => `<tr class="${c.ok ? "" : "bad"}"><td class="${c.ok ? "ok" : "bad"}">${c.ok ? "✓" : "✗"}</td><td>${esc(c.section)}</td><td>${esc(c.name)}</td><td>${fmt(c.expected)}</td><td>${fmt(c.actual)}</td><td class="muted">${esc(c.note)}</td></tr>`).join("")}</tbody></table>` : '<div class="muted">No expectations for this chain. Use the Agents and Rows tabs to inspect, then “Approve result” to keep it as expected.</div>';
+    if (cur === "agents") v.innerHTML = r.steps.map(stepView).join("");
+    if (cur === "rows") v.innerHTML = Object.entries(r.rows).map(([t, x]) => rowsView(t, x)).join("") || '<div class="muted">No table SQL was run (the chain needs agent 28, and data other than script_bare).</div>';
+    if (cur === "sql") v.innerHTML = sqlView(r);
+    if (cur === "calls") v.innerHTML = calls.map((c, i) => `<details><summary><b>#${i + 1} ${esc(c.route)}</b>${c.error ? `<span class="badge fail">${esc(c.error)}</span>` : `<span class="badge info">${esc(c.source)}</span><span class="muted">${esc(c.model)} · ${c.input_tokens ?? "?"}→${c.output_tokens ?? "?"} tokens · ${c.latency_ms} ms</span>`}</summary><div class="body">${c.output ? `<pre class="wrap">${esc(JSON.stringify(c.output, null, 2))}</pre>` : ""}</div></details>`).join("");
+  };
+  draw();
+}
+function stepView(s) {
+  const facts = s.facts || [], arts = s.artifacts || [];
+  const kinds = {}; for (const f of facts) kinds[f.kind] = (kinds[f.kind] || 0) + 1;
+  const m = Object.fromEntries(Object.entries(s.metrics || {}).filter(([k]) => k !== "agent"));
+  return `<details ${s.error ? "open" : ""}><summary><b>${s.number === 0 ? "▶" : s.number} ${esc(s.name)}</b><span class="badge k-${s.kind}">${s.kind}</span>${s.auto ? '<span class="chip">prerequisite</span>' : ""}${s.error ? `<span class="badge fail">error</span>` : `<span class="badge pass">ran</span>`}<span class="muted">${m.latency_ms ?? ""} ms · ${facts.length} facts · ${(s.events || []).join(", ")}</span></summary><div class="body">
+    ${s.error ? `<pre class="wrap" style="color:var(--fail)">${esc(s.traceback || s.error)}</pre>` : ""}
+    <h4>Metrics</h4><div class="kv">${Object.entries(m).map(([k, v]) => `<div>${esc(k)}</div><div>${fmt(v)}</div>`).join("")}</div>
+    ${s.outputs ? `<h4>Outputs</h4><pre class="wrap">${esc(JSON.stringify(s.outputs, null, 2))}</pre>` : ""}
+    ${facts.length ? `<h4>Facts proposed (${Object.entries(kinds).map(([k, n]) => k + " ×" + n).join(", ")})</h4>${table(["kind", "subject", "object", "trust", "value"], facts.slice(0, 300).map(f => [f.kind, f.subject, f.object, f.trust, f.value]))}` : ""}
+    ${arts.length ? `<h4>Artifacts</h4>${arts.map(a => `<details><summary>${esc(a.key)} <span class="muted">${a.bytes ?? ""} bytes</span></summary><div class="body">${a.text != null ? `<pre>${esc(a.text)}</pre>` : '<span class="muted">binary</span>'}</div></details>`).join("")}` : ""}
+  </div></details>`;
+}
+function rowsView(t, x) {
+  const head = `<div class="row"><b>${esc(t)}</b>${x.ok === true ? '<span class="badge pass">rows match</span>' : x.ok === false ? '<span class="badge fail">rows differ</span>' : '<span class="badge info">output (no expected rows)</span>'}${x.error ? `<span class="muted">${esc(x.error)}</span>` : ""}</div>`;
+  if (x.expected == null) return `<div class="card" style="padding:10px">${head}${x.actual ? table(x.columns, x.actual) : ""}</div>`;
+  const miss = new Set((x.missing || []).map(r => JSON.stringify(r))), extra = new Set((x.extra || []).map(r => JSON.stringify(r)));
+  const norm = r => JSON.stringify(r.map(v => v === null || v === "" ? null : typeof v === "number" ? (Number.isInteger(v) ? String(v) : String(+v.toFixed(9))) : String(v)));
+  const ac = x.actual_columns || x.columns, idx = x.columns.map(c => ac.indexOf(c));
+  const actual = (x.actual || []).map(r => idx.every(i => i >= 0) ? idx.map(i => r[i]) : r);
+  return `<div class="card" style="padding:10px">${head}
+    ${(x.missing || []).length || (x.extra || []).length ? `<div class="muted" style="margin:4px 0">${(x.missing || []).length} expected row(s) missing (red), ${(x.extra || []).length} unexpected row(s) (amber)</div>` : ""}
+    <div class="grid2"><div><h4>Expected (oracle)</h4>${table(x.columns, x.expected, r => miss.has(norm(r)) ? "miss" : "")}</div>
+    <div><h4>SQL result (local venue)</h4>${x.actual ? table(idx.every(i => i >= 0) ? x.columns : ac, actual, r => extra.has(norm(r)) ? "extra" : "") : ""}</div></div></div>`;
+}
+function sqlView(r) {
+  const out = [];
+  for (const s of r.steps) for (const a of s.artifacts || []) if (a.key.endsWith(".sql") && a.text) out.push(`<details><summary><b>${esc(a.key.split("/").slice(-1)[0])}</b><span class="muted">${esc(a.key)}</span></summary><div class="body"><pre>${esc(a.text)}</pre></div></details>`);
+  return out.join("") || '<div class="muted">No SQL artifacts in this chain (add agent 24, synthesize, or 20, publish).</div>';
+}
+
+// ---------------------------------------------------------------- matrix
+function renderMatrix() {
+  const ais = load("m.ai", ["off"]), datas = load("m.data", ["full"]);
+  $("#main").innerHTML = `<div class="card"><h2>Matrix: every case × chosen variants</h2>
+    <div class="controls"><label>AI modes<select id="mai" multiple size="3">${S.meta.ai_modes.map(x => `<option ${ais.includes(x) ? "selected" : ""}>${x}</option>`).join("")}</select></label>
+    <label>Data variants<select id="mdata" multiple size="5">${S.meta.data_variants.map(x => `<option ${datas.includes(x) ? "selected" : ""}>${x}</option>`).join("")}</select></label>
+    <label>Filter<input id="mfilter" value="${esc($("#search").value)}" placeholder="case id contains…"></label>
+    <label><span><input type="checkbox" id="mown" checked> each case's own variants only</span></label>
+    <button class="primary" id="mrun">Run matrix</button></div>
+    <div class="muted" style="margin-top:8px">Runs every case with its default agent chain. “Own variants only” skips combinations a case does not declare (for example replay on a case with no recordings). Live AI uses provider quota.</div></div>
+    <div class="card" id="mout"><div class="muted">Not run yet. Previous results show as dots in the case list.</div></div>`;
+  $("#mrun").onclick = runMatrix;
+}
+async function runMatrix() {
+  const ais = [...$("#mai").selectedOptions].map(o => o.value), datas = [...$("#mdata").selectedOptions].map(o => o.value);
+  store("m.ai", ais); store("m.data", datas);
+  const q = $("#mfilter").value.toLowerCase(), own = $("#mown").checked;
+  const cases = S.cases.filter(c => !q || c.id.toLowerCase().includes(q));
+  const cols = ais.flatMap(a => datas.map(d => [a, d]));
+  const res = {};
+  const draw = () => {
+    const n = s => Object.values(res).filter(x => x === s).length;
+    $("#mout").innerHTML = `<div class="row" style="margin-bottom:8px"><span class="badge pass">${n("pass")} pass</span><span class="badge fail">${n("fail") + n("error") + n("xpass")} fail</span><span class="badge xfail">${n("xfail")} known gaps</span></div>
+    <div class="scroll" style="max-height:none"><table class="matrix"><thead><tr><th>Case</th>${cols.map(([a, d]) => `<th>${a}<br>${d}</th>`).join("")}</tr></thead><tbody>${cases.map(c => `<tr><td><a href="#" data-open="${esc(c.id)}">${esc(c.id)}</a></td>${cols.map(([a, d]) => { const k = c.id + "|" + a + "|" + d, s = res[k]; return `<td class="cell ${s || ""}" data-k="${esc(k)}">${s ? s : skip(c, a, d) ? "–" : "·"}</td>`; }).join("")}</tr>`).join("")}</tbody></table></div>`;
+    for (const a of document.querySelectorAll("[data-open]")) a.onclick = e => { e.preventDefault(); openCase(a.dataset.open); };
+    for (const td of document.querySelectorAll("td.cell")) if (res[td.dataset.k]) td.onclick = () => { const [id, ai, data] = td.dataset.k.split("|"); openCase(id, { ai, data }); };
+  };
+  const skip = (c, a, d) => own && (!(c.variants.ai || ["off"]).includes(a) || !(c.variants.data || ["full"]).includes(d));
+  draw();
+  $("#mrun").disabled = true;
+  for (const c of cases) for (const [a, d] of cols) {
+    if (skip(c, a, d)) continue;
+    const k = c.id + "|" + a + "|" + d; res[k] = "run"; draw();
+    try { res[k] = (await api("/api/run", { case: c.id, ai: a, data: d })).status; } catch (e) { res[k] = "error"; }
+    draw();
+  }
+  $("#mrun").disabled = false;
+  await refreshCases();
+}
+
+// ---------------------------------------------------------------- playground
+function renderPlayground() {
+  const pg = S.pg ||= load("pg", { script: "LIB CONNECT TO 'Dremio_Shop';\n\nOrders:\nLOAD OrderID, Customer, Qty * Price AS Amount;\nSQL SELECT OrderID, Customer, Qty, Price FROM \"shop\".\"raw\".\"orders\";\n", reload_log: "", sources: [{ path: "shop/raw/orders", csv: "OrderID,Customer,Qty,Price\n1,acme,2,10.5\n2,bolt,1,99" }], expected: [{ path: "Orders", csv: "OrderID,Customer,Amount\n1,acme,21\n2,bolt,99" }], agents: [1, 27, 28, 24, 25, 26], ai: "off" });
+  $("#main").innerHTML = `<div class="card"><h2>Playground</h2>
+    <div class="muted">Paste a Qlik script, give source tables as CSV (path <code>space/folder/table</code> for <code>"space"."folder"."table"</code>, or <code>files/name</code> for <code>lib://…/name.csv</code>) and, if you know them, the rows each table should hold. Real client scripts: save them as <b>private</b> (git-ignored).</div>
+    <h4>Script</h4><textarea id="pscript" rows="12">${esc(pg.script)}</textarea>
+    <h4>Reload log (optional)</h4><textarea id="plog" rows="4" placeholder="paste a reload log, or leave empty">${esc(pg.reload_log)}</textarea>
+    <div class="grid2"><div><h4>Source tables</h4><div id="psrc"></div><button class="ghost" id="addsrc">+ source</button></div>
+    <div><h4>Expected tables (optional oracle)</h4><div id="pexp"></div><button class="ghost" id="addexp">+ expected table</button></div></div>
+    <h4>Agents</h4><div id="ppick"></div>
+    <div class="controls" style="margin-top:10px"><label>AI<select id="pai">${S.meta.ai_modes.map(x => `<option ${x === pg.ai ? "selected" : ""}>${x}</option>`).join("")}</select></label>
+    <button class="primary" id="prun">Run</button></div></div>
+    <div id="presult"></div>
+    <div class="card" id="psave" style="display:none"><h2>Save as a case</h2><div class="controls">
+      <label>Suite<input id="ssuite" value="custom"></label><label>Name<input id="sname" placeholder="my_case"></label>
+      <label>Title<input id="stitle" size="40"></label><label><span><input type="checkbox" id="spriv"> private (real client data, git-ignored)</span></label>
+      <button class="primary" id="sbtn">Save</button></div></div>`;
+  const lists = () => {
+    for (const [key, el, label] of [["sources", "#psrc", "path"], ["expected", "#pexp", "table name"]]) {
+      $(el).innerHTML = pg[key].map((s, i) => `<div style="margin-bottom:8px"><div class="row"><input data-k="${key}" data-i="${i}" data-f="path" value="${esc(s.path)}" placeholder="${label}" style="flex:1"><button class="ghost" data-del="${key}" data-i="${i}">✕</button></div><textarea data-k="${key}" data-i="${i}" data-f="csv" rows="4">${esc(s.csv)}</textarea></div>`).join("");
+    }
+    for (const x of document.querySelectorAll("[data-k]")) x.oninput = () => { pg[x.dataset.k][+x.dataset.i][x.dataset.f] = x.value; store("pg", pg); };
+    for (const b of document.querySelectorAll("[data-del]")) b.onclick = () => { pg[b.dataset.del].splice(+b.dataset.i, 1); lists(); store("pg", pg); };
+  };
+  lists();
+  $("#addsrc").onclick = () => { pg.sources.push({ path: "", csv: "" }); lists(); };
+  $("#addexp").onclick = () => { pg.expected.push({ path: "", csv: "" }); lists(); };
+  $("#ppick").appendChild(chainPicker(pg.agents, () => store("pg", pg)));
+  $("#pscript").oninput = e => { pg.script = e.target.value; store("pg", pg); };
+  $("#plog").oninput = e => { pg.reload_log = e.target.value; store("pg", pg); };
+  $("#pai").onchange = e => { pg.ai = e.target.value; store("pg", pg); };
+  $("#prun").onclick = async () => {
+    $("#prun").disabled = true; $("#presult").innerHTML = '<div class="card muted">Running…</div>';
+    try {
+      const r = await api("/api/playground", { script: pg.script, reload_log: pg.reload_log, sources: pg.sources.filter(s => s.path && s.csv), expected: pg.expected.filter(s => s.path && s.csv), agents: pg.agents, ai: pg.ai });
+      S.pgid = r.playground_id; renderResult(r, $("#presult")); $("#psave").style.display = "";
+    } catch (e) { $("#presult").innerHTML = `<div class="card note">${esc(e.message)}</div>`; }
+    $("#prun").disabled = false;
+  };
+  $("#sbtn").onclick = async () => {
+    try {
+      const r = await api("/api/cases/save", { playground_id: S.pgid, suite: $("#ssuite").value, name: $("#sname").value, title: $("#stitle").value || $("#sname").value, private: $("#spriv").checked });
+      await refreshCases(); alert("Saved to " + r.saved); openCase(r.id);
+    } catch (e) { alert(e.message); }
+  };
+}
+
+// ---------------------------------------------------------------- agents
+function renderAgents() {
+  const cover = n => S.cases.filter(c => c.chain.includes(n) || (n !== 0 && c.chain.includes(0)));
+  $("#main").innerHTML = `<div class="card"><h2>Agents</h2><div class="muted" style="margin-bottom:8px">Kinds: D deterministic · H hybrid (rules first, AI for what rules cannot do, every AI answer checked by code) · L LLM-led. Click a count to filter the cases.</div>
+    <table><thead><tr><th>#</th><th>Agent</th><th>Kind</th><th>Needs</th><th>Model routes</th><th>Facts it writes</th><th>Cases</th></tr></thead><tbody>
+    ${S.meta.agents.map(a => `<tr><td><b>${a.number === 0 ? "▶" : a.number}</b></td><td>${esc(a.name)}<div class="muted">${esc(a.step)}</div></td><td><span class="badge k-${a.kind}">${KIND[a.kind]}</span></td><td>${a.needs.join(", ") || "–"}</td><td>${a.routes.map(r => `<span class="chip">${esc(r)}</span>`).join("") || "–"}</td><td>${a.writes.map(r => `<span class="chip">${esc(r)}</span>`).join("")}</td><td><a href="#" data-agent="${a.number}">${cover(a.number).length}</a></td></tr>`).join("")}
+    </tbody></table></div>`;
+  for (const a of document.querySelectorAll("[data-agent]")) a.onclick = e => { e.preventDefault(); const n = +a.dataset.agent; $("#search").value = ""; S.cases.forEach(() => 0); renderList(); filterByAgent(n); };
+}
+function filterByAgent(n) {
+  const ids = new Set(S.cases.filter(c => c.chain.includes(n)).map(c => c.id));
+  for (const el of document.querySelectorAll(".case")) el.style.display = ids.has(el.dataset.id) ? "" : "none";
+}
+
+// ---------------------------------------------------------------- memory
+async function renderMemory() {
+  const facts = await api("/api/memory");
+  $("#main").innerHTML = `<div class="card"><h2>Session translation memory</h2>
+    <div class="muted">Runs with Memory = “session” share one knowledge store, so an answer learned in one run is reused by the next (no model call). Use it to test learning: run a case with AI live or replay, then again, and compare the model calls.</div>
+    <div class="row" style="margin:10px 0"><button class="ghost" id="mreset">Reset session memory</button><span class="muted">${facts.length} entries</span></div>
+    ${facts.length ? table(["subject", "trust", "status", "replaces rule", "statement", "sql"], facts.map(f => [f.subject, f.trust, f.value.status, f.value.replaces_rule, f.value.statement, f.value.sql])) : ""}</div>`;
+  $("#mreset").onclick = async () => { await api("/api/memory/reset", {}); renderMemory(); };
+}
+
+// ---------------------------------------------------------------- start
+(async function () {
+  S.meta = await api("/api/meta");
+  S.cases = await api("/api/cases");
+  renderList();
+  const h = new URLSearchParams(location.hash.slice(1));
+  const cur = h.get("case") || load("current", null);
+  const v = h.get("run") ? { ai: h.get("ai") || "off", data: h.get("data") || "full" } : undefined;
+  if (h.get("view") && h.get("view") !== "case") show(h.get("view"));
+  else if (cur && S.cases.find(c => c.id === cur)) openCase(cur, v); else renderCase();
+})().catch(e => { $("#main").innerHTML = `<div class="card note">${esc(e.message)}</div>`; });
+</script>
+</body>
+</html>

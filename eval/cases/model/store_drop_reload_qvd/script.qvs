@@ -1,0 +1,13 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+Orders:
+LOAD OrderID, Customer, Qty, Price;
+SQL SELECT OrderID, Customer, Qty, Price FROM "shop"."raw"."orders";
+
+STORE Orders INTO [lib://QVD/Orders.qvd] (qvd);
+DROP TABLE Orders;
+
+Big:
+LOAD * FROM [lib://QVD/Orders.qvd] (qvd) WHERE Qty > 2;
+
+STORE Big INTO [lib://QVD/Big.qvd] (qvd);
