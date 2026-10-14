@@ -1,0 +1,28 @@
+[
+  {
+    "qInfo": {
+      "qId": "mTotal",
+      "qType": "measure"
+    },
+    "qMeasure": {
+      "qLabel": "Total Amount",
+      "qDef": "Sum(Amount)"
+    },
+    "qMetaDef": {
+      "title": "Total Amount"
+    }
+  },
+  {
+    "qInfo": {
+      "qId": "mLarge",
+      "qType": "measure"
+    },
+    "qMeasure": {
+      "qLabel": "Large Orders",
+      "qDef": "Sum({<OrderSize={'Large'}>} Amount)"
+    },
+    "qMetaDef": {
+      "title": "Large Orders"
+    }
+  }
+]

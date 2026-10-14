@@ -3,7 +3,7 @@ name = "adce-reversesql"
 version = "0.1.0"
 description = "BI IR to Dremio SQL: translation, composition, checks, validation"
 requires-python = ">=3.12"
-dependencies = ["adce-core", "adce-qlik", "sqlglot>=25", "pyqvd>=2.3"]
+dependencies = ["adce-core", "adce-qlik", "sqlglot>=25", "pyqvd>=2.3", "openpyxl>=3.1"]
 
 [project.scripts]
 adce = "adce_reversesql.cli:main"

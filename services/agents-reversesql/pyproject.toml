@@ -1,14 +1,15 @@
 [project]
 name = "adce-agents-reversesql"
 version = "0.1.0"
-description = "Reverse-SQL agents: synthesizer (24), query checker (25), reconciler (26); report parser (21) in P3"
+description = "Reverse-SQL agents: report parser (21), metric mapper (22), join planner (23), synthesizer (24), query checker (25), reconciler (26), lineage and publisher"
 requires-python = ">=3.12"
-dependencies = ["adce-core", "adce-qlik", "adce-reversesql"]
+dependencies = ["adce-core", "adce-qlik", "adce-reversesql", "adce-gateway"]
 
 [tool.uv.sources]
 adce-core = { workspace = true }
 adce-qlik = { workspace = true }
 adce-reversesql = { workspace = true }
+adce-gateway = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

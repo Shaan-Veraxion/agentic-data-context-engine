@@ -16,7 +16,7 @@ GRAMMAR = Path(__file__).with_name("load.lark")
 @lru_cache
 def _parser() -> Lark:
     return Lark(GRAMMAR.read_text(encoding="utf-8"), parser="lalr", lexer="contextual", propagate_positions=True,
-                maybe_placeholders=True)
+                maybe_placeholders=True, start=["start", "expr_only"])
 
 
 @dataclass
@@ -74,10 +74,18 @@ class _Builder:
             op, operand = node.children
             return Expr(kind="unop", name=str(op).upper(), args=[self.expr(operand)], text=text)
         if t == "call":
-            name, modifier, args = node.children
-            mod = str(modifier.children[0]).upper() if isinstance(modifier, Tree) else None
+            name, set_tok, *mods, args = node.children
+            words: list[str] = []
+            total_dims: list[str] | None = None
+            for m in mods:
+                if isinstance(m, Tree):
+                    words.append(str(m.children[0]).upper())
+                    if len(m.children) > 1 and m.children[1] is not None:
+                        total_dims = [unquote_name(x.strip()) for x in str(m.children[1])[1:-1].split(",") if x.strip()]
             arg_nodes = args.children if isinstance(args, Tree) else []
-            return Expr(kind="call", name=str(name), modifier=mod, args=[self._arg(a) for a in arg_nodes], text=text)
+            return Expr(kind="call", name=str(name), modifier=" ".join(words) or None,
+                        set_expr=str(set_tok) if set_tok is not None else None, total_dims=total_dims,
+                        args=[self._arg(a) for a in arg_nodes], text=text)
         raise LoadParseError(f"unexpected expression node {t}")
 
     def _arg(self, node: Tree) -> Expr:
@@ -138,7 +146,7 @@ class _Builder:
 def parse_load(text: str) -> ParsedLoad:
     """text: the LOAD statement after label/prefix removal and variable expansion."""
     try:
-        tree = _parser().parse(text)
+        tree = _parser().parse(text, start="start")
     except LarkError as e:
         raise LoadParseError(str(e).splitlines()[0]) from e
     b = _Builder(text)
@@ -154,3 +162,15 @@ def parse_load(text: str) -> ParsedLoad:
     if group is not None:
         parsed.group_by = [b.expr(c) for c in group.children[2:]]
     return parsed
+
+
+def parse_expression(text: str) -> Expr:
+    """A chart expression (measure or calculated dimension); a leading '=' is allowed. Variables must already be
+    expanded."""
+    t = text.strip()
+    t = t[1:].lstrip() if t.startswith("=") else t
+    try:
+        tree = _parser().parse(t, start="expr_only")
+    except LarkError as e:
+        raise LoadParseError(str(e).splitlines()[0]) from e
+    return _Builder(t).expr(cast(Tree, tree).children[0])

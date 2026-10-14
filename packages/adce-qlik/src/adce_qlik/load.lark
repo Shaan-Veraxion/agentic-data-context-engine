@@ -2,6 +2,7 @@
 // Parsed with LALR and a contextual lexer, so keywords like TOTAL or ORDER stay usable as field names.
 
 ?start: load
+expr_only: expr                     // chart expressions (measures, calculated dimensions)
 
 load: LOAD [DISTINCT] fields [source] [filter] [group] [order]
 
@@ -14,7 +15,7 @@ source: FROM fileref [fmt]          -> from_file
       | RESIDENT tableref           -> resident
       | INLINE inline_body [fmt]    -> inline
       | AUTOGENERATE expr           -> autogenerate
-      | EXTENSION NAME "." NAME "(" [args] ")" -> extension
+      | EXTENSION NAME "(" [args] ")"   -> extension
 inline_body: BRACKETED | DQUOTED | SQUOTED
 fileref: BRACKETED | SQUOTED | DQUOTED | BAREPATH
 fmt: LPAR_FMT FMT_BODY? ")"
@@ -48,8 +49,8 @@ order_item: expr [ASC | DESC]
      | DQUOTED                                  -> field_ref
      | "(" expr ")"
 
-call: NAME "(" [modifier] [args] ")"
-modifier: DISTINCT | TOTAL | ALL | NODISTINCT
+call: NAME "(" [SET_EXPR] modifier* [args] ")"
+modifier: DISTINCT | NODISTINCT | ALL | TOTAL [TOTAL_DIMS]
 args: arg ("," arg)*
 arg: expr | STAR -> star_arg
 
@@ -84,6 +85,8 @@ BRACKETED: /\[(?:[^\]]|\]\])*\]/
 DQUOTED: /"(?:[^"]|"")*"/
 SQUOTED: /'(?:[^']|'')*'/
 NUMBER: /(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?/
+SET_EXPR: /\{(?:[^{}]|\{[^{}]*\})*\}/   // set analysis, parsed separately (adce_qlik.set_analysis)
+TOTAL_DIMS: /<[^<>=]*>/                 // TOTAL <Field, Field>
 BAREPATH.2: /[A-Za-z][\w+.-]*:\/\/[^\s();]+|[^\s\[\]'"();,]+\.(qvd|csv|txt|tab|xlsx|xls|parquet|json|xml|qvx|html?)\b/i
 LPAR_FMT: "("
 FMT_BODY: /[^)]+/

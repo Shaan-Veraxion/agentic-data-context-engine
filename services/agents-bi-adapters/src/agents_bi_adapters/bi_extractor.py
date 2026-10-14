@@ -13,6 +13,7 @@ from adce_core.artifacts import content_key, put_json
 from adce_core.bi_ir import BIApp, LogicalSource, QlikTable, ScriptDocument, SourceSpan
 from adce_core.facts import Entity, Evidence, Fact, Trust
 from adce_qlik import parse_qvd_header, parse_reload_log, read_script
+from adce_qlik.frontend import attach_frontend
 from adce_qlik.model import build_app
 from adce_qlik.qvd import QvdHeader
 from adce_qlik.reload_log import ReloadLog
@@ -35,7 +36,7 @@ class BIExtractor(BaseAgent):
         number=27, name="bi_extractor", version="0.1.0", kind=AgentKind.DETERMINISTIC,
         triggers=["upload.classified[bi_app]", "bi_inputs.received"], emits=["bi_ir.ready"],
         writes=["bi_table", "contains", "reads_source", "stores_qvd", "reads_qvd", "uses_mapping", "variable_value",
-                "loaded_rows", "qvd_header", "bi_coverage", "bi_issue"])
+                "loaded_rows", "qvd_header", "bi_coverage", "bi_issue", "bi_measure", "bi_visual"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         """job: {"files": [{"name", "key", "class"}]} as produced by the intake router."""
@@ -61,6 +62,10 @@ class BIExtractor(BaseAgent):
                 if f.subject.startswith(f"app:{ctx.app_id}/var:") and f.trust == Trust.CONFIRMED}
         doc = read_script(ctx.app_id, scripts, log, seed_variables=seed)
         app = build_app(doc, qvd_columns={n: [fl.name for fl in h.fields] for n, h in headers.items()})
+        objects = {f["name"]: ctx.artifacts.get(f["key"]).decode("utf-8-sig") for f in files
+                   if f["class"] == "app_objects"}
+        if objects:
+            attach_frontend(app, objects)
 
         ir = {"document": doc.model_dump(mode="json"), "app": app.model_dump(mode="json")}
         payload = put_json(ctx.artifacts, content_key(f"apps/{ctx.app_id}/bi_ir", repr(ir).encode(), ".json"), ir)
@@ -68,7 +73,7 @@ class BIExtractor(BaseAgent):
 
         await self._record(ctx, result, doc, app, log, headers, logs[-1]["key"] if logs else None)
         result.outputs.update({"bi_ir_key": payload, "tables": [t.name for t in app.tables.values()],
-                               "sources": [s.key for s in app.sources]})
+                               "sources": [s.key for s in app.sources], "visuals": [v.id for v in app.visuals]})
         result.metrics.update({"statements": app.coverage.total, "coverage": round(app.coverage.ratio, 4),
                                "tables": len(app.tables), "issues": len(app.issues)})
         result.events.append("bi_ir.ready")
@@ -123,6 +128,20 @@ class BIExtractor(BaseAgent):
                 await self.propose(ctx, Fact(kind="variable_value", subject=f"{app_key}/var:{v.name}",
                                              value={"value": v.value, "origin": v.origin.value},
                                              trust=Trust.DOCUMENTED, evidence=evidence), result)
+        for m in app.measures:
+            await self.propose(ctx, Fact(kind="bi_measure", subject=f"{app_key}/measure:{m.id}",
+                                         value={"label": m.label, "expression": m.expression},
+                                         trust=Trust.DOCUMENTED,
+                                         evidence=[Evidence(kind="app_object", ref=f"{a}/measure:{m.id}")]), result)
+        for v in app.visuals:
+            await self.register(ctx, Entity(key=f"{app_key}/visual:{v.id}", type="Visual", name=v.title or v.id,
+                                            attributes={"app": app_key, "type": v.type, "sheet": v.sheet}))
+            await self.propose(ctx, Fact(
+                kind="bi_visual", subject=f"{app_key}/visual:{v.id}", trust=Trust.DOCUMENTED,
+                value={"type": v.type, "title": v.title, "sheet": v.sheet,
+                       "dimensions": [{"label": d.label, "field": d.field} for d in v.dimensions],
+                       "measures": [{"label": x.label, "expression": x.expression} for x in v.measures]},
+                evidence=[Evidence(kind="app_object", ref=f"{a}/visual:{v.id}")]), result)
         for name, h in headers.items():
             await self.propose(ctx, Fact(
                 kind="qvd_header", subject=f"qvd:{_match_store(app, name) or name}", trust=Trust.DOCUMENTED,

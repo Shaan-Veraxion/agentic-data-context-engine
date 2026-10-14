@@ -1,0 +1,55 @@
+{
+  "qInfo": {
+    "qId": "chRegion",
+    "qType": "table"
+  },
+  "title": "Sales by region",
+  "qHyperCubeDef": {
+    "qDimensions": [
+      {
+        "qDef": {
+          "qFieldDefs": [
+            "RegionName"
+          ],
+          "qFieldLabels": [
+            "Region"
+          ]
+        }
+      }
+    ],
+    "qMeasures": [
+      {
+        "qLibraryId": "mTotal",
+        "qDef": {
+          "qLabel": "",
+          "qDef": ""
+        }
+      },
+      {
+        "qLibraryId": "mLarge",
+        "qDef": {
+          "qLabel": "",
+          "qDef": ""
+        }
+      },
+      {
+        "qDef": {
+          "qLabel": "Customers",
+          "qDef": "Count(DISTINCT CustomerID)"
+        }
+      },
+      {
+        "qDef": {
+          "qLabel": "Customer Value",
+          "qDef": "Sum(TotalAmount)"
+        }
+      },
+      {
+        "qDef": {
+          "qLabel": "Share",
+          "qDef": "Sum(Amount) / Sum(TOTAL Amount)"
+        }
+      }
+    ]
+  }
+}

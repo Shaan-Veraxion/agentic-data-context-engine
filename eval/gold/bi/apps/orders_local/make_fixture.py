@@ -116,6 +116,86 @@ def reload_log(counts: dict[str, int]) -> str:
     return "\n".join(lines) + "\n"
 
 
+MEASURES = [  # master measures (library)
+    {"qInfo": {"qId": "mTotal", "qType": "measure"}, "qMeasure": {"qLabel": "Total Amount", "qDef": "Sum(Amount)"},
+     "qMetaDef": {"title": "Total Amount"}},
+    {"qInfo": {"qId": "mLarge", "qType": "measure"},
+     "qMeasure": {"qLabel": "Large Orders", "qDef": "Sum({<OrderSize={'Large'}>} Amount)"},
+     "qMetaDef": {"title": "Large Orders"}},
+]
+VISUALS = [
+    {"qInfo": {"qId": "chRegion", "qType": "table"}, "title": "Sales by region",
+     "qHyperCubeDef": {
+         "qDimensions": [{"qDef": {"qFieldDefs": ["RegionName"], "qFieldLabels": ["Region"]}}],
+         "qMeasures": [{"qLibraryId": "mTotal", "qDef": {"qLabel": "", "qDef": ""}},
+                       {"qLibraryId": "mLarge", "qDef": {"qLabel": "", "qDef": ""}},
+                       {"qDef": {"qLabel": "Customers", "qDef": "Count(DISTINCT CustomerID)"}},
+                       {"qDef": {"qLabel": "Customer Value", "qDef": "Sum(TotalAmount)"}},
+                       {"qDef": {"qLabel": "Share", "qDef": "Sum(Amount) / Sum(TOTAL Amount)"}}]}},
+    {"qInfo": {"qId": "chCustomer", "qType": "table"}, "title": "Orders by customer",
+     "qHyperCubeDef": {
+         "qDimensions": [{"qDef": {"qFieldDefs": ["CustomerName"], "qFieldLabels": ["Customer"]}}],
+         "qMeasures": [{"qDef": {"qLabel": "Amount", "qDef": "Sum(Amount)"}},
+                       {"qDef": {"qLabel": "Orders", "qDef": "Count(OrderID)"}}]}},
+    {"qInfo": {"qId": "kpiAvg", "qType": "kpi"}, "title": "Average order",
+     "qHyperCubeDef": {"qDimensions": [], "qMeasures": [{"qDef": {"qLabel": "Average order",
+                                                                  "qDef": "=Avg(Amount)"}}]}},
+]
+SHEET = {"qInfo": {"qId": "sheet1", "qType": "sheet"}, "qMetaDef": {"title": "Overview"},
+         "cells": [{"name": "chRegion"}, {"name": "chCustomer"}, {"name": "kpiAvg"}]}
+
+
+def chart_figures(orders: list[dict], totals: list[dict]) -> dict[str, tuple[list[str], list[list], list]]:
+    """The exported tables Qlik would show, computed from Qlik's association rules by hand (no SQL):
+    a measure counts each record of its own table once per dimension value; Sum/Count of nothing is 0."""
+    total_all = sum(o["Amount"] for o in orders)
+    value_of = {t["CustomerID"]: t["TotalAmount"] for t in totals}
+    by_region: dict[str, list[dict]] = defaultdict(list)
+    for o in orders:
+        by_region[o["RegionName"]].append(o)
+    region_rows = []
+    for region in sorted(by_region):
+        rs = by_region[region]
+        customers = {o["CustomerID"] for o in rs}
+        amount = sum(o["Amount"] for o in rs)
+        region_rows.append([region, amount, sum(o["Amount"] for o in rs if o["OrderSize"] == "Large"),
+                            len(customers), sum(value_of[c] for c in customers), round(amount / total_all, 6)])
+    region_totals = ["Totals", total_all, sum(o["Amount"] for o in orders if o["OrderSize"] == "Large"),
+                     len({o["CustomerID"] for o in orders}), sum(value_of.values()), 1]
+    by_customer: dict[str | None, list[dict]] = defaultdict(list)
+    for o in orders:
+        by_customer[o["CustomerName"]].append(o)
+    customer_rows = [["-" if name is None else name, sum(o["Amount"] for o in rs), len(rs)]
+                     for name, rs in sorted(by_customer.items(), key=lambda kv: kv[0] or "")]
+    customer_totals = ["Totals", total_all, len(orders)]
+    return {"Sales by region": (["Region", "Total Amount", "Large Orders", "Customers", "Customer Value", "Share"],
+                                region_rows, region_totals),
+            "Orders by customer": (["Customer", "Amount", "Orders"], customer_rows, customer_totals)}
+
+
+def write_frontend(orders: list[dict], totals: list[dict]) -> None:
+    import json
+
+    from openpyxl import Workbook
+
+    fe = HERE / "frontend"
+    (fe / "objects").mkdir(parents=True, exist_ok=True)
+    (fe / "measures.json").write_text(json.dumps(MEASURES, indent=2), encoding="utf-8")
+    for v in [*VISUALS, SHEET]:
+        (fe / "objects" / f"{v['qInfo']['qId']}.json").write_text(json.dumps(v, indent=2), encoding="utf-8")
+    ex = HERE / "exports"
+    ex.mkdir(exist_ok=True)
+    for title, (header, rows, total_row) in chart_figures(orders, totals).items():
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Sheet1"
+        ws.append(header)
+        ws.append(total_row)  # Qlik puts the totals row first by default
+        for r in rows:
+            ws.append(r)
+        wb.save(ex / f"{title}.xlsx")
+
+
 def main() -> None:
     src = HERE / "sources"
     for rel, header, rows in [("sales/crm/customers.csv", ["CustomerID", "Name", "Region"], CUSTOMERS),
@@ -136,6 +216,7 @@ def main() -> None:
         cols = list(rows[0])
         QvdTable.from_dict({"columns": cols, "data": [[r[c] for c in cols] for r in rows]}).to_qvd(
             str(qvd / f"{name}.qvd"))
+    write_frontend(orders, totals)
     print("orders", len(orders), "totals", len(totals), counts)
 
 

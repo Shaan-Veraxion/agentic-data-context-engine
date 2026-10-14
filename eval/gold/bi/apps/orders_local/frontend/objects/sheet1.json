@@ -1,0 +1,20 @@
+{
+  "qInfo": {
+    "qId": "sheet1",
+    "qType": "sheet"
+  },
+  "qMetaDef": {
+    "title": "Overview"
+  },
+  "cells": [
+    {
+      "name": "chRegion"
+    },
+    {
+      "name": "chCustomer"
+    },
+    {
+      "name": "kpiAvg"
+    }
+  ]
+}

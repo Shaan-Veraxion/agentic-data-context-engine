@@ -18,6 +18,7 @@ class FileClass(StrEnum):
     QLIKVIEW_PROJECT = "qlikview_project"
     APP_BINARY = "app_binary"  # .qvf / .qvw: not readable offline; needs server access (Mode A2)
     REPORT_EXPORT = "report_export"
+    APP_OBJECTS = "app_objects"  # Qlik Sense app objects (JSON): measures, dimensions, charts, sheets, variables
     CONNECTION_MAP = "connection_map"
     SOURCE_EXTRACT = "source_extract"  # local stand-in data for a logical source: sources/<space>/<...>/<table>.csv
     OTHER = "other"
@@ -25,6 +26,7 @@ class FileClass(StrEnum):
 
 _SCRIPT_HINT = re.compile(r"(?im)^\s*(\w+:\s*)?(load|sql\s+select|select|set|let|lib\s+connect|store|drop)\b")
 _LOG_HINT = re.compile(r"(?i)execution started|lines fetched|execution finished")
+_OBJECTS_HINT = re.compile(r'"(qHyperCubeDef|qMeasure|qDim|qInfo|qDefinition)"')
 
 
 def classify_file(name: str, head: bytes) -> FileClass:
@@ -40,6 +42,8 @@ def classify_file(name: str, head: bytes) -> FileClass:
     if ext in (".xlsx", ".xls", ".pdf", ".csv") and "connection" not in name.lower():
         return FileClass.REPORT_EXPORT
     text = head[:65536].decode("utf-8", errors="replace")
+    if ext == ".json" and _OBJECTS_HINT.search(text):
+        return FileClass.APP_OBJECTS
     if ext == ".xml" and ("<QlikView" in text or "-prj" in name.replace("\\", "/")):
         return FileClass.QLIKVIEW_PROJECT
     if "connection" in name.lower() and ext in (".csv", ".json", ".yaml", ".yml", ".txt"):

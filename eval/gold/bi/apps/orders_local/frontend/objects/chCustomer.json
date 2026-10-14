@@ -1,0 +1,35 @@
+{
+  "qInfo": {
+    "qId": "chCustomer",
+    "qType": "table"
+  },
+  "title": "Orders by customer",
+  "qHyperCubeDef": {
+    "qDimensions": [
+      {
+        "qDef": {
+          "qFieldDefs": [
+            "CustomerName"
+          ],
+          "qFieldLabels": [
+            "Customer"
+          ]
+        }
+      }
+    ],
+    "qMeasures": [
+      {
+        "qDef": {
+          "qLabel": "Amount",
+          "qDef": "Sum(Amount)"
+        }
+      },
+      {
+        "qDef": {
+          "qLabel": "Orders",
+          "qDef": "Count(OrderID)"
+        }
+      }
+    ]
+  }
+}

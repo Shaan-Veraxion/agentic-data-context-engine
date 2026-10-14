@@ -1,8 +1,9 @@
 """Reverse-SQL agents for the Qlik path.
 
-24 Synthesizer     renders the Dremio SQL per table (CTE chain with statement map) as artifacts
+24 Synthesizer     renders the Dremio SQL per table (CTE chain with statement map) and per chart as artifacts
 25 Query checker   runs the rule checks (syntax, translation, fields, determinism, inputs)
-26 Reconciler      executes in the venue available (local DuckDB until phase PD) and climbs the validation ladder
+26 Reconciler      executes in the venue available (local DuckDB until phase PD) and climbs the validation ladder;
+                   charts with an exported report reach V5 when every figure matches
 19 Lineage (lite)  dataset-level lineage from logical sources through Qlik tables to QVDs, OpenLineage-shaped
 20 Publisher (lite) writes the migration pack: SQL, lineage, validation report, review record, manifest
 """
@@ -17,7 +18,9 @@ from adce_core.agent import AgentContext, AgentKind, AgentResult, AgentSpec, Bas
 from adce_core.artifacts import put_json
 from adce_core.facts import Evidence, Fact, Trust
 from adce_qlik import parse_reload_log, read_qvd_header
+from adce_reversesql.charts import translate_charts
 from adce_reversesql.check import check_table
+from adce_reversesql.figures import check_exports
 from adce_reversesql.local import read_qvd
 from adce_reversesql.reconcile import Level, Reconciler
 from adce_reversesql.runtime import load_translation, local_venue_from_files
@@ -41,7 +44,8 @@ def output_tables(loaded: Any) -> list[str]:
 
 class Synthesizer(BaseAgent):
     spec = AgentSpec(number=24, name="sql_synthesizer", version="0.1.0", kind=AgentKind.HYBRID,
-                     triggers=["bi_transform.ready"], emits=["sql.candidates"], writes=["sql_candidate"])
+                     triggers=["bi_transform.ready", "joins.planned"], emits=["sql.candidates"],
+                     writes=["sql_candidate", "chart_sql"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         result = AgentResult()
@@ -60,7 +64,21 @@ class Synthesizer(BaseAgent):
                 value={"sql_sha256": hashlib.sha256(sql.encode()).hexdigest(), "final_cte": r.final_cte,
                        "dialect": "dremio"},
                 evidence=[Evidence(kind="artifact", ref=key)]), result)
-        result.outputs["sql_keys"] = sql_keys
+        chart_keys = {}
+        for c in translate_charts(loaded.app, loaded.translation):
+            subject = f"app:{ctx.app_id}/visual:{c.visual_id}"
+            value: dict[str, Any] = {"complete": c.complete, "tier": c.tier, "tables": c.tables, "notes": c.notes,
+                                     "untranslated": c.untranslated}
+            evidence = [Evidence(kind="app_object", ref=f"{ctx.app_id}/visual:{c.visual_id}")]
+            if c.sql:
+                key = ctx.artifacts.put(f"apps/{ctx.app_id}/runs/{ctx.run_id}/sql/charts/{c.visual_id}.sql",
+                                        c.sql.encode(), "application/sql")
+                chart_keys[c.visual_id] = key
+                value["sql_sha256"] = hashlib.sha256(c.sql.encode()).hexdigest()
+                evidence.append(Evidence(kind="artifact", ref=key))
+            await self.propose(ctx, Fact(kind="chart_sql", subject=subject, value=value, trust=Trust.INFERRED,
+                                         evidence=evidence), result)
+        result.outputs.update({"sql_keys": sql_keys, "chart_keys": chart_keys})
         result.events.append("sql.candidates")
         return result
 
@@ -90,8 +108,8 @@ class QueryChecker(BaseAgent):
 
 class ReconcilerAgent(BaseAgent):
     spec = AgentSpec(number=26, name="reconciler", version="0.1.0", kind=AgentKind.HYBRID,
-                     triggers=["sql.checked"], emits=["report_sql.validated"], writes=["report_sql"],
-                     routes=["diagnose_mismatch"])
+                     triggers=["sql.checked", "metrics.mapped"], emits=["report_sql.validated"],
+                     writes=["report_sql", "figures_validated"], routes=["diagnose_mismatch"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         """job: bi_ir_key, translation_key, files (classified uploads, for reload log, QVDs, source extracts)."""
@@ -140,12 +158,50 @@ class ReconcilerAgent(BaseAgent):
                        "failed": failed[:20], "errors": tv.errors,
                        "sql_sha256": hashlib.sha256((tv.sql or "").encode()).hexdigest()},
                 evidence=evidence), result)
+        figures = await self._figures(ctx, result, loaded, venue, files)
         key = put_json(ctx.artifacts, f"apps/{ctx.app_id}/runs/{ctx.run_id}/validation.json", report)
         result.artifacts.append(key)
-        result.outputs.update({"validation_key": key,
-                               "levels": {r["table"]: r["level"] for r in report}})
+        fkey = put_json(ctx.artifacts, f"apps/{ctx.app_id}/runs/{ctx.run_id}/figures.json", figures)
+        result.artifacts.append(fkey)
+        result.outputs.update({"validation_key": key, "figures_key": fkey,
+                               "levels": {r["table"]: r["level"] for r in report},
+                               "chart_levels": {f["visual"]: f["level"] for f in figures if f.get("visual")}})
         result.events.append("report_sql.validated")
         return result
+
+
+    async def _figures(self, ctx: AgentContext, result: AgentResult, loaded: Any, venue: Any,
+                       files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """V5: compare each exported report with the SQL of the chart it came from (local venue until phase PD)."""
+        exports = {f["name"]: ctx.artifacts.get(f["key"]) for f in files if f["class"] == "report_export"}
+        if not exports or not loaded.app.visuals:
+            return []
+        out = []
+        keys = {f["name"]: f["key"] for f in files}
+        for r in check_exports(loaded.app, loaded.translation, venue, exports):
+            c = r.check
+            entry: dict[str, Any] = {"export": r.file, "sheet": r.sheet,
+                                     "visual": r.match.visual_id if r.match else None,
+                                     "level": "V5" if r.level_v5 else ("compared" if c else "not compared"),
+                                     "venue": "local", "problems": r.problems}
+            if c is not None:
+                entry.update({"figures": c.figures, "matched": c.matched, "totals": c.totals_checked,
+                              "totals_matched": c.totals_matched, "rows_expected": c.rows_expected,
+                              "rows_actual": c.rows_actual, "missing_rows": [list(x) for x in c.missing_rows[:20]],
+                              "extra_rows": [list(x) for x in c.extra_rows[:20]],
+                              "diffs": [{"row": list(d.row), "measure": d.measure, "expected": d.expected,
+                                         "actual": d.actual} for d in c.diffs[:20]]})
+            out.append(entry)
+            if entry["visual"]:
+                await self.propose(ctx, Fact(
+                    kind="figures_validated", subject=f"app:{ctx.app_id}/visual:{entry['visual']}",
+                    trust=Trust.VALIDATED if r.level_v5 else Trust.INFERRED,
+                    value={k: v for k, v in entry.items() if k != "visual"},
+                    evidence=[Evidence(kind="export", ref=keys.get(r.file, r.file), detail={"sheet": r.sheet}),
+                              Evidence(kind="query_result", ref=f"local:{ctx.run_id}:chart:{entry['visual']}")]),
+                    result)
+        result.metrics["charts_v5"] = sum(1 for f in out if f["level"] == "V5")
+        return out
 
 
 def lineage(app_id: str, loaded: Any) -> dict[str, Any]:
@@ -181,15 +237,22 @@ class Publisher(BaseAgent):
         loaded = load_translation(ctx.artifacts, job["bi_ir_key"], job.get("translation_key"))
         base = f"apps/{ctx.app_id}/packs/{ctx.run_id}"
         validation = json.loads(ctx.artifacts.get(job["validation_key"])) if job.get("validation_key") else []
+        figures = json.loads(ctx.artifacts.get(job["figures_key"])) if job.get("figures_key") else []
         files: dict[str, str] = {}
         for name in output_tables(loaded):
             sql = loaded.translation.table_sql(name)
             if sql:
                 files[f"sql/{name}.sql"] = ctx.artifacts.put(f"{base}/sql/{name}.sql", sql.encode(), "application/sql")
+        charts = translate_charts(loaded.app, loaded.translation)
+        for c in charts:
+            if c.sql:
+                files[f"sql/charts/{c.visual_id}.sql"] = ctx.artifacts.put(f"{base}/sql/charts/{c.visual_id}.sql",
+                                                                           c.sql.encode(), "application/sql")
         files["lineage.json"] = put_json(ctx.artifacts, f"{base}/lineage.json", lineage(ctx.app_id, loaded))
-        files["validation.md"] = ctx.artifacts.put(f"{base}/validation.md", _validation_md(validation).encode(),
-                                                   "text/markdown")
-        files["review.md"] = ctx.artifacts.put(f"{base}/review.md", _review_md(loaded).encode(), "text/markdown")
+        files["validation.md"] = ctx.artifacts.put(f"{base}/validation.md",
+                                                   _validation_md(validation, figures).encode(), "text/markdown")
+        files["review.md"] = ctx.artifacts.put(f"{base}/review.md", _review_md(loaded, charts).encode(),
+                                               "text/markdown")
         manifest = {"app_id": ctx.app_id, "run_id": ctx.run_id, "inputs": job.get("inputs", []),
                     "bi_ir_key": job["bi_ir_key"], "translation_key": job.get("translation_key"),
                     "software": {"adce": "0.1.0"}, "venue": "local (Dremio validation pending, phase PD)",
@@ -203,8 +266,9 @@ class Publisher(BaseAgent):
         return result
 
 
-def _validation_md(report: list[dict[str, Any]]) -> str:
-    lines = ["# Validation report", "", "Levels: V0 parsed · V1 checked · V2 executes · V3 row counts · V4 data.",
+def _validation_md(report: list[dict[str, Any]], figures: list[dict[str, Any]] | None = None) -> str:
+    lines = ["# Validation report", "",
+             "Levels: V0 parsed · V1 checked · V2 executes · V3 row counts · V4 data · V5 figures match exports.",
              "Venue `local` means DuckDB over QVD and source extracts; results are re-earned in Dremio in phase PD.",
              "", "| Table | Level | Venue | Comparisons | Failed |", "|---|---|---|---|---|"]
     for r in report:
@@ -219,13 +283,30 @@ def _validation_md(report: list[dict[str, Any]]) -> str:
             lines += [f"- rule `{x['name']}`: {x['message']}" for x in failed_rules]
             lines += [f"- {c['check']} {c['subject']}: expected {c['expected']}, got {c['actual']}" for c in bad]
             lines += [f"- error: {e}" for e in r["errors"]]
+    if figures:
+        lines += ["", "## Charts against exported reports", "",
+                  "| Export | Visual | Level | Figures | Totals | Rows (SQL / export) |", "|---|---|---|---|---|---|"]
+        for f in figures:
+            lines.append(f"| {f['export']} [{f['sheet']}] | {f['visual'] or '-'} | {f['level']} | "
+                         f"{f.get('matched', 0)}/{f.get('figures', 0)} | {f.get('totals_matched', 0)}/"
+                         f"{f.get('totals', 0)} | {f.get('rows_actual', '-')} / {f.get('rows_expected', '-')} |")
+        for f in figures:
+            if f["level"] != "V5":
+                lines += ["", f"### {f['export']} [{f['sheet']}]"]
+                lines += [f"- {p}" for p in f.get("problems", [])]
+                lines += [f"- {d['row']} {d['measure']}: expected {d['expected']}, got {d['actual']}"
+                          for d in f.get("diffs", [])]
     return "\n".join(lines) + "\n"
 
 
-def _review_md(loaded: Any) -> str:
+def _review_md(loaded: Any, charts: list[Any] | None = None) -> str:
     lines = ["# Review record", "", "## Statements not translated", ""]
     items = [(n, u) for n, r in loaded.translation.tables.items() for u in r.untranslated]
     lines += [f"- {n}: statement {u.statement} ({u.span}) - {u.reason} [{u.tier}]" for n, u in items] or ["- none"]
+    if charts:
+        lines += ["", "## Charts not translated", ""]
+        lines += [f"- {c.visual_id} {c.title!r}: {'; '.join(c.untranslated)} [{c.tier}]" for c in charts
+                  if c.untranslated] or ["- none"]
     lines += ["", "## Issues found while reading the script", ""]
     lines += [f"- {i.code}: {i.message}" for i in loaded.app.issues] or ["- none"]
     inputs = sorted({i for r in loaded.translation.tables.values() for i in r.inputs})

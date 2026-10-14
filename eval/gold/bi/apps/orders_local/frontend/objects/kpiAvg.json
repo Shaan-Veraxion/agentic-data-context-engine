@@ -1,0 +1,18 @@
+{
+  "qInfo": {
+    "qId": "kpiAvg",
+    "qType": "kpi"
+  },
+  "title": "Average order",
+  "qHyperCubeDef": {
+    "qDimensions": [],
+    "qMeasures": [
+      {
+        "qDef": {
+          "qLabel": "Average order",
+          "qDef": "=Avg(Amount)"
+        }
+      }
+    ]
+  }
+}
