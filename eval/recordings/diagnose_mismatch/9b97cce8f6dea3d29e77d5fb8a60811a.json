@@ -1,0 +1,42 @@
+{
+  "binding": "groq:openai/gpt-oss-120b",
+  "cost_usd": 0.0,
+  "inputs": {
+    "failed_comparisons": [
+      "lib://QVD/Products.qvd.PriceTag.shapes: value formats differ (a = a varying word, 9 = a number, other characters and words common to all values shown as they are): expected ['P9', 'P9.9'], got ['P9.9']",
+      "lib://QVD/Products.qvd.PriceTag.values: the set of values differs (fingerprints dc609e99a359de5b vs 20f426d000f067e6)"
+    ],
+    "level": "V3",
+    "previous_attempts": [],
+    "settings": {},
+    "statements": [
+      {
+        "input_columns": [
+          "ID",
+          "Name",
+          "Price"
+        ],
+        "sql": "SELECT\n  \"src\".\"ID\" AS \"ID\",\n  \"src\".\"Name\" AS \"Name\",\n  \"src\".\"Price\" AS \"Price\",\n  'P' || COALESCE(CAST(\"src\".\"Price\" AS VARCHAR), '') AS \"PriceTag\"\nFROM src",
+        "statement": 1,
+        "text": "LOAD ID, Name, Price, 'P' & Price AS PriceTag"
+      }
+    ],
+    "table": "Products"
+  },
+  "model": "openai/gpt-oss-120b",
+  "output": {
+    "cause": "formatting",
+    "explanation": "Qlik concatenates the number Price to the string 'P' using its number formatting, which removes trailing decimal zeros (e.g., 9 becomes 'P9', 9.9 becomes 'P9.9'). The original Dremio SQL casted the number to VARCHAR, keeping the decimal point for whole numbers, so the integer Price produced a different format, causing the shape comparison to miss the 'P9' format. The replacement uses REGEXP_REPLACE to strip trailing '.0' and any subsequent zeros, reproducing Qlik's formatting and making both expected shapes ['P9','P9.9'] appear.",
+    "sql": "SELECT\n  \"src\".\"ID\" AS \"ID\",\n  \"src\".\"Name\" AS \"Name\",\n  \"src\".\"Price\" AS \"Price\",\n  'P' || COALESCE(REGEXP_REPLACE(CAST(\"src\".\"Price\" AS VARCHAR), '\\\\.?0+$', ''), '') AS \"PriceTag\"\nFROM src",
+    "statement": 1
+  },
+  "prompt_version": "v2",
+  "provider": "groq",
+  "route": "diagnose_mismatch",
+  "usage": {
+    "cache_read_tokens": 256,
+    "cache_write_tokens": 0,
+    "input_tokens": 633,
+    "output_tokens": 3561
+  }
+}

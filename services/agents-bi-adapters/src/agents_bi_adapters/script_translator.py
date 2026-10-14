@@ -14,7 +14,7 @@ from typing import Any
 from adce_core.agent import AgentContext, AgentKind, AgentResult, AgentSpec, BaseAgent
 from adce_core.artifacts import content_key, put_json
 from adce_core.facts import Evidence, Fact, Trust
-from adce_reversesql.ai_loop import MemoryEntry, TranslationMemory, normalise, translate_with_ai
+from adce_reversesql.ai_loop import MemoryEntry, TranslationMemory, normalise, repair_with_ai, translate_with_ai
 from adce_reversesql.compose import compose
 from adce_reversesql.runtime import load_translation, validator_from_files
 
@@ -24,7 +24,7 @@ from .bi_extractor import table_key
 class ScriptTranslator(BaseAgent):
     spec = AgentSpec(number=28, name="bi_script_translator", version="0.1.0", kind=AgentKind.HYBRID,
                      triggers=["bi_ir.ready"], emits=["bi_transform.ready"],
-                     writes=["bi_transform", "translation_memory"], routes=["translate_statement"])
+                     writes=["bi_transform", "translation_memory"], routes=["translate_statement", "diagnose_mismatch"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         result = AgentResult()
@@ -48,6 +48,12 @@ class ScriptTranslator(BaseAgent):
             validator = validator_from_files(ctx.artifacts, job["files"], loaded.app) if job.get("files") else None
             overrides, outcomes = await translate_with_ai(loaded.app, ctx.gateway, memory, overrides=overrides,
                                                           validator=validator, task=f"{ctx.run_id}:translate")
+            if validator is not None:
+                # agent 26's diagnosis, run here so corrected SQL flows to synthesis, checks and the pack: tables
+                # the rules translated but the data contradicts get one statement corrected (diagnose_mismatch)
+                overrides, fixes = await repair_with_ai(loaded.app, ctx.gateway, memory, validator,
+                                                        overrides=overrides, task=f"{ctx.run_id}:diagnose")
+                outcomes += fixes
             for o in outcomes:
                 ai_outcomes.append({"statement": o.statement, "table": o.table, "status": o.status,
                                     "attempts": len(o.attempts), "notes": o.notes})
@@ -96,7 +102,8 @@ class ScriptTranslator(BaseAgent):
         for f in latest.values():
             if f.value.get("status") != "disproved":
                 mem.entries.append(MemoryEntry(**{k: f.value[k] for k in ("statement", "input_columns", "sql",
-                                                                          "status", "app_id") if k in f.value}))
+                                                                          "status", "app_id", "replaces_rule")
+                                                  if k in f.value}))
         return mem
 
     async def _remember(self, ctx: AgentContext, result: AgentResult, e: MemoryEntry) -> None:
@@ -105,6 +112,6 @@ class ScriptTranslator(BaseAgent):
             kind="translation_memory", subject=f"memory:{key[:24]}", trust=Trust.VALIDATED
             if e.status == "ai_validated" else Trust.INFERRED,
             value={"statement": e.statement, "input_columns": e.input_columns, "sql": e.sql, "status": e.status,
-                   "app_id": e.app_id},
+                   "app_id": e.app_id, "replaces_rule": e.replaces_rule},
             evidence=[Evidence(kind="query_result" if e.status == "ai_validated" else "rule_check",
                                ref=f"{ctx.app_id}:{ctx.run_id}")]), result)

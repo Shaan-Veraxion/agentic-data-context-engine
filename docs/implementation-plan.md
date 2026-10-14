@@ -108,6 +108,15 @@ P4 and PD are broken into packages at the start of each phase.
 | sqlglot's Dremio dialect writes GROUP_CONCAT; Concat() is built as LISTAGG | Dremio uses LISTAGG | sqlglot fixes the dialect |
 | Disk space: building images needs several GB free; on 2026-10-15 the C: drive filled during the first image build; after freeing space both images built | Builds also run in CI (images job) | — |
 
+### LLM pathway (2026-10-14, fourth build session)
+| Decision | Why | Revisit if |
+|---|---|---|
+| Rules stay first; the LLM handles what they cannot (agent 28) and diagnoses rule output the data contradicts (agent 26's step), and code checks every answer | Code is the judge: Dremio syntax, input columns, table checks, and V3/V4 against reload logs and QVDs when they exist | — |
+| Failed checks go back to the model as feedback (up to 4 attempts); accepted answers enter a translation memory (file for the CLI, knowledge facts for agents), reused without a model call and given as examples | "Learn and improve": repeats are free and identical; corrections of rule output are re-checked on each new app's data before use | Memory grows large enough to need retrieval by embeddings |
+| Problems sent to a model never contain text values: V4 adds a value fingerprint and value formats (letters and digits masked; words common to every value of a column shown) | Diagnosable without data leaving; min/max of text columns are no longer sent | Client policy allows aggregates of text |
+| Development provider: Groq free tier, gpt-oss-120b (gpt-oss-20b fallback) through deploy/gateway/groq-free.toml | No billing; this laptop cannot run a strong local model. Free tier limits: ~8k tokens/min, 200k tokens/day for 120b; a request counts its output budget | Billing approved: change the config to Claude on Vertex |
+| Measured (live, fresh memory): untranslatable statements (longtail_local) 4/4 trials to V4; rule correction (rulefix_local) 3/4 trials, plus 2 failed single runs | Model answers vary between runs; recordings make CI deterministic | More fixtures and real apps |
+
 ## 4. Repository layout (as built)
 
 ```

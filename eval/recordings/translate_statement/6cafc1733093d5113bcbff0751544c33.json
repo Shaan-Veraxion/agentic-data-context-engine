@@ -1,0 +1,55 @@
+{
+  "binding": "groq:openai/gpt-oss-120b",
+  "cost_usd": 0.0,
+  "inputs": {
+    "examples": [],
+    "input_columns": [
+      "SaleID",
+      "Customer",
+      "SaleDate",
+      "AmountText",
+      "Path",
+      "Code"
+    ],
+    "input_relation": "src",
+    "previous_attempts": [
+      {
+        "problems": [
+          "columns not in src: [^0-9] (src has: SaleID, Customer, SaleDate, AmountText, Path, Code)"
+        ],
+        "sql": "SELECT \"src\".\"SaleID\" AS \"SaleID\",\"src\".\"Customer\" AS \"Customer\",\"src\".\"SaleDate\" AS \"SaleDate\",CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE) AS \"Amount\",SPLIT_PART(\"src\".\"Path\",'/',3) AS \"Country\",REGEXP_REPLACE(\"src\".\"Code\",\"[^0-9]\",\"\") AS \"CodeDigits\",ROUND(CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE) / 10) * 10 AS \"AmountRounded\",CONCAT(CAST(FLOOR(CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE) / 500) * 500 AS VARCHAR),' <= ',CASE WHEN CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE) = FLOOR(CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE)) THEN CAST(FLOOR(CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE)) AS VARCHAR) ELSE CAST(CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE) AS VARCHAR) END,' < ',CAST(FLOOR(CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE) / 500) * 500 + 500 AS VARCHAR)) AS \"AmountBand\" FROM src"
+      },
+      {
+        "problems": [
+          "field_aggregate lib://QVD/Sales.qvd.AmountBand.distinct: expected 5, got 7",
+          "lib://QVD/Sales.qvd.AmountBand.min: differs (text values are never shown; see the formats)",
+          "lib://QVD/Sales.qvd.AmountBand.max: differs (text values are never shown; see the formats)",
+          "lib://QVD/Sales.qvd.AmountBand.shapes: value formats differ (a = a varying word, 9 = a number, other characters and words common to all values shown as they are): expected ['9 <= x < 9'], got ['9.9 <= 9.9 < 9.9']",
+          "lib://QVD/Sales.qvd.AmountBand.values: the set of values differs (fingerprints 2e1b273b3da861fa vs edec0a08f34a963b)"
+        ],
+        "sql": "SELECT \"src\".\"SaleID\" AS \"SaleID\",\"src\".\"Customer\" AS \"Customer\",\"src\".\"SaleDate\" AS \"SaleDate\",CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE) AS \"Amount\",SPLIT_PART(\"src\".\"Path\",'/',3) AS \"Country\",REGEXP_REPLACE(\"src\".\"Code\",'[^0-9]','') AS \"CodeDigits\",ROUND(CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE) / 10) * 10 AS \"AmountRounded\",(CAST(FLOOR(CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE) / 500) * 500 AS VARCHAR) || ' <= ' || CASE WHEN CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE) = FLOOR(CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE)) THEN CAST(FLOOR(CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE)) AS VARCHAR) ELSE CAST(CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE) AS VARCHAR) END || ' < ' || CAST(FLOOR(CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE) / 500) * 500 + 500 AS VARCHAR)) AS \"AmountBand\" FROM \"src\""
+      }
+    ],
+    "settings": {
+      "DecimalSep": ".",
+      "ThousandSep": ","
+    },
+    "statement": "LOAD SaleID, Customer, SaleDate,\n     Num#(AmountText, '#,##0.00') AS Amount,\n     SubField(Path, '/', 3) AS Country,\n     KeepChar(Code, '0123456789') AS CodeDigits,\n     Round(Num#(AmountText, '#,##0.00'), 10) AS AmountRounded,\n     Class(Num#(AmountText, '#,##0.00'), 500) AS AmountBand",
+    "why_rules_failed": "Num#() needs format-aware parsing"
+  },
+  "model": "openai/gpt-oss-120b",
+  "output": {
+    "notes": "",
+    "sql": "SELECT \"src\".\"SaleID\" AS \"SaleID\",\"src\".\"Customer\" AS \"Customer\",\"src\".\"SaleDate\" AS \"SaleDate\",CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE) AS \"Amount\",SPLIT_PART(\"src\".\"Path\",'/',3) AS \"Country\",REGEXP_REPLACE(\"src\".\"Code\",'[^0-9]','') AS \"CodeDigits\",ROUND(CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE) / 10) * 10 AS \"AmountRounded\",CONCAT(CAST(CAST(FLOOR(CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE) / 500) * 500 AS BIGINT) AS VARCHAR),' <= x < ',CAST(CAST(FLOOR(CAST(REPLACE(\"src\".\"AmountText\",',','') AS DOUBLE) / 500) * 500 + 500 AS BIGINT) AS VARCHAR)) AS \"AmountBand\" FROM \"src\"",
+    "translatable": true
+  },
+  "prompt_version": "v3",
+  "provider": "groq",
+  "route": "translate_statement",
+  "usage": {
+    "cache_read_tokens": 1024,
+    "cache_write_tokens": 0,
+    "input_tokens": 1198,
+    "output_tokens": 1612
+  }
+}

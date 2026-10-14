@@ -1,52 +1,70 @@
-"""The LLM pathway on longtail_local, replayed from recorded model answers (no network, no key).
+"""The LLM pathway on synthetic apps, replayed from recorded model answers (no network, no key).
 
-The recordings were made live (Groq, gpt-oss-120b): the first answer for Sales failed the V4 comparison of
-Class(), the problems went back to the model, and the second answer passed. The oracle is make_fixture.py.
+The recordings were made live (Groq, gpt-oss-120b). longtail_local: statements the rules cannot translate;
+rulefix_local: a statement the rules translate into SQL that runs but contradicts the QVD (number-to-text
+formatting). Each app's oracle is its make_fixture.py, computed by hand, never from SQL.
 """
 import asyncio
 from pathlib import Path
 
 from adce_gateway.config import load_config
 from adce_gateway.gateway import ModelGateway, Recordings
-from adce_reversesql.ai_loop import TranslationMemory, static_problems, translate_with_ai
+from adce_reversesql.ai_loop import TranslationMemory, repair_with_ai, static_problems, translate_with_ai
 from adce_reversesql.cli import _load, _venue
 from adce_reversesql.compose import compose
-from adce_reversesql.reconcile import Reconciler
+from adce_reversesql.reconcile import Reconciler, _shape, literal_words
 from adce_reversesql.runtime import make_validator
 
 ROOT = Path(__file__).resolve().parents[3]
-APP = ROOT / "eval" / "gold" / "bi" / "apps" / "longtail_local"
+APPS = ROOT / "eval" / "gold" / "bi" / "apps"
+CONFIG = ROOT / "deploy" / "gateway" / "groq-free.toml"
 
 
-def _setup(tmp_path):  # type: ignore[no-untyped-def]
-    log, app = _load(APP)
-    venue, heads, conts = _venue(APP, app)
-
-    validator = make_validator(venue, log, heads, conts)
-
-    gw = ModelGateway("replay", Recordings(ROOT / "eval" / "recordings"),
-                      config=load_config(ROOT / "deploy" / "gateway" / "groq-free.toml"))
-    return app, validator, gw, log, venue, heads, conts
+def _setup(name: str, recordings: Path):  # type: ignore[no-untyped-def]
+    app_dir = APPS / name
+    log, app = _load(app_dir)
+    venue, heads, conts = _venue(app_dir, app)
+    gw = ModelGateway("replay", Recordings(recordings), config=load_config(CONFIG))
+    return app, make_validator(venue, log, heads, conts), gw, (venue, log, heads, conts)
 
 
-def test_replayed_llm_answers_reach_v4_and_are_remembered(tmp_path):
-    app, validator, gw, log, venue, heads, conts = _setup(tmp_path)
+def _levels(app, overrides, data, tables):  # type: ignore[no-untyped-def]
+    t = compose(app, overrides)
+    return {x: Reconciler(t, *data).validate(x) for x in tables}
+
+
+def test_untranslatable_statements_are_translated_validated_and_remembered(tmp_path):
+    app, validator, gw, data = _setup("longtail_local", ROOT / "eval" / "recordings")
     memory = TranslationMemory(tmp_path / "memory.json")
     overrides, outcomes = asyncio.run(translate_with_ai(app, gw, memory, validator=validator))
-    status = {o.table: (o.status, len(o.attempts)) for o in outcomes}
-    assert status == {"Sales": ("ai_validated", 2), "Running": ("ai_validated", 1)}
-    t = compose(app, overrides)
-    for table in ("Sales", "Running"):
-        tv = Reconciler(t, venue, log, heads, conts).validate(table)
+    assert {o.table: o.status for o in outcomes} == {"Sales": "ai_validated", "Running": "ai_validated"}
+    for tv in _levels(app, overrides, data, ["Sales", "Running"]).values():
         assert tv.level.name == "V4" and all(c.ok for c in tv.comparisons)
     memory.save()
 
     # second run: answers come from memory; a gateway with no recordings proves no model call is made
-    empty = ModelGateway("replay", Recordings(tmp_path / "none"),
-                         config=load_config(ROOT / "deploy" / "gateway" / "groq-free.toml"))
+    empty = ModelGateway("replay", Recordings(tmp_path / "none"), config=load_config(CONFIG))
     _, again = asyncio.run(translate_with_ai(app, empty, TranslationMemory(tmp_path / "memory.json"),
                                              validator=validator))
     assert {o.status for o in again} == {"memory"}
+
+
+def test_a_wrong_rule_translation_is_diagnosed_corrected_and_reused(tmp_path):
+    app, validator, gw, data = _setup("rulefix_local", ROOT / "eval" / "recordings")
+    assert _levels(app, {}, data, ["Products"])["Products"].level.name == "V3"  # rules alone: values differ
+    memory = TranslationMemory(tmp_path / "memory.json")
+    overrides, fixes = asyncio.run(repair_with_ai(app, gw, memory, validator))
+    assert [f.status for f in fixes] == ["ai_repaired"]
+    assert _levels(app, overrides, data, ["Products"])["Products"].level.name == "V4"
+    assert memory.entries[0].replaces_rule
+    memory.save()
+
+    # next run: the learned correction is re-checked on the data and applied before the rules, without a model
+    empty = ModelGateway("replay", Recordings(tmp_path / "none"), config=load_config(CONFIG))
+    ov2, again = asyncio.run(translate_with_ai(app, empty, TranslationMemory(tmp_path / "memory.json"),
+                                               validator=validator))
+    assert [o.status for o in again] == ["memory_fix"]
+    assert _levels(app, ov2, data, ["Products"])["Products"].level.name == "V4"
 
 
 def test_static_checks():
@@ -54,3 +72,11 @@ def test_static_checks():
     assert "columns not in src" in static_problems("SELECT src.b FROM src", ["a"])[0]
     assert "reads tables other than src" in static_problems("SELECT a FROM other", ["a"])[0]
     assert "not valid Dremio SQL" in static_problems("SELECT FROM WHERE", None)[0]
+
+
+def test_formats_show_no_data():
+    bands = ["0 <= x < 500", "500 <= x < 1000", "1000 <= x < 1500"]
+    assert _shape("1000.0 <= x < 1500.0", literal_words(bands)) == "9.9 <= x < 9.9"
+    names = ["acme corp", "bolt inc", "zed llc"]
+    assert _shape("acme corp", literal_words(names)) == "a a"  # varying words never shown
+    assert literal_words(["P20", "P20"]) == frozenset()  # too few distinct values: nothing literal

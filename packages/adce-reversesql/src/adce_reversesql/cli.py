@@ -99,7 +99,7 @@ def _with_ai(d: Path, app: object, log: ReloadLog | None, quiet: bool = False) -
     """Run the LLM pathway; returns the translation with accepted overrides and the outcomes."""
     import asyncio
 
-    from .ai_loop import TranslationMemory, translate_with_ai
+    from .ai_loop import TranslationMemory, repair_with_ai, translate_with_ai
 
     venue, heads, conts = _venue(d, app)
 
@@ -115,8 +115,16 @@ def _with_ai(d: Path, app: object, log: ReloadLog | None, quiet: bool = False) -
                   f"{' after ' + str(len(o.attempts)) + ' attempt(s)' if o.attempts else ''}",  # type: ignore[attr-defined]
                   file=sys.stderr, flush=True)
 
-    overrides, outcomes = asyncio.run(translate_with_ai(app, _gateway(), memory, validator=validator,  # type: ignore[arg-type]
-                                                        task=f"cli:{d.name}", on_outcome=show))
+    gateway = _gateway()
+
+    async def both() -> tuple[dict[int, str], list]:  # type: ignore[type-arg]
+        ov, out = await translate_with_ai(app, gateway, memory, validator=validator,  # type: ignore[arg-type]
+                                          task=f"cli:{d.name}", on_outcome=show)
+        ov, fixes = await repair_with_ai(app, gateway, memory, validator, overrides=ov,  # type: ignore[arg-type]
+                                         task=f"cli:{d.name}:repair", on_outcome=show)
+        return ov, out + fixes
+
+    overrides, outcomes = asyncio.run(both())
     memory.save()
     return compose(app, overrides), outcomes  # type: ignore[arg-type]
 

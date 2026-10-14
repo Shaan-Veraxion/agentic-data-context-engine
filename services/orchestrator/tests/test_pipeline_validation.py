@@ -63,3 +63,26 @@ async def test_llm_pathway_in_the_pipeline_reaches_v4_and_remembers(tmp_path):
     assert out["levels"] == {"Sales": "V4", "Running": "V4"}
     memory = await kg.facts(kind="translation_memory")
     assert len(memory) == 2 and {f.value["status"] for f in memory} == {"ai_validated"}
+
+
+async def test_pipeline_corrects_a_wrong_rule_translation(tmp_path):
+    """rulefix_local: the rules' SQL runs but contradicts the QVD; the diagnosis step (replayed Groq answers) corrects
+    the statement, the pack's table reaches V4, and the correction is remembered as a rule fix."""
+    from adce_gateway.config import load_config
+    from adce_gateway.gateway import ModelGateway, Recordings
+
+    root = Path(__file__).resolve().parents[3]
+    app = root / "eval" / "gold" / "bi" / "apps" / "rulefix_local"
+    store, kg = LocalArtifactStore(tmp_path), MemoryKG()
+    files = []
+    for p in [app / "script.qvs", app / "reload.log", *sorted((app / "qvd").glob("*.qvd")),
+              *sorted((app / "sources").rglob("*.csv"))]:
+        name = p.relative_to(app).as_posix() if "sources" in p.parts else p.name
+        files.append({"name": name, "key": store.put(f"uploads/rulefix_local/{name}", p.read_bytes())})
+    gw = ModelGateway("replay", Recordings(root / "eval" / "recordings"),
+                      config=load_config(root / "deploy" / "gateway" / "groq-free.toml"))
+    out: dict = dict(await run_pipeline(app_id="rulefix_local", run_id="r1", files=files,
+                                         deps=Deps(kg=kg, artifacts=store, gateway=gw)))
+    assert out["levels"] == {"Products": "V4"}
+    memory = await kg.facts(kind="translation_memory")
+    assert [f.value["replaces_rule"] for f in memory] == [True]

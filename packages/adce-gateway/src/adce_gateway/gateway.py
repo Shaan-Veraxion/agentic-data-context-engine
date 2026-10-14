@@ -169,12 +169,14 @@ class ModelGateway:
         errors: list[str] = []
         for b in bindings:
             attempts.append(b.key)
+            cap = self.config.providers[b.provider].max_output_tokens if b.provider in self.config.providers else None
+            out_tokens = min(max_tokens, cap) if cap else max_tokens
             limiter = self._limiter(b.provider)
-            # expected size: the prompt plus a typical answer; corrected with the reported usage afterwards
-            entry = await limiter.acquire(estimate_tokens(system + user) + min(max_tokens, 1500)) if limiter else None
+            # the request as the provider counts it: prompt plus output budget; corrected with reported usage after
+            entry = await limiter.acquire(estimate_tokens(system + user) + out_tokens) if limiter else None
             try:
                 async with self._sem:
-                    out, usage, model = await self._complete_with_retry(b, system, user, output_model, max_tokens,
+                    out, usage, model = await self._complete_with_retry(b, system, user, output_model, out_tokens,
                                                                         effort)
                 if entry is not None:
                     RateLimiter.settle(entry, usage.input_tokens + usage.cache_read_tokens + usage.output_tokens)

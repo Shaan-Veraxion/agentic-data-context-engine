@@ -1,0 +1,7 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+Products:
+LOAD ID, Name, Price, 'P' & Price AS PriceTag;
+SQL SELECT ID, Name, Price FROM "shop"."raw"."products";
+
+STORE Products INTO [lib://QVD/Products.qvd] (qvd);

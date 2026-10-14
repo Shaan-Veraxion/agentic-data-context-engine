@@ -1,6 +1,9 @@
 # Development on Groq's free tier: gpt-oss-120b for every tier, gpt-oss-20b for light work.
 # Key: GROQ_API_KEY (console.groq.com -> API Keys), in deploy/compose/.env or the environment; never in git.
 # rpm / tpm: set them to the limits your Groq console shows for these models; the gateway waits instead of failing.
+# The free tier also has a daily token limit per model (200,000 tokens a day for gpt-oss-120b when this was
+# written; about 60-80 translation calls). When it is used up the routes below fall back to gpt-oss-20b, which
+# has its own daily allowance; when both are used up, statements are skipped (not failed) until the next run.
 
 [providers.groq]
 kind = "openai_compatible"
@@ -11,11 +14,18 @@ reasoning_effort = true             # gpt-oss takes low / medium / high reasonin
 max_retries = 5
 rpm = 30
 tpm = 8000
+max_output_tokens = 4000           # Groq counts the output budget toward TPM: keep prompt + this under tpm
 
 [models]
 strong = "groq:openai/gpt-oss-120b"
 standard = "groq:openai/gpt-oss-120b"
 light = "groq:openai/gpt-oss-20b"
+
+[routes.translate_statement]
+fallbacks = ["groq:openai/gpt-oss-20b"]
+
+[routes.diagnose_mismatch]
+fallbacks = ["groq:openai/gpt-oss-20b"]
 
 # Free tier: no cost. Paid Groq prices can be added here (USD per million tokens) for budgets.
 # [prices."groq:openai/gpt-oss-120b"]

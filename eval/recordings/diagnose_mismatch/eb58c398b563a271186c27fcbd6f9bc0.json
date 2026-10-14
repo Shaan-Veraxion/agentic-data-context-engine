@@ -1,0 +1,51 @@
+{
+  "binding": "groq:openai/gpt-oss-120b",
+  "cost_usd": 0.0,
+  "inputs": {
+    "failed_comparisons": [
+      "lib://QVD/Products.qvd.PriceTag.shapes: value formats differ (a = a varying word, 9 = a number, other characters and words common to all values shown as they are): expected ['P9', 'P9.9'], got ['P9.9']",
+      "lib://QVD/Products.qvd.PriceTag.values: the set of values differs (fingerprints dc609e99a359de5b vs 20f426d000f067e6)"
+    ],
+    "level": "V3",
+    "previous_attempts": [
+      {
+        "problems": [
+          "lib://QVD/Products.qvd.PriceTag.shapes: value formats differ (a = a varying word, 9 = a number, other characters and words common to all values shown as they are): expected ['P9', 'P9.9'], got ['P9.9']",
+          "lib://QVD/Products.qvd.PriceTag.values: the set of values differs (fingerprints dc609e99a359de5b vs 20f426d000f067e6)"
+        ],
+        "sql": "SELECT\n  \"src\".\"ID\" AS \"ID\",\n  \"src\".\"Name\" AS \"Name\",\n  \"src\".\"Price\" AS \"Price\",\n  'P' || COALESCE(REGEXP_REPLACE(CAST(\"src\".\"Price\" AS VARCHAR), '\\\\.?0+$', ''), '') AS \"PriceTag\"\nFROM src",
+        "statement": 1
+      }
+    ],
+    "settings": {},
+    "statements": [
+      {
+        "input_columns": [
+          "ID",
+          "Name",
+          "Price"
+        ],
+        "sql": "SELECT\n  \"src\".\"ID\" AS \"ID\",\n  \"src\".\"Name\" AS \"Name\",\n  \"src\".\"Price\" AS \"Price\",\n  'P' || COALESCE(CAST(\"src\".\"Price\" AS VARCHAR), '') AS \"PriceTag\"\nFROM src",
+        "statement": 1,
+        "text": "LOAD ID, Name, Price, 'P' & Price AS PriceTag"
+      }
+    ],
+    "table": "Products"
+  },
+  "model": "openai/gpt-oss-120b",
+  "output": {
+    "cause": "formatting",
+    "explanation": "Qlik concatenates the literal 'P' with the numeric Price, converting the number to text without trailing zeros or a decimal point for integer values. The original SQL kept the trailing \".0\" (e.g., 'P9.0'), so the output only had the shape 'P9.9' and the value set differed from Qlik. Using REGEXP_REPLACE with the pattern '\\.?0+$' removes an optional decimal point followed by trailing zeros, reproducing Qlik's formatting (e.g., 'P9' for 9 and 'P9.9' for 9.9), fixing both the shape and value mismatches.",
+    "sql": "SELECT \"src\".\"ID\" AS \"ID\", \"src\".\"Name\" AS \"Name\", \"src\".\"Price\" AS \"Price\", 'P' || COALESCE(REGEXP_REPLACE(CAST(\"src\".\"Price\" AS VARCHAR), '\\.?0+$', ''), '') AS \"PriceTag\" FROM src",
+    "statement": 1
+  },
+  "prompt_version": "v2",
+  "provider": "groq",
+  "route": "diagnose_mismatch",
+  "usage": {
+    "cache_read_tokens": 1024,
+    "cache_write_tokens": 0,
+    "input_tokens": 61,
+    "output_tokens": 2491
+  }
+}

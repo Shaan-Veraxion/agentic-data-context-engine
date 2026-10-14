@@ -11,7 +11,9 @@ Every result names its venue; local results are never presented as Dremio result
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import math
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import IntEnum
@@ -83,14 +85,50 @@ def _same(a: Any, b: Any) -> bool:
     return a == b
 
 
-def _aggregates(cols: list[str], rows: list[tuple[Any, ...]]) -> dict[str, dict[str, Any]]:
+_TOKEN = re.compile(r"[^\W\d_]+|\d+|\s+|.")
+
+
+def literal_words(values: list[Any]) -> frozenset[str]:
+    """Words present in every value of a text column. With at least 3 distinct values they are formatting (a fixed
+    prefix, 'x' in '0 <= x < 500'), not data, so formats may show them; fewer values keep everything masked."""
+    texts = {str(v) for v in values}
+    if len(texts) < 3:
+        return frozenset()
+    sets = [{t for t in _TOKEN.findall(s) if t[0].isalpha()} for s in texts]
+    return frozenset(set.intersection(*sets)) if sets else frozenset()
+
+
+def _shape(v: Any, keep: frozenset[str] = frozenset()) -> str:
+    """The format of a value without its content: letter runs -> a, digit runs -> 9, other characters kept, and
+    words in `keep` shown as they are ('P20.0' -> 'P9.9' when every value starts with P, else 'a9.9')."""
+    out = []
+    for t in _TOKEN.findall(str(v)):
+        if t[0].isdigit():
+            out.append("9")
+        elif t[0].isalpha():
+            out.append(t if t in keep else "a")
+        elif t.isspace():
+            out.append(" ")
+        else:
+            out.append(t)
+    return "".join(out)
+
+
+def _aggregates(cols: list[str], rows: list[tuple[Any, ...]],
+                keep: dict[str, frozenset[str]] | None = None) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for i, c in enumerate(cols):
         vals = [_norm(r[i]) for r in rows if r[i] is not None and r[i] != ""]
         numeric = bool(vals) and all(isinstance(v, (int, float)) for v in vals)
+        # values: order-independent fingerprint of the whole column (any difference fails, nothing is revealed);
+        # shapes: distinct formats of text values, so a mismatch can be explained without showing data
+        fingerprint = hashlib.sha256("\x1f".join(sorted(repr(v) for v in vals)).encode()).hexdigest()[:16]
+        words = (keep or {}).get(c, frozenset())
         out[c] = {"count": len(vals), "distinct": len(set(vals)),
                   "min": min(vals) if vals else None, "max": max(vals) if vals else None,
-                  "sum": round(sum(vals), 6) if numeric else None}
+                  "sum": round(sum(vals), 6) if numeric else None,
+                  "shapes": None if numeric else sorted({_shape(v, words) for v in vals})[:10],
+                  "values": fingerprint}
     return out
 
 
@@ -173,10 +211,11 @@ class Reconciler:
             if set(res.columns) != set(q_cols):
                 out.append(Comparison("fields", target, sorted(q_cols), sorted(res.columns), False, "qvd_contents"))
                 continue
-            mine = _aggregates(res.columns, res.rows)
-            theirs = _aggregates(q_cols, q_rows)
+            keep = {c: literal_words([r[i] for r in q_rows if r[i] not in (None, "")]) for i, c in enumerate(q_cols)}
+            mine = _aggregates(res.columns, res.rows, keep)
+            theirs = _aggregates(q_cols, q_rows, keep)
             for c in q_cols:
-                for agg in ("count", "distinct", "min", "max", "sum"):
+                for agg in ("count", "distinct", "min", "max", "sum", "shapes", "values"):
                     e, a = theirs[c][agg], mine[c][agg]
                     if e is None and a is None:
                         continue

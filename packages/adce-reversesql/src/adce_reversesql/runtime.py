@@ -26,6 +26,15 @@ class StatementTranslation(BaseModel):
     notes: str = ""
 
 
+class MismatchFix(BaseModel):
+    """Structured output of the model-gateway route diagnose_mismatch."""
+
+    statement: int | None  # statement whose SQL to replace, or None when no single statement is at fault
+    sql: str
+    cause: str
+    explanation: str = ""
+
+
 @dataclass
 class Loaded:
     app: BIApp
@@ -105,10 +114,21 @@ def make_validator(venue: LocalVenue, log: Any, headers: dict[str, Any], content
     everywhere (the wording is part of the retry prompt, so recordings replay only if it is stable)."""
     from .reconcile import Reconciler
 
+    def describe(c: Any) -> str:
+        agg = c.subject.rsplit(".", 1)[-1]
+        if agg == "shapes":
+            return (f"{c.subject}: value formats differ (a = a varying word, 9 = a number, other characters and "
+                    f"words common to all values shown as they are): "
+                    f"expected {c.expected}, got {c.actual}")
+        if agg == "values":
+            return f"{c.subject}: the set of values differs (fingerprints {c.expected} vs {c.actual})"
+        if agg in ("min", "max") and (isinstance(c.expected, str) or isinstance(c.actual, str)):
+            return f"{c.subject}: differs (text values are never shown; see the formats)"
+        return f"{c.check} {c.subject}: expected {c.expected}, got {c.actual}"
+
     def validate(t: Translation, table: str) -> tuple[str, list[str]]:
         tv = Reconciler(t, venue, log, headers, contents).validate(table)
-        problems = [f"{c.check} {c.subject}: expected {c.expected}, got {c.actual}" for c in tv.comparisons
-                    if not c.ok] + tv.errors
+        problems = [describe(c) for c in tv.comparisons if not c.ok] + tv.errors
         return (tv.level.name if tv.level >= 0 else "none"), problems
 
     return validate

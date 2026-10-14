@@ -58,6 +58,7 @@ class ProviderConfig(BaseModel):
     timeout_s: float = 600.0
     max_retries: int = 2  # SDK retries with back-off on 429 / 5xx
     rpm: int | None = None  # requests per minute allowed (free tiers); the gateway waits instead of failing
+    max_output_tokens: int | None = None  # cap on a route's output budget (some APIs count it toward TPM)
     tpm: int | None = None  # tokens per minute allowed
 
     def env(self, var: str | None) -> str | None:
@@ -138,6 +139,7 @@ class OpenAICompatibleClient:
         self.client = openai.AsyncOpenAI(api_key=key or "not-needed", base_url=base, max_retries=cfg.max_retries,
                                          timeout=cfg.timeout_s, default_headers=cfg.headers or None)
         self._errors = (openai.APIConnectionError, openai.RateLimitError, openai.InternalServerError)
+        self._status = openai.APIStatusError
 
     async def complete(self, model: str, system: str, user: str, output_model: type[BaseModel], *,
                        max_tokens: int, effort: str | None) -> tuple[BaseModel, Usage, str]:
@@ -159,6 +161,10 @@ class OpenAICompatibleClient:
             resp = await self.client.chat.completions.create(model=model, messages=messages, **kwargs)
         except self._errors as e:
             raise ProviderError(f"{self.cfg.name}: {type(e).__name__}: {e}") from e
+        except self._status as e:
+            if e.status_code == 400:  # e.g. the API rejected output that broke the schema: worth one retry
+                raise OutputInvalid(f"{self.cfg.name}/{model}: {str(e)[:300]}") from e
+            raise ProviderError(f"{self.cfg.name}: HTTP {e.status_code}: {str(e)[:300]}") from e
         choice = resp.choices[0]
         if getattr(choice.message, "refusal", None):
             raise GatewayRefusal(f"{self.cfg.name}/{model}: model refused")

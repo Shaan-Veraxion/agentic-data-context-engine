@@ -13,6 +13,12 @@ For each statement the rules leave untranslated (root causes only; knock-on fail
    untranslated and go to review.
 After each round the script is composed again with the accepted overrides: statements that only failed because an
 earlier step failed are retried in the next round.
+
+repair_with_ai does the same for tables the rules translated but the data contradicts (agent 26's diagnosis): the
+diagnose_mismatch route sees each statement's SQL and the failed comparisons and proposes a replacement for one
+statement, accepted only when every comparison then passes. An accepted correction is remembered with
+replaces_rule=True: later runs apply it to the same statement before the rules, and reports list it as a
+candidate for a permanent rule.
 """
 from __future__ import annotations
 
@@ -30,7 +36,7 @@ from sqlglot.errors import ParseError
 
 from .check import check_table
 from .compose import DIALECT, Translation, Untranslated, compose
-from .runtime import StatementTranslation
+from .runtime import MismatchFix, StatementTranslation
 
 CASCADE = re.compile(r"depends on an untranslated step|table not loaded")
 SETTINGS = ("ThousandSep", "DecimalSep", "MoneyThousandSep", "MoneyDecimalSep", "DateFormat", "TimestampFormat",
@@ -54,6 +60,7 @@ class MemoryEntry:
     status: str  # ai_validated | ai_checked | reviewer
     app_id: str = ""
     uses: int = 0
+    replaces_rule: bool = False  # a validated correction of what the rules produce for this statement
 
 
 class TranslationMemory:
@@ -87,6 +94,13 @@ class TranslationMemory:
                 scored.append((len(words & w) / len(words | w), e))
         scored.sort(key=lambda x: -x[0])
         return [e for s, e in scored[:k] if s > 0.15]
+
+    def rule_fix(self, statement: str) -> MemoryEntry | None:
+        n = normalise(statement)
+        for e in self.entries:
+            if e.replaces_rule and e.status in ("ai_validated", "reviewer") and normalise(e.statement) == n:
+                return e
+        return None
 
     def forget(self, entry: MemoryEntry) -> None:
         self.entries = [e for e in self.entries if e is not entry]
@@ -151,18 +165,41 @@ def _roots(t: Translation, done: set[int]) -> list[Untranslated]:
 
 async def translate_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory, *,
                             overrides: dict[int, str] | None = None, validator: Validator | None = None,
-                            max_attempts: int = 3, max_rounds: int = 5, task: str = "ai_loop",
+                            max_attempts: int = 4, max_rounds: int = 5, task: str = "ai_loop",
                             on_outcome: Callable[[Outcome], None] | None = None
                             ) -> tuple[dict[int, str], list[Outcome]]:
     overrides = dict(overrides or {})
-    settings = {k: app.variables[k].value for k in SETTINGS if k in app.variables and app.variables[k].value}
+    settings = _settings(app)
     outcomes: list[Outcome] = []
+    for table in app.tables.values():  # corrections of rule output learned earlier, applied before the rules
+        for step in table.steps:
+            for op in step.ops:
+                fix = memory.rule_fix(op.text)
+                if fix is None or op.statement in overrides:
+                    continue
+                # a correction proven on another app's data is re-checked on this app's data before it is used
+                status = "memory_fix_unverified"
+                if validator is not None:
+                    t_fix = compose(app, {**overrides, op.statement: fix.sql})
+                    if table.name in t_fix.tables and not t_fix.tables[table.name].untranslated:
+                        level, problems = validator(t_fix, table.name)
+                        status = "memory_fix_rejected" if problems else (
+                            "memory_fix" if level in ("V3", "V4", "V5") else "memory_fix_unverified")
+                o = Outcome(table.name, op.statement, f"{op.span.file}:{op.span.start_line}-{op.span.end_line}",
+                            "learned correction of the rules", status, fix.sql)
+                if status != "memory_fix_rejected":
+                    overrides[op.statement] = fix.sql
+                    fix.uses += 1
+                outcomes.append(o)
+                if on_outcome:
+                    on_outcome(o)
     tried: set[int] = set(overrides)
     for _ in range(max_rounds):
         t = compose(app, overrides)
         todo = _roots(t, tried)
         if not todo:
             break
+        stop = False
         for u in todo:
             tried.add(u.statement)
             o = await _one(app, u, overrides, gateway, memory, settings, validator, max_attempts, task)
@@ -171,6 +208,11 @@ async def translate_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory,
                 on_outcome(o)
             if o.sql and o.status in ("memory", "ai_validated", "ai_checked"):
                 overrides[u.statement] = o.sql
+            if o.status == "skipped":  # the provider is not answering: leave the rest for the next run
+                stop = True
+                break
+        if stop:
+            break
     return overrides, outcomes
 
 
@@ -198,9 +240,13 @@ async def _one(app: BIApp, u: Untranslated, overrides: dict[int, str], gateway: 
                   "previous_attempts": feedback}
         try:
             res = await gateway.call("translate_statement", inputs, StatementTranslation, task=task)
-        except (ReplayMiss, GatewayRefusal, OutputInvalid, ProviderError, BudgetExceeded) as e:
+        except OutputInvalid as e:  # the model's output broke the schema: one attempt used, try again
+            o.attempts.append({"error": f"OutputInvalid: {e}"})
+            continue
+        except (ReplayMiss, GatewayRefusal, ProviderError, BudgetExceeded) as e:
             o.attempts.append({"error": f"{type(e).__name__}: {e}"})
-            o.status = "skipped" if isinstance(e, ReplayMiss | BudgetExceeded) else "failed"
+            # provider unavailable (rate or daily limit, outage), no recording, or budget: not the model's failure
+            o.status = "failed" if isinstance(e, GatewayRefusal) else "skipped"
             return o
         out = res.output
         assert isinstance(out, StatementTranslation)
@@ -210,6 +256,9 @@ async def _one(app: BIApp, u: Untranslated, overrides: dict[int, str], gateway: 
             o.attempts.append({"declined": out.notes})
             return o
         ok, problems, level = _verify(app, u, out.sql, overrides, validator)
+        if any(normalise(f["sql"]) == normalise(out.sql) for f in feedback):
+            problems = ["this SQL is identical to an earlier attempt that failed; change what the problems point to",
+                        *problems]
         o.attempts.append({"sql": out.sql, "problems": problems, "level": level})
         if ok:
             o.status, o.sql = ("ai_validated" if level in ("V3", "V4", "V5") else "ai_checked"), out.sql
@@ -218,6 +267,97 @@ async def _one(app: BIApp, u: Untranslated, overrides: dict[int, str], gateway: 
             return o
         feedback.append({"sql": out.sql, "problems": problems})
     return o
+
+
+def _settings(app: BIApp) -> dict[str, Any]:
+    return {k: app.variables[k].value for k in SETTINGS if k in app.variables and app.variables[k].value}
+
+
+def _statements(t: Translation, table: str) -> list[dict[str, Any]]:
+    """Each statement of a table with the SQL it was translated to, its input shown as `src`."""
+    out = []
+    for c in t.ctes.values():
+        if c.kind != "load" or len(c.statements) != 1 or not any(
+                c.name in (s.chain_cte, s.result_cte) or c.statements[0] in s.statements
+                for s in t.tables[table].steps):
+            continue
+        body = c.body.copy()
+        cols = None
+        for tb in body.find_all(exp.Table):
+            if tb.alias == "src" and tb.name in t.ctes:
+                cols = t.ctes[tb.name].columns
+                tb.set("this", exp.to_identifier("src"))
+                tb.set("alias", None)
+        out.append({"statement": c.statements[0], "input_columns": cols,
+                    "sql": body.sql(dialect=DIALECT, pretty=True)})
+    return out
+
+
+async def repair_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory, validator: Validator, *,
+                         overrides: dict[int, str] | None = None, tables: list[str] | None = None,
+                         max_attempts: int = 3, task: str = "ai_repair",
+                         on_outcome: Callable[[Outcome], None] | None = None
+                         ) -> tuple[dict[int, str], list[Outcome]]:
+    """Agent 26's diagnosis: fix tables whose SQL runs but contradicts the evidence."""
+    from adce_gateway.gateway import BudgetExceeded, GatewayRefusal, OutputInvalid, ProviderError, ReplayMiss
+
+    overrides = dict(overrides or {})
+    outcomes: list[Outcome] = []
+    texts = {op.statement: op.text for x in app.tables.values() for s in x.steps for op in s.ops}
+    for table in tables or list(app.tables):
+        t = compose(app, overrides)
+        r = t.tables.get(table)
+        if r is None or r.untranslated or r.final_cte is None and not r.stores:
+            continue
+        level, problems = validator(t, table)
+        if not problems:
+            continue
+        stmts = _statements(t, table)
+        for s in stmts:
+            s["text"] = texts.get(s["statement"], "")
+        o = Outcome(table, -1, "", "; ".join(problems[:5]), "failed")
+        feedback: list[dict[str, Any]] = []
+        for _ in range(max_attempts):
+            try:
+                res = await gateway.call("diagnose_mismatch", {
+                    "table": table, "level": level, "statements": stmts, "failed_comparisons": problems,
+                    "settings": _settings(app), "previous_attempts": feedback}, MismatchFix, task=task)
+            except OutputInvalid as e:
+                o.attempts.append({"error": f"OutputInvalid: {e}"})
+                continue
+            except (ReplayMiss, GatewayRefusal, ProviderError, BudgetExceeded) as e:
+                o.attempts.append({"error": f"{type(e).__name__}: {e}"})
+                o.status = "failed" if isinstance(e, GatewayRefusal) else "skipped"
+                break
+            fix = res.output
+            assert isinstance(fix, MismatchFix)
+            o.notes = f"{fix.cause}: {fix.explanation}"
+            target = next((s for s in stmts if s["statement"] == fix.statement), None)
+            if target is None or not fix.sql.strip():
+                o.status = "declined"
+                o.attempts.append({"declined": o.notes})
+                break
+            sid: int = target["statement"]
+            bad = static_problems(fix.sql, target["input_columns"])
+            if not bad:
+                t2 = compose(app, {**overrides, sid: fix.sql})
+                mine = [x.reason for x in t2.tables[table].untranslated]
+                bad = mine or validator(t2, table)[1]
+            if any(f["statement"] == sid and normalise(f["sql"]) == normalise(fix.sql) for f in feedback):
+                bad = ["this SQL is identical to an earlier attempt that failed; change what the problems point to",
+                       *bad]
+            o.attempts.append({"statement": sid, "sql": fix.sql, "problems": bad})
+            if not bad:
+                overrides[sid] = fix.sql
+                o.statement, o.status, o.sql = sid, "ai_repaired", fix.sql
+                memory.add(MemoryEntry(statement=target["text"], input_columns=target["input_columns"], sql=fix.sql,
+                                       status="ai_validated", app_id=app.app_id, replaces_rule=True))
+                break
+            feedback.append({"statement": sid, "sql": fix.sql, "problems": bad})
+        outcomes.append(o)
+        if on_outcome:
+            on_outcome(o)
+    return overrides, outcomes
 
 
 def _verify(app: BIApp, u: Untranslated, sql: str, overrides: dict[int, str],
