@@ -11,19 +11,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import PurePosixPath
 from typing import Any
 
 from adce_core.agent import AgentContext, AgentKind, AgentResult, AgentSpec, BaseAgent
 from adce_core.artifacts import put_json
 from adce_core.facts import Evidence, Fact, Trust
-from adce_qlik import parse_reload_log, read_qvd_header
 from adce_reversesql.charts import translate_charts
 from adce_reversesql.check import check_table
 from adce_reversesql.figures import check_exports
-from adce_reversesql.local import read_qvd
 from adce_reversesql.reconcile import Level, Reconciler
-from adce_reversesql.runtime import load_translation, local_venue_from_files
+from adce_reversesql.runtime import load_translation, local_evidence
 
 
 def table_key(app_id: str, name: str) -> str:
@@ -116,28 +113,9 @@ class ReconcilerAgent(BaseAgent):
         result = AgentResult()
         loaded = load_translation(ctx.artifacts, job["bi_ir_key"], job.get("translation_key"))
         files = job.get("files", [])
-        logs = [f for f in files if f["class"] == "reload_log"]
-        log = parse_reload_log(ctx.artifacts.get(logs[-1]["key"]).decode("utf-8", errors="replace")) if logs else None
-        venue, qvd_paths = local_venue_from_files(ctx.artifacts, files)
-        targets = {PurePosixPath(s.target.replace("\\", "/")).name.lower(): s.target for s in loaded.app.stores}
-        headers, contents = {}, {}
-        unreadable: list[str] = []
-        for fname, path in qvd_paths.items():
-            target = targets.get(fname)
-            try:
-                data = read_qvd(path)
-            except Exception:  # noqa: BLE001 - header-only or damaged QVD: headers still give row counts (V3)
-                data = None
-                unreadable.append(fname)
-            if target is None:
-                if data is not None:
-                    venue.add_qvd(f"lib://local/{fname}", path)  # an input QVD read by this app
-                continue
-            headers[target] = read_qvd_header(path)
-            if data is not None:
-                contents[target] = data
-                venue.add_qvd(target, path)  # a stored QVD may also be read back later in the same script
-        result.metrics["qvd_contents_unreadable"] = unreadable
+        ev = local_evidence(ctx.artifacts, files, loaded.app)
+        venue, log, headers, contents = ev.venue, ev.log, ev.headers, ev.contents
+        result.metrics["qvd_contents_unreadable"] = ev.unreadable
         rec = Reconciler(loaded.translation, venue, log, headers, contents)
         report = []
         for name in output_tables(loaded):
@@ -147,7 +125,7 @@ class ReconcilerAgent(BaseAgent):
             evidence = [Evidence(kind="query_result", ref=f"{tv.venue}:{ctx.run_id}:{name}",
                                  detail={"comparisons": len(tv.comparisons)})]
             if log is not None:
-                evidence.append(Evidence(kind="reload_log", ref=logs[-1]["key"]))
+                evidence.append(Evidence(kind="reload_log", ref=ev.log_key or "reload_log"))
             evidence += [Evidence(kind="qvd_header", ref=t) for t, _ in loaded.translation.tables[name].stores
                          if t in headers]
             await self.propose(ctx, Fact(

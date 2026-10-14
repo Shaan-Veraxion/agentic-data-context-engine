@@ -77,10 +77,22 @@ def local_venue_from_files(store: ArtifactStore, files: list[dict[str, Any]], wo
     return venue, qvds
 
 
-def validator_from_files(store: ArtifactStore, files: list[dict[str, Any]], app: BIApp) -> Any:
-    """A validator for the LLM pathway (ai_loop.Validator) built from uploaded files: the local venue over source
-    extracts and QVDs, the reload log, and the stored QVDs' headers and contents. With no data it still runs the
-    SQL (V2) and reports no comparisons."""
+@dataclass
+class LocalEvidence:
+    """What the uploads offer for local validation: the venue (source extracts, QVDs), the reload log, and the
+    headers and contents of the QVDs this app stores."""
+
+    venue: LocalVenue
+    log: Any
+    log_key: str | None
+    headers: dict[str, Any]
+    contents: dict[str, Any]
+    unreadable: list[str]
+
+
+def local_evidence(store: ArtifactStore, files: list[dict[str, Any]], app: BIApp) -> LocalEvidence:
+    """Input QVDs are registered under their file name; QVDs the app stores also under the store target, so a
+    table that reads a stored QVD back runs locally. Header-only QVDs still give row counts (V3)."""
     from adce_qlik import parse_reload_log, read_qvd_header
 
     from .local import read_qvd
@@ -91,22 +103,30 @@ def validator_from_files(store: ArtifactStore, files: list[dict[str, Any]], app:
     targets = {PurePosixPath(s.target.replace("\\", "/")).name.lower(): s.target for s in app.stores}
     headers: dict[str, Any] = {}
     contents: dict[str, Any] = {}
+    unreadable: list[str] = []
     for fname, path in qvd_paths.items():
         target = targets.get(fname)
         try:
             data = read_qvd(path)
-        except Exception:  # noqa: BLE001 - header-only QVD: row counts still checkable
+        except Exception:  # noqa: BLE001 - header-only or damaged QVD: row counts still checkable
             data = None
+            unreadable.append(fname)
         if target is None:
             if data is not None:
-                venue.add_qvd(f"lib://local/{fname}", path)
+                venue.add_qvd(f"lib://local/{fname}", path)  # an input QVD read by this app
             continue
         headers[target] = read_qvd_header(path)
         if data is not None:
             contents[target] = data
             venue.add_qvd(target, path)
+    return LocalEvidence(venue, log, logs[-1]["key"] if logs else None, headers, contents, unreadable)
 
-    return make_validator(venue, log, headers, contents)
+
+def validator_from_files(store: ArtifactStore, files: list[dict[str, Any]], app: BIApp) -> Any:
+    """A validator for the LLM pathway (ai_loop.Validator) built from uploaded files. With no data it still runs
+    the SQL (V2) and reports no comparisons."""
+    ev = local_evidence(store, files, app)
+    return make_validator(ev.venue, ev.log, ev.headers, ev.contents)
 
 
 def make_validator(venue: LocalVenue, log: Any, headers: dict[str, Any], contents: dict[str, Any]) -> Any:

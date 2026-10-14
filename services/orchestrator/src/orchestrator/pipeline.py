@@ -43,6 +43,7 @@ class PipelineState(_Required, total=False):
     bi_ir_key: str
     translation_key: str
     validation_key: str
+    figures_key: str
     levels: dict[str, str]
     pack_prefix: str
     tables: list[str]
@@ -102,6 +103,7 @@ async def translate(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, A
 def _job(state: PipelineState) -> dict[str, Any]:
     return {"bi_ir_key": state.get("bi_ir_key"), "translation_key": state.get("translation_key"),
             "files": state.get("classified", []), "validation_key": state.get("validation_key"),
+            "figures_key": state.get("figures_key"),
             "inputs": [{"name": f["name"], "sha256": f.get("sha256"), "class": f["class"]}
                        for f in state.get("classified", [])]}
 
@@ -118,7 +120,8 @@ async def check(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
 
 async def reconcile(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
     r = await ReconcilerAgent()(_job(state), _ctx(state, runtime))
-    return {"validation_key": r.outputs["validation_key"], "levels": r.outputs["levels"], "events": r.events,
+    return {"validation_key": r.outputs["validation_key"], "figures_key": r.outputs["figures_key"],
+            "levels": r.outputs["levels"], "events": r.events,
             "metrics": {"reconcile": r.metrics}}
 
 

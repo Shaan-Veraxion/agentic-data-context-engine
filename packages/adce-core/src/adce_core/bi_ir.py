@@ -198,7 +198,17 @@ class TableStep(BaseModel):
     fields: list[str]
     other_table: str | None = None  # KEEP: the table this load is kept against
     constructs: list[str] = Field(default_factory=list)  # e.g. crosstable, generic (tier T2/T3)
+    construct_args: dict[str, list[str]] = Field(default_factory=dict)  # crosstable -> [attribute, data, n]
     context: list[str] = Field(default_factory=list)  # enclosing IF / FOR / SUB headers
+
+
+class FieldOp(BaseModel):
+    """RENAME FIELD or DROP FIELD applied to a table at a statement (compose projects the table there)."""
+
+    statement: int
+    kind: str  # rename | drop
+    renames: dict[str, str] = Field(default_factory=dict)
+    drops: list[str] = Field(default_factory=list)
 
 
 class QlikTable(BaseModel):
@@ -214,6 +224,7 @@ class QlikTable(BaseModel):
     qlik_name: str | None = None  # the table's last Qlik name when `name` had to differ (a dropped table whose
     #                               name was taken over by a later RENAME)
     stored_to: list[str] = Field(default_factory=list)
+    field_ops: list[FieldOp] = Field(default_factory=list)
 
     def name_at(self, statement: int) -> str:
         """The Qlik name this table had when `statement` ran."""

@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import sqlglot
-from adce_core.bi_ir import BIApp, LoadOp, QlikTable, TableAction, TableStep
+from adce_core.bi_ir import BIApp, FieldOp, LoadOp, QlikTable, TableAction, TableStep
 from sqlglot import exp
 from sqlglot.errors import ParseError
 from sqlglot.expressions.core import Expr as SqlExpr
@@ -141,6 +141,10 @@ def _ranges(nums: list[int]) -> str:
     return ", ".join(out)
 
 
+def _file_key(path: str) -> str:
+    return path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
 def _ident(name: str) -> str:
     s = re.sub(r"[^0-9a-zA-Z]+", "_", name).strip("_").lower() or "t"
     return s if s[0].isalpha() else f"t_{s}"
@@ -173,6 +177,7 @@ class Composer:
         self._cur_op: LoadOp | None = None  # statement being translated (for precise untranslated reports)
         self._in_cols: list[str] | None = None
         self._generated: set[str] = set()  # CTEs of AUTOGENERATE row sources (RecNo() reads their row column)
+        self.stored: dict[str, tuple[str, list[str] | None, int]] = {}  # QVD file name -> (cte, columns, statement)
         self.variables = {k: v.value for k, v in app.variables.items() if v.value is not None}
 
     # ------------------------------------------------------------------ helpers
@@ -207,6 +212,8 @@ class Composer:
                 events.append((d, 0, t, "drop"))
             for at in t.renamed_at:
                 events.append((at, 0, t, ("rename", t.name_at(at), t.name_at(at + 1))))
+            for fo in t.field_ops:
+                events.append((fo.statement, 0, t, fo))
         for st in self.app.stores:
             events.append((st.statement, 0, None, ("store", st.table, st.target)))
         events.sort(key=lambda e: (e[0], e[1]))
@@ -225,10 +232,14 @@ class Composer:
                 if old in self.broken:
                     self.broken.discard(old)
                     self.broken.add(new)
+            elif isinstance(ev, FieldOp):
+                assert t is not None
+                self._fields(t, ev, t.name_at(stmt))
             elif isinstance(ev, tuple):
                 owner = self.live.get(ev[1])
                 if owner is not None and ev[1] in self.cur:
                     self._result(owner.name).stores.append((ev[2], self.cur[ev[1]][0]))
+                    self.stored[_file_key(ev[2])] = (*self.cur[ev[1]], stmt)
             else:
                 assert isinstance(ev, TableStep) and t is not None
                 self._step(t, ev, t.name_at(stmt))
@@ -236,7 +247,42 @@ class Composer:
             owner = self.live.get(live)
             if owner is not None and live not in self.broken:
                 self._result(owner.name).final_cte = cte
+        for r in self.t.tables.values():
+            if r.final_cte is None and r.stores and not r.untranslated and not r.mapping:
+                r.final_cte = r.stores[-1][1]  # dropped after STORE: the table's SQL is the version stored
+                r.notes.append("dropped after STORE; its SQL is the version stored to " + r.stores[-1][0])
         return self.t
+
+    def _field_sources(self) -> dict[str, list[str]]:
+        """Field -> current versions of the data tables (not mapping tables) that hold it (for Exists)."""
+        out: dict[str, list[str]] = {}
+        for live, (cte, cols) in self.cur.items():
+            if live in self.mappings or live in self.broken:
+                continue
+            for c in cols or []:
+                out.setdefault(c, []).append(cte)
+        return out
+
+    def _fields(self, table: QlikTable, fo: FieldOp, live: str) -> None:
+        """RENAME FIELD / DROP FIELD: a projection of the table's current version."""
+        if live not in self.cur or live in self.broken:
+            return
+        cte, cols = self.cur[live]
+        r = self._result(table.name)
+        if cols is None:
+            self.broken.add(live)
+            self.cur.pop(live, None)
+            word = "RENAME FIELD" if fo.kind == "rename" else "DROP FIELD"
+            r.untranslated.append(Untranslated(table.name, fo.statement, "", f"{word} on a table whose columns are "
+                                               "not known", "T1", word))
+            return
+        out = [c for c in cols if c not in fo.drops]
+        sel = [exp.alias_(exp.column(c, quoted=True), fo.renames.get(c, c), quoted=True) for c in out]
+        body = exp.select(*sel).from_(exp.to_table(cte))
+        new_cols = [fo.renames.get(c, c) for c in out]
+        word = "rename" if fo.kind == "rename" else "drop"
+        name = self._add(Cte(self._name(table.name, f"_{word}"), body, new_cols, [fo.statement], [], "fields"))
+        self.cur[live] = (name, new_cols)
 
     def _step(self, table: QlikTable, step: TableStep, target: str) -> None:
         """target: the table's Qlik name when the step runs."""
@@ -258,6 +304,13 @@ class Composer:
             self.cur.pop(target, None)
             return self._note_untranslated(r, step, str(e), e.tier)
 
+        if step.constructs:
+            try:
+                chain_cte, chain_cols = self._construct(target, step, chain_cte, chain_cols)
+            except Untranslatable as e:
+                self.broken.add(target)
+                self.cur.pop(target, None)
+                return self._note_untranslated(r, step, str(e), e.tier)
         result = chain_cte
         if step.action == TableAction.MAPPING:
             self.mappings[target] = chain_cte
@@ -273,6 +326,33 @@ class Composer:
             result = self._keep(target, step, chain_cte, chain_cols, stmts, spans)
         r.steps.append(StepResult(action=step.action.value, statements=stmts, spans=spans, source_cte=source_cte,
                                   chain_cte=chain_cte, result_cte=result, start_line=lines[0], end_line=lines[1]))
+
+    def _construct(self, table: str, step: TableStep, cte: str, cols: list[str] | None
+                   ) -> tuple[str, list[str] | None]:
+        """Prefixes that reshape the loaded rows. CROSSTABLE(attribute, data[, n]) unpivots every column after the
+        first n into (attribute = column name, data = value) rows; the others are not translated yet."""
+        if step.constructs != ["crosstable"]:
+            raise Untranslatable(f"{', '.join(step.constructs)} prefix", "T2")
+        args = step.construct_args.get("crosstable", [])
+        if len(args) < 2:
+            raise Untranslatable("CROSSTABLE without attribute and data field names", "T1")
+        n = int(args[2]) if len(args) > 2 and args[2].strip().isdigit() else 1
+        if cols is None:
+            raise Untranslatable("CROSSTABLE over columns that are not known", "T1")
+        keep, turn = cols[:n], cols[n:]
+        if not turn:
+            raise Untranslatable("CROSSTABLE with no columns to unpivot", "T1")
+        parts = [exp.select(*[exp.column(c, quoted=True) for c in keep],
+                            exp.alias_(exp.Literal.string(c), args[0], quoted=True),
+                            exp.alias_(exp.column(c, quoted=True), args[1], quoted=True)).from_(exp.to_table(cte))
+                 for c in turn]
+        body: SqlExpr = parts[0]
+        for p in parts[1:]:
+            body = exp.union(body, p, distinct=False)
+        stmts = [o.statement for o in step.ops]
+        name = self._add(Cte(self._name(table, "_crosstable"), body, [*keep, args[0], args[1]], stmts,
+                             [self._span(o) for o in step.ops], "crosstable"))
+        return name, [*keep, args[0], args[1]]
 
     def _note_untranslated(self, r: TableResult, step: TableStep, reason: str, tier: str) -> None:
         op = self._cur_op if self._cur_op is not None and self._cur_op in step.ops else step.ops[-1]
@@ -331,6 +411,10 @@ class Composer:
                     this=exp.to_identifier("v"), columns=[exp.to_identifier(c, quoted=True) for c in cols]))
                 body = exp.select("*").from_(values)
             return self._add(Cte(self._name(table, "_inline"), body, cols, [op.statement], span, "source")), cols
+        if s.kind == "qvd" and (hit := self.stored.get(_file_key(s.ref or ""))):
+            cte, cols, at = hit  # a QVD this script stored earlier: read the version it stored
+            self._result(table).notes.append(f"reads {s.ref}, stored by this script at statement {at}")
+            return cte, cols
         if s.kind in ("qvd", "file"):
             db = QVD_DB if s.kind == "qvd" else FILE_DB
             tbl = exp.Table(this=exp.to_identifier(s.ref or "", quoted=True), db=exp.to_identifier(db, quoted=True))
@@ -371,7 +455,8 @@ class Composer:
         if op.while_ is not None:
             raise Untranslatable("WHILE clause (row iteration)", "T3")
         ctx = ExprContext(alias="src", columns=in_cols, mappings=self.mappings, variables=self.variables,
-                          row_column="__row" if in_cte in self._generated else None)
+                          row_column="__row" if in_cte in self._generated else None,
+                          field_sources=self._field_sources(), loading={f.name for f in op.fields if not f.star})
         tr = Translator(ctx)
         proj: list[SqlExpr] = []
         out_cols: list[str] | None = []

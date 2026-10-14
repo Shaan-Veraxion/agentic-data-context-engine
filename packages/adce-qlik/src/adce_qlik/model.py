@@ -18,6 +18,7 @@ import sqlglot
 from adce_core.bi_ir import (
     BIApp,
     Coverage,
+    FieldOp,
     Issue,
     LoadOp,
     LoadSource,
@@ -222,14 +223,16 @@ class _Builder:
             if p.source.kind in ("qvd", "file") and p.source.ref:
                 self.add_source(LogicalSource(connection=None, path=p.source.ref, kind=p.source.kind))
         fields = self._chain_fields(head, ops)
-        action, join_kind, target, constructs, noconcat = self._prefixes(head)
+        action, join_kind, target, constructs, noconcat, cargs = self._prefixes(head)
+        if "crosstable" in constructs and "*" not in fields:
+            fields = _crosstable_fields(fields, cargs.get("crosstable", []))
         context = list(head.context) or [s.text.splitlines()[0][:80] for s in self.stack]
         if any(s.kind in LOOP_KINDS for s in self.stack):
             self.issue(head, "inside_loop", "load runs inside a loop; repeated execution is not modelled yet")
         for c in constructs:
             self.issue(head, "construct_tier", f"{c} prefix (tier {TIERED[c]})")
         step = TableStep(action=action, join_kind=join_kind, ops=ops, fields=fields, constructs=constructs,
-                         context=context)
+                         construct_args=cargs, context=context)
 
         if action in (TableAction.JOIN, TableAction.CONCATENATE):
             name = target or self.last_table
@@ -300,9 +303,11 @@ class _Builder:
                        "LOAD * over a source with unknown columns; resolved with the QVD header or the catalog (PD)")
         return below
 
-    def _prefixes(self, st: Statement) -> tuple[TableAction, str | None, str | None, list[str], bool]:
+    def _prefixes(self, st: Statement
+                  ) -> tuple[TableAction, str | None, str | None, list[str], bool, dict[str, list[str]]]:
         action, join_kind, target, noconcat = TableAction.CREATE, None, None, False
         constructs: list[str] = []
+        args: dict[str, list[str]] = {}
         for p in st.prefixes:
             low = p.lower()
             if m := JOIN_RX.match(p):
@@ -322,7 +327,9 @@ class _Builder:
                 word = re.match(r"[a-z]+", low)
                 if word and word.group(0) in TIERED:
                     constructs.append(word.group(0))
-        return action, join_kind, target, constructs, noconcat
+                    inner = re.search(r"\((.*)\)", p, re.S)
+                    args[word.group(0)] = _names(inner.group(1)) if inner else []
+        return action, join_kind, target, constructs, noconcat, args
 
     def _new_name(self, head: Statement, src: LoadSource) -> str:
         if head.label:
@@ -364,6 +371,9 @@ class _Builder:
             for name in tables:
                 if name in self.app.tables:
                     t = self.app.tables[name]
+                    gone = [f for f in t.fields if f in fields]
+                    if gone and t.dropped_at is None and not t.mapping:
+                        t.field_ops.append(FieldOp(statement=st.index, kind="drop", drops=gone))
                     t.fields = [f for f in t.fields if f not in fields]
 
     def _rename(self, st: Statement, text: str) -> None:
@@ -392,12 +402,23 @@ class _Builder:
             pairs = [re.split(r"(?i)\s+to\s+", p.strip()) for p in re.split(r",(?![^\[]*\])", m.group(1))]
             mapping = {unquote_name(a.strip()): unquote_name(b.strip()) for a, b in (p for p in pairs if len(p) == 2)}
             for t in self.app.tables.values():
+                hit = {a: b for a, b in mapping.items() if a in t.fields}
+                if hit and t.dropped_at is None and not t.mapping:
+                    t.field_ops.append(FieldOp(statement=st.index, kind="rename", renames=hit))
                 t.fields = [mapping.get(f, f) for f in t.fields]
 
 
 def _table_path(t: exp.Table) -> str:
     parts = [p.name for p in t.parts]
     return ".".join(parts)
+
+
+def _crosstable_fields(fields: list[str], args: list[str]) -> list[str]:
+    """CROSSTABLE(attribute, data[, n]): the first n fields (default 1) stay, the others become rows."""
+    if len(args) < 2:
+        return fields
+    n = int(args[2]) if len(args) > 2 and args[2].strip().isdigit() else 1
+    return fields[:n] + [args[0], args[1]]
 
 
 def _union(a: list[str], b: list[str]) -> list[str]:

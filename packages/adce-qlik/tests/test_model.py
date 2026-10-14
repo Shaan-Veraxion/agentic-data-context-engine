@@ -77,7 +77,8 @@ def test_subs_called_loops_unrolled_and_tiers_flagged():
     assert [(s.action, s.context) for s in y.steps] == [(A.CREATE, ["FOR i = 1 TO 2 (i=1)"]),
                                                          (A.AUTO_CONCATENATE, ["FOR i = 1 TO 2 (i=2)"])]
     assert app.tables["X"].steps[0].context == ["CALL Load1()"]
-    assert app.tables["Z"].fields == ["b"]  # LOAD * RESIDENT Y takes Y's fields
+    # LOAD * RESIDENT Y takes Y's fields; CROSSTABLE keeps the first (b) and adds the attribute and data fields
+    assert app.tables["Z"].fields == ["b", "Month", "Sales"]
     assert "construct_tier" in codes(app) and "star_unresolved" not in codes(app)
 
 

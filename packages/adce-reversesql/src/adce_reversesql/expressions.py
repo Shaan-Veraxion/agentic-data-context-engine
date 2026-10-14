@@ -50,6 +50,10 @@ class ExprContext:
     notes: list[str] = field(default_factory=list)
     variables: dict[str, str] = field(default_factory=dict)  # script settings: MonthNames, DateFormat, ...
     row_column: str | None = None  # row-number column of a generated source (RecNo / RowNo)
+    # Exists(): field name -> relations holding the values loaded so far (data tables, not mappings), and the
+    # fields the current load itself adds (then Exists also sees the rows of this load: order-dependent)
+    field_sources: dict[str, list[str]] = field(default_factory=dict)
+    loading: set[str] = field(default_factory=set)
 
 
 BOOLEAN_OPS = {"=", "<>", "<", ">", "<=", ">=", "AND", "OR", "XOR", "NOT", "LIKE", "PRECEDES", "FOLLOWS"}
@@ -105,7 +109,12 @@ class Translator:
             a, b = self._bool(e.args[0]), self._bool(e.args[1])
             return exp.NEQ(this=exp.Paren(this=a), expression=exp.Paren(this=b))
         if e.kind == "unop" and e.name == "NOT":
-            return exp.Not(this=exp.Paren(this=self._bool(e.args[0])))
+            inner = e.args[0]
+            self_exists = inner.kind == "call" and (inner.name or "").lower() == "exists" and bool(inner.args)
+            if self_exists and (inner.args[0].name or "") in self.ctx.loading:
+                raise Untranslatable("NOT Exists() on a field this load also adds keeps the first row per value "
+                                     "(depends on load order)", "T2")
+            return exp.Not(this=exp.Paren(this=self._bool(inner)))
         if e.kind == "binop" and e.name in ("=", "<>", "<", ">", "<=", ">="):
             a, b = self._val(e.args[0]), self._val(e.args[1])
             cls = {"=": exp.EQ, "<>": exp.NEQ, "<": exp.LT, ">": exp.GT, "<=": exp.LTE, ">=": exp.GTE}[e.name]
@@ -118,6 +127,10 @@ class Translator:
             return exp.ILike(this=self._val(e.args[0]), expression=exp.Literal.string(sql_pat))
         if e.kind == "call" and (e.name or "").lower() == "isnull":
             return exp.Is(this=self._val(e.args[0]), expression=exp.Null())
+        if e.kind == "call" and (e.name or "").lower() == "exists":
+            return self._exists(e)
+        if e.kind == "call" and (e.name or "").lower() in ("isnum", "istext"):
+            raise Untranslatable(f"{e.name}() (dual value types)", "T2")
         if e.kind == "binop" and e.name in ("PRECEDES", "FOLLOWS"):
             raise Untranslatable(f"{e.name} operator")
         return exp.NEQ(this=self._val(e), expression=exp.Literal.number(0))  # Qlik: non-zero is true
@@ -140,7 +153,7 @@ class Translator:
             return self.value(e)
         if k == "unop":
             inner = self._val(e.args[0])
-            return exp.Neg(this=inner) if e.name == "-" else inner
+            return exp.Neg(this=_paren(inner)) if e.name == "-" else inner
         if k == "binop":
             return self._binop(e)
         if k == "call":
@@ -149,7 +162,8 @@ class Translator:
 
     def _binop(self, e: Expr) -> SqlExpr:
         op = e.name or ""
-        a, b = self._val(e.args[0]), self._val(e.args[1])
+        # sqlglot prints a tree built in code as is, without precedence parentheses: 2 * (1 + x) must keep them
+        a, b = _paren(self._val(e.args[0])), _paren(self._val(e.args[1]))
         if op == "&":
             a, b = self._text(e.args[0], a), self._text(e.args[1], b)
 
@@ -188,6 +202,35 @@ class Translator:
                 except FormatError as x:
                     raise Untranslatable(f"{e.name}() format {fmt!r}: {x}") from x
         return value
+
+    def _exists(self, e: Expr) -> SqlExpr:
+        """Exists(F [, expr]): the value (F's own, or expr) is among F's values loaded before this statement.
+        In a WHERE, rows it rejects add no values, so the result does not depend on row order."""
+        if not e.args or e.args[0].kind != "field" or len(e.args) > 2:
+            raise Untranslatable("Exists() with a non-field first argument", "T2")
+        f = e.args[0].name or ""
+        probe = self._val(e.args[1]) if len(e.args) == 2 else self._val(e.args[0])
+        rels = self.ctx.field_sources.get(f, [])
+        if not rels:
+            return exp.false()  # no table loaded the field yet: Exists is false
+        q: SqlExpr = exp.select(exp.column(f, quoted=True)).from_(rels[0])
+        for r in rels[1:]:
+            q = exp.union(q, exp.select(exp.column(f, quoted=True)).from_(r), distinct=False)
+        return exp.In(this=probe, query=exp.Subquery(this=q))
+
+    def _round(self, args: list[Expr]) -> SqlExpr:
+        """Qlik Round(x [, step [, offset]]) rounds half up to a multiple of step: Floor((x - o) / s + 0.5) * s + o.
+        SQL ROUND rounds half away from zero, so Round(-2.5) would give -3 instead of Qlik's -2."""
+        x = _paren(self._val(args[0]))
+        step = _paren(self._val(args[1])) if len(args) > 1 else None
+        off = _paren(self._val(args[2])) if len(args) > 2 else None
+        v: SqlExpr = exp.Sub(this=x, expression=off) if off is not None else x
+        if step is not None:
+            v = exp.Div(this=exp.Paren(this=v), expression=step)
+        v = exp.Floor(this=exp.Add(this=v, expression=exp.Literal.number(0.5)))
+        if step is not None:
+            v = exp.Mul(this=v, expression=step)
+        return exp.Add(this=v, expression=off) if off is not None else v
 
     def _call(self, e: Expr) -> SqlExpr:
         name = (e.name or "").lower()
@@ -241,15 +284,24 @@ class Translator:
             return exp.Substring(this=parts[0], start=parts[1], length=parts[2] if len(parts) == 3 else None)
         if name == "index" and len(args) == 2:
             return exp.StrPosition(this=self._val(args[0]), substr=self._val(args[1]))
-        if name == "round" and len(args) == 1:
-            return exp.Round(this=self._val(args[0]))
+        if name in ("div", "mod") and len(args) == 2:
+            x, y = _paren(self._val(args[0])), _paren(self._val(args[1]))
+            q = exp.Div(this=x, expression=exp.Nullif(this=y, expression=exp.Literal.number(0)))
+            if name == "div":  # integer part, truncated towards zero: Div(-7, 2) = -3
+                return exp.Case(ifs=[exp.If(this=exp.GTE(this=q, expression=exp.Literal.number(0)),
+                                            true=exp.Floor(this=q))], default=exp.Ceil(this=q))
+            # Qlik's modulo is never negative for a positive divisor: Mod(-13, 3) = 2 (SQL MOD gives -1)
+            return exp.Sub(this=x, expression=exp.Mul(this=y, expression=exp.Floor(this=q)))
+        if name == "round" and 1 <= len(args) <= 3:
+            return self._round(args)
         if name in ("floor", "ceil") and len(args) == 1:
             cls = exp.Floor if name == "floor" else exp.Ceil
             return cls(this=self._val(args[0]))
         if name in ("daystart", "dayname") and len(args) == 1:
             return exp.Cast(this=self._val(args[0]), to=exp.DataType.build("DATE"))
         if name == "text" and len(args) == 1:
-            return exp.Cast(this=self._val(args[0]), to=exp.DataType.build("VARCHAR"))
+            v = self._text(args[0], self._val(args[0]))  # the text Qlik shows: Date(x, fmt) keeps its format
+            return v if _is_text(v) else exp.Cast(this=v, to=exp.DataType.build("VARCHAR"))
         if name == "num#" or name == "evaluate":
             raise Untranslatable(f"{e.name}() needs format-aware parsing")
         if name == "null" and not args:
@@ -365,3 +417,15 @@ def _split_top(text: str) -> list[str]:
     if cur.strip():
         out.append(cur.strip())
     return out
+
+
+def _paren(x: SqlExpr) -> SqlExpr:
+    """Parenthesise an operand that is itself an operation, so the printed SQL keeps the Qlik grouping."""
+    if isinstance(x, (exp.Binary, exp.Neg, exp.Not)) and not isinstance(x, exp.Dot):
+        return exp.Paren(this=x)
+    return x
+
+
+def _is_text(x: SqlExpr) -> bool:
+    return isinstance(x, exp.DPipe) or (isinstance(x, exp.Literal) and x.is_string) or (
+        isinstance(x, exp.Anonymous) and x.name.upper() == "TO_CHAR")
