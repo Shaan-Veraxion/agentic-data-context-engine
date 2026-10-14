@@ -66,6 +66,7 @@ class ProviderConfig(BaseModel):
     # longest tool result sent back; every turn resends the conversation, so both count toward tpm
     tool_turn_tokens: int | None = None
     tool_choice: Literal["required", "auto"] = "required"  # auto: some models answer in text after tools
+    answer_aliases: list[str] = Field(default_factory=list)  # tool names the model uses for its answer (gpt-oss: json)
     tool_result_chars: int | None = None
 
     def env(self, var: str | None) -> str | None:

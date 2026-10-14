@@ -72,11 +72,22 @@ async def test_tools_run_bad_answers_bounce_and_the_exchange_replays(tmp_path):
 
 
 async def test_the_last_turn_forces_an_answer(tmp_path):
-    model = Scripted([[("check_sql", {"sql": "SELECT 1"})]] * 2)
+    model = Scripted([[("check_sql", {"sql": "SELECT 1"})]] * 4)
     with pytest.raises(OutputInvalid):
         await gateway(tmp_path, model).call("translate_statement", {"statement": "LOAD 2"}, Answer,
                                             tools=tools([]), max_turns=2)
-    assert model.forced == [None, SUBMIT]
+    assert model.forced == [None, SUBMIT, SUBMIT, SUBMIT]  # the last turn, then two grace turns
+    assert any(name == "nudge" and "Last turn" in text for name, text in model.seen)
+
+
+async def test_an_answer_alias_counts_as_the_answer(tmp_path):
+    toml = tmp_path / "g.toml"
+    toml.write_text('[providers.p]\nkind = "openai_compatible"\nbase_url = "http://x"\nanswer_aliases = ["json"]\n'
+                    '[models]\nstrong = "p:m"\nstandard = "p:m"\nlight = "p:m"\n', encoding="utf-8")
+    model = Scripted([[("json", {"sql": "SELECT 2", "translatable": True})]])
+    gw = ModelGateway("record", Recordings(tmp_path / "rec"), clients={"p": model}, config=load_config(toml))
+    r = await gw.call("translate_statement", {"statement": "LOAD 4"}, Answer, tools=tools([]))
+    assert r.output == Answer(sql="SELECT 2", translatable=True)
 
 
 async def test_a_tool_result_that_looks_like_rows_is_withheld(tmp_path):

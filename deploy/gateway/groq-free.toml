@@ -19,6 +19,7 @@ max_output_tokens = 4000           # Groq counts the output budget toward TPM: k
 tool_turn_tokens = 2000            # tool use: each turn resends the conversation, so keep turns small
 tool_result_chars = 2000
 tool_choice = "auto"               # with "required", Groq rejects a gpt-oss reply that answers in text
+answer_aliases = ["json"]          # gpt-oss sometimes gives its answer by calling a tool named "json"
 
 [providers.groq2]
 kind = "openai_compatible"
@@ -33,6 +34,7 @@ max_output_tokens = 4000
 tool_turn_tokens = 2000
 tool_result_chars = 2000
 tool_choice = "auto"               # with "required", Groq rejects a gpt-oss reply that answers in text
+answer_aliases = ["json"]          # gpt-oss sometimes gives its answer by calling a tool named "json"
 
 [models]
 strong = "groq:openai/gpt-oss-120b"

@@ -194,7 +194,7 @@ async function openCase(id, variant) {
   renderList();
   S.detail = await api("/api/case/" + encodeURI(id));
   const v = S.detail.variants || {};
-  S.sel = { agents: [...S.detail.chain], ai: variant?.ai || (v.ai || ["off"])[0], data: variant?.data || (v.data || ["full"])[0], memory: "fresh" };
+  S.sel = { agents: [...S.detail.chain], ai: variant?.ai || (v.ai || ["off"])[0], data: variant?.data || (v.data || ["full"])[0], memory: "fresh", tools: load("tools", false) };
   store("current", id);
   history.replaceState(null, "", "#case=" + encodeURIComponent(id));
   renderCase();
@@ -220,6 +220,7 @@ function renderCase() {
       <label>AI<select id="ai">${S.meta.ai_modes.map(x => `<option ${x === sel.ai ? "selected" : ""}>${x}</option>`).join("")}</select></label>
       <label>Data uploaded<select id="data">${S.meta.data_variants.map(x => `<option ${x === sel.data ? "selected" : ""}>${x}</option>`).join("")}</select></label>
       <label>Memory<select id="mem"><option value="fresh">fresh</option><option value="session" ${sel.memory === "session" ? "selected" : ""}>session (shared)</option></select></label>
+      <label title="LLM steps may call tools before answering: check_sql, get_statements, kg-mcp lookups"><span><input type="checkbox" id="tools" ${sel.tools ? "checked" : ""}> LLM tools</span></label>
       <button class="primary" id="run">Run</button>
       <button class="ghost" id="runall">Run this case's variants</button>
       <button class="ghost" id="approve" title="Accept the last run's levels (and rows, if the case has no hand oracle) as expectations">Approve result</button>
@@ -233,6 +234,7 @@ function renderCase() {
   $("#ai").onchange = e => sel.ai = e.target.value;
   $("#data").onchange = e => sel.data = e.target.value;
   $("#mem").onchange = e => sel.memory = e.target.value;
+  $("#tools").onchange = e => { sel.tools = e.target.checked; store("tools", sel.tools); };
   $("#run").onclick = runCurrent;
   $("#runall").onclick = runCaseVariants;
   $("#approve").onclick = approveCurrent;
@@ -267,7 +269,7 @@ async function runCurrent() {
   const btn = $("#run"); if (btn) { btn.disabled = true; btn.textContent = "Running…"; }
   $("#result").innerHTML = '<div class="card"><div class="muted">Running ' + esc(S.current) + "…</div></div>";
   try {
-    S.result = await api("/api/run", { case: S.current, agents: S.sel.agents, ai: S.sel.ai, data: S.sel.data, memory: S.sel.memory });
+    S.result = await api("/api/run", { case: S.current, agents: S.sel.agents, ai: S.sel.ai, data: S.sel.data, memory: S.sel.memory, tools: S.sel.tools });
     renderResult(S.result, $("#result"));
     await refreshCases();
   } catch (e) { $("#result").innerHTML = `<div class="card note">${esc(e.message)}</div>`; }
@@ -301,7 +303,7 @@ function renderResult(r, el) {
   el.innerHTML = `
   <div class="card">
     <div class="row"><h2 style="margin:0">Result</h2><span class="badge ${r.status}">${r.status.toUpperCase()}</span>
-      <span class="muted">${r.passed} checks passed · ${r.failed} failed · ${r.seconds}s · ai=${esc(r.variant.ai)} data=${esc(r.variant.data)}${calls.length ? " · " + calls.length + " model call(s)" : ""}</span></div>
+      <span class="muted">${r.passed} checks passed · ${r.failed} failed · ${r.seconds}s · ai=${esc(r.variant.ai)}${r.variant.tools ? "+tools" : ""} data=${esc(r.variant.data)}${calls.length ? " · " + calls.length + " model call(s)" : ""} · ${r.kg_calls || 0} kg-mcp calls</span></div>
     <div class="tabs" id="rtabs"></div><div id="rview"></div>
   </div>`;
   const tabs = [["checks", `Checks (${r.checks.length})`], ["agents", `Agents (${r.steps.length})`], ["rows", `Rows (${Object.keys(r.rows).length})`], ["sql", "SQL"]];
@@ -315,7 +317,7 @@ function renderResult(r, el) {
     if (cur === "agents") v.innerHTML = r.steps.map(stepView).join("");
     if (cur === "rows") v.innerHTML = Object.entries(r.rows).map(([t, x]) => rowsView(t, x)).join("") || '<div class="muted">No table SQL was run (the chain needs agent 28, and data other than script_bare).</div>';
     if (cur === "sql") v.innerHTML = sqlView(r);
-    if (cur === "calls") v.innerHTML = calls.map((c, i) => `<details><summary><b>#${i + 1} ${esc(c.route)}</b>${c.error ? `<span class="badge fail">${esc(c.error)}</span>` : `<span class="badge info">${esc(c.source)}</span><span class="muted">${esc(c.model)} · ${c.input_tokens ?? "?"}→${c.output_tokens ?? "?"} tokens · ${c.latency_ms} ms</span>`}</summary><div class="body">${c.output ? `<pre class="wrap">${esc(JSON.stringify(c.output, null, 2))}</pre>` : ""}</div></details>`).join("");
+    if (cur === "calls") v.innerHTML = calls.map((c, i) => `<details><summary><b>#${i + 1} ${esc(c.route)}</b>${c.error ? `<span class="badge fail">${esc(c.error)}</span>` : `<span class="badge info">${esc(c.source)}</span><span class="muted">${esc(c.model)} · ${c.turns || 1} turn(s) · ${c.input_tokens ?? "?"}→${c.output_tokens ?? "?"} tokens · ${c.latency_ms} ms</span>`}</summary><div class="body">${(c.tools || []).length ? `<h4>Tools the model called</h4>${table(["tool", "arguments", "result chars", "error"], c.tools.map(t => [t.tool, t.arguments, t.result_chars, t.error]))}` : ""}${c.output ? `<h4>Answer</h4><pre class="wrap">${esc(JSON.stringify(c.output, null, 2))}</pre>` : ""}</div></details>`).join("");
   };
   draw();
 }
@@ -454,9 +456,9 @@ function filterByAgent(n) {
 async function renderMemory() {
   const facts = await api("/api/memory");
   $("#main").innerHTML = `<div class="card"><h2>Session translation memory</h2>
-    <div class="muted">Runs with Memory = “session” share one knowledge store, so an answer learned in one run is reused by the next (no model call). Use it to test learning: run a case with AI live or replay, then again, and compare the model calls.</div>
-    <div class="row" style="margin:10px 0"><button class="ghost" id="mreset">Reset session memory</button><span class="muted">${facts.length} entries</span></div>
-    ${facts.length ? table(["subject", "trust", "status", "replaces rule", "statement", "sql"], facts.map(f => [f.subject, f.trust, f.value.status, f.value.replaces_rule, f.value.statement, f.value.sql])) : ""}</div>`;
+    <div class="muted">Runs with Memory = “session” share one knowledge store, so an answer learned in one run is reused by later runs (no model call) and re-checked on each app's data. An answer confirmed on two or more apps is <b>proven</b>; one any app's data contradicts is <b>disproved</b> and no longer used. Try it: run apps/rulefix_local (AI replay, session), then other cases with the same statement.</div>
+    <div class="row" style="margin:10px 0"><button class="ghost" id="mreset">Reset session memory</button><span class="muted">${facts.length} learned answers</span></div>
+    ${facts.length ? table(["state", "learned on", "passed on", "failed on", "checks", "replaces rule", "statement", "sql"], facts.map(f => [f.state, f.learned_on, f.passed_on.join(", "), f.failed_on.join(", "), f.checks, f.replaces_rule, f.statement, f.sql])) : ""}</div>`;
   $("#mreset").onclick = async () => { await api("/api/memory/reset", {}); renderMemory(); };
 }
 

@@ -41,7 +41,7 @@ from .providers import (
     build_client,
 )
 from .routes import ROUTES, Route
-from .tools import MAX_RESULT_CHARS, SUBMIT, TOOLS_NOTE, Transcript, run_tool, specs, tools_key
+from .tools import MAX_RESULT_CHARS, SUBMIT, TOOLS_NOTE, Transcript, run_tool, specs, submit_tool, tools_key
 
 __all__ = ["Budget", "BudgetExceeded", "GatewayRefusal", "GatewayResult", "ModelGateway", "OutputInvalid",
            "ProviderError", "Recordings", "ReplayMiss", "Usage", "from_settings"]
@@ -161,7 +161,7 @@ class ModelGateway:
         return self.clients[provider]
 
     async def call(self, route_name: str, inputs: dict[str, Any], output_model: type[BaseModel], *,
-                   task: str = "default", tools: list[Any] | None = None, max_turns: int = 6) -> GatewayResult:
+                   task: str = "default", tools: list[Any] | None = None, max_turns: int = 8) -> GatewayResult:
         """tools: read-only tools.Tool objects the model may call before answering (see tools.py)."""
         if tools:
             return await self._call_tools(route_name, inputs, output_model, tools, task, max_turns)
@@ -252,7 +252,10 @@ class ModelGateway:
         last turn). An answer that does not match the schema goes back to the model as an error."""
         client = cast(ToolUseClient, self._client(b.provider))
         conv = client.start(system, user)
-        tool_specs = specs(tools, output_model)
+        pc0 = self.config.providers.get(b.provider)
+        aliases = set(pc0.answer_aliases) if pc0 else set()
+        # some models call a made-up tool (gpt-oss: "json") to give their answer: accept it as submit_answer
+        tool_specs = specs(tools, output_model) + [{**submit_tool(output_model), "name": a} for a in sorted(aliases)]
         by_name = {t.name: t for t in tools}
         total = Usage()
         transcript = Transcript()
@@ -261,8 +264,11 @@ class ModelGateway:
         pc = self.config.providers.get(b.provider)
         turn_tokens = min(out_tokens, pc.tool_turn_tokens) if pc and pc.tool_turn_tokens else out_tokens
         result_chars = pc.tool_result_chars if pc and pc.tool_result_chars else MAX_RESULT_CHARS
-        for n in range(max_turns):
-            force = SUBMIT if n == max_turns - 1 else None
+        grace = 2  # extra forced turns when the model still does something else on the last one
+        for n in range(max_turns + grace):
+            force = SUBMIT if n >= max_turns - 1 else None
+            if n == max_turns - 1:
+                client.nudge(conv, f"Last turn: call {SUBMIT} now with your best answer. No other tool.")
             budget = out_tokens if force else turn_tokens
             need = estimate_tokens(json.dumps(conv, default=str) + json.dumps(tool_specs)) + budget
             entry = await limiter.acquire(need) if limiter else None
@@ -293,7 +299,7 @@ class ModelGateway:
                     continue
             results = []
             for c in t.calls:
-                if c.name == SUBMIT:
+                if c.name == SUBMIT or c.name in aliases:
                     try:
                         return output_model.model_validate(c.arguments or {}), total, model, transcript, n + 1
                     except ValidationError as e:
@@ -304,7 +310,7 @@ class ModelGateway:
                 transcript.add(c, text, err)
                 results.append((c, text))
             client.add_results(conv, results)
-        err = OutputInvalid(f"{b.key}: no valid {SUBMIT} after {max_turns} turns")
+        err = OutputInvalid(f"{b.key}: no valid {SUBMIT} after {max_turns + grace} turns")
         err.usage, err.tool_calls = total, transcript.steps  # type: ignore[attr-defined]  # kept for evaluation
         raise err
 

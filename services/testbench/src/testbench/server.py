@@ -126,12 +126,13 @@ class RunRequest(BaseModel):
     ai: str = "off"
     data: str = "full"
     memory: str = "fresh"  # fresh | session
+    tools: bool = False  # LLM steps may call tools
 
 
 async def _run(c: Case, req: RunRequest) -> dict[str, Any]:
     if req.ai not in AI_MODES or req.data not in DATA_VARIANTS:
         raise HTTPException(400, "unknown variant")
-    variant = Variant(req.ai, req.data)
+    variant = Variant(req.ai, req.data, req.tools)
     kg = _session_kg if req.memory == "session" else None
     r = await run_case(c, variant, req.agents or None, kg)
     custom = sorted(req.agents) if req.agents and sorted(req.agents) != sorted(c.chain) else None
@@ -165,8 +166,10 @@ def reset_memory() -> dict[str, Any]:
 
 @app.get("/api/memory")
 async def memory() -> list[dict[str, Any]]:
-    facts = await _session_kg.facts(kind="translation_memory")
-    return [{"subject": f.subject, "trust": f.trust.value, "value": f.value} for f in facts]
+    """The session's learned answers with their evidence over time (orchestrator.learning.memory_report)."""
+    from orchestrator.learning import memory_report
+
+    return await memory_report(_session_kg)
 
 
 # ---------------------------------------------------------------------- playground
@@ -183,6 +186,7 @@ class PlaygroundRequest(BaseModel):
     agents: list[int] | None = None
     ai: str = "off"
     memory: str = "fresh"
+    tools: bool = False
     title: str = "playground"
 
 
@@ -222,7 +226,8 @@ async def playground(req: PlaygroundRequest) -> dict[str, Any]:
     d = PLAYGROUND / pid
     _write_playground(req, d)
     c = load_case(d / "case.yaml", PLAYGROUND)
-    out = await _run(c, RunRequest(case=c.id, agents=req.agents, ai=req.ai, data="full", memory=req.memory))
+    out = await _run(c, RunRequest(case=c.id, agents=req.agents, ai=req.ai, data="full", memory=req.memory,
+                                   tools=req.tools))
     return out | {"playground_id": pid}
 
 
