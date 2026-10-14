@@ -285,7 +285,12 @@ class Composer:
         self._cur_op, self._in_cols = bottom, None
         if bottom.parse_error:
             raise Untranslatable(f"statement does not parse: {bottom.parse_error}", "T1")
-        src_cte, cols = self._source(table, bottom)
+        try:
+            src_cte, cols = self._source(table, bottom)
+        except Untranslatable:
+            if bottom.kind != "load" or bottom.statement not in self.overrides:
+                raise
+            src_cte, cols = "", None  # the override replaces the whole statement, source included
         cur_cte, cur_cols = src_cte, cols
         for op in reversed(ops if bottom.kind == "load" else ops[:-1]):
             cur_cte, cur_cols = self._load(table, op, cur_cte, cur_cols)
@@ -421,6 +426,9 @@ class Composer:
             raise Untranslatable(f"AI translation does not parse: {str(e).splitlines()[0]}", "T2") from e
         for t in body.find_all(exp.Table):
             if t.name.lower() == "src" and not t.db:
+                if not in_cte:
+                    raise Untranslatable("override reads src, but the statement's own source is not translatable",
+                                         "T2")
                 t.set("this", exp.to_identifier(in_cte))
                 t.set("alias", exp.TableAlias(this=exp.to_identifier("src")))
         cols = [e.alias_or_name for e in body.expressions] if isinstance(body, exp.Select) else None

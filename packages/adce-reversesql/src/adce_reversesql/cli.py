@@ -4,6 +4,10 @@
     adce translate <app_dir> [--table T]     Dremio SQL per table
     adce validate <app_dir>                  local validation (needs <app_dir>/sources and/or qvd/)
     adce report <app_dir>... [--json]        coverage and translation measures, and what blocks the rest
+  --ai on translate / validate / report: statements the rules leave untranslated go through the LLM pathway
+       (model gateway, translation memory, checks, local validation when data exists). Settings come from the
+       environment and deploy/compose/.env (ADCE_GATEWAY_CONFIG, provider keys); memory and recordings are kept
+       in .adce/ (git-ignored: they can contain client script text).
     adce charts <app_dir> [--visual ID]      Dremio SQL per chart (needs <app_dir>/frontend)
 
 An app directory holds *.qvs scripts, an optional reload.log (or *.log), qvd/*.qvd and sources/<path>.csv|parquet,
@@ -18,17 +22,18 @@ import json
 import sys
 from pathlib import Path
 
+from adce_core.bi_ir import BIApp
 from adce_qlik import parse_reload_log, read_qvd_header, read_script
 from adce_qlik.frontend import attach_frontend
 from adce_qlik.model import build_app
 from adce_qlik.reload_log import ReloadLog
 
-from .compose import compose
+from .compose import Translation, compose
 from .local import LocalVenue, read_qvd
 from .reconcile import Reconciler
 
 
-def _load(app_dir: Path) -> tuple[ReloadLog | None, object]:
+def _load(app_dir: Path) -> tuple[ReloadLog | None, BIApp]:
     scripts = {p.name: p.read_text(encoding="utf-8-sig") for p in sorted(app_dir.glob("*.qvs"))}
     if not scripts:
         raise SystemExit(f"no .qvs scripts in {app_dir}")
@@ -65,6 +70,57 @@ def _venue(d: Path, app: object) -> tuple[LocalVenue, dict, dict]:  # type: igno
     return venue, heads, conts
 
 
+def _env_file(path: str = "deploy/compose/.env") -> None:
+    import os
+
+    p = Path(path)
+    if not p.is_file():
+        return
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
+
+
+def _gateway() -> object:
+    from adce_core.settings import Settings
+    from adce_gateway.config import default_config, load_config
+    from adce_gateway.gateway import ModelGateway, Recordings
+    from adce_gateway.tracing import langfuse_tracer
+
+    _env_file()
+    s = Settings()
+    config = load_config(s.gateway_config) if s.gateway_config else default_config(s.vertex_region)
+    mode = s.gateway_mode if s.gateway_mode != "replay" else "record"
+    return ModelGateway(mode, Recordings(".adce/recordings"), config=config, tracer=langfuse_tracer())
+
+
+def _with_ai(d: Path, app: object, log: ReloadLog | None, quiet: bool = False) -> tuple[Translation, list]:  # type: ignore[type-arg]
+    """Run the LLM pathway; returns the translation with accepted overrides and the outcomes."""
+    import asyncio
+
+    from .ai_loop import TranslationMemory, translate_with_ai
+
+    venue, heads, conts = _venue(d, app)
+
+    from .runtime import make_validator
+
+    validator = make_validator(venue, log, heads, conts)
+
+    memory = TranslationMemory(".adce/memory.json")
+
+    def show(o: object) -> None:
+        if not quiet:
+            print(f"-- ai: {o.table} statement {o.statement}: {o.status}"  # type: ignore[attr-defined]
+                  f"{' after ' + str(len(o.attempts)) + ' attempt(s)' if o.attempts else ''}",  # type: ignore[attr-defined]
+                  file=sys.stderr, flush=True)
+
+    overrides, outcomes = asyncio.run(translate_with_ai(app, _gateway(), memory, validator=validator,  # type: ignore[arg-type]
+                                                        task=f"cli:{d.name}", on_outcome=show))
+    memory.save()
+    return compose(app, overrides), outcomes  # type: ignore[arg-type]
+
+
 def cmd_parse(args: argparse.Namespace) -> int:
     _, app = _load(Path(args.app_dir))
     out = {"coverage": app.coverage.model_dump() | {"ratio": round(app.coverage.ratio, 4)},  # type: ignore[attr-defined]
@@ -78,12 +134,12 @@ def cmd_parse(args: argparse.Namespace) -> int:
 
 
 def cmd_translate(args: argparse.Namespace) -> int:
-    _, app = _load(Path(args.app_dir))
-    t = compose(app)  # type: ignore[arg-type]
-    for name, r in t.tables.items():
+    log, app = _load(Path(args.app_dir))
+    t = _with_ai(Path(args.app_dir), app, log)[0] if args.ai else compose(app)  # type: ignore[arg-type]
+    for name, r in t.tables.items():  # type: ignore[attr-defined]
         if args.table and name != args.table:
             continue
-        sql = t.table_sql(name)
+        sql = t.table_sql(name)  # type: ignore[attr-defined]
         print(f"-- ===== {name} ({'complete' if r.complete else 'incomplete'})")
         for u in r.untranslated:
             print(f"-- not translated: statement {u.statement} ({u.span}): {u.reason} [{u.tier}]")
@@ -95,7 +151,7 @@ def cmd_translate(args: argparse.Namespace) -> int:
 def cmd_validate(args: argparse.Namespace) -> int:
     d = Path(args.app_dir)
     log, app = _load(d)
-    t = compose(app)  # type: ignore[arg-type]
+    t = _with_ai(d, app, log)[0] if args.ai else compose(app)  # type: ignore[arg-type]
     venue, heads, conts = _venue(d, app)
     rec = Reconciler(t, venue, log, heads, conts)
     worst = 0
@@ -160,8 +216,12 @@ def cmd_report(args: argparse.Namespace) -> int:
 
     rows = []
     for d in args.app_dirs:
-        _, app = _load(Path(d))
-        rows.append(measure(app, compose(app)))  # type: ignore[arg-type]
+        log, app = _load(Path(d))
+        if args.ai:
+            t, outcomes = _with_ai(Path(d), app, log)
+            rows.append(measure(app, t, outcomes))  # type: ignore[arg-type]
+        else:
+            rows.append(measure(app, compose(app)))  # type: ignore[arg-type]
     if args.json:
         print(json.dumps([m.as_dict() for m in rows], indent=2))
         return 0
@@ -176,6 +236,8 @@ def cmd_report(args: argparse.Namespace) -> int:
         print()
         print(f"{m.app_id}: dialects {m.connection_dialects or '-'}; {len(m.unresolved_variables)} variables "
               f"set outside the script; {m.inputs_to_resolve} inputs to resolve; {m.knock_on} knock-on statements")
+        if m.ai:
+            print("   by the LLM pathway: " + ", ".join(f"{k} {v}" for k, v in m.ai.items()))
         for tier, reason, n in m.root_causes:
             print(f"   [{tier}] x{n} {reason}")
     return 0
@@ -189,6 +251,8 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("app_dir")
         if name == "translate":
             sp.add_argument("--table")
+        if name in ("translate", "validate"):
+            sp.add_argument("--ai", action="store_true", help="use the LLM pathway for what the rules cannot do")
         sp.set_defaults(fn=fn)
     cp = sub.add_parser("charts", help="Dremio SQL per chart and table of the front end")
     cp.add_argument("app_dir")
@@ -197,6 +261,7 @@ def main(argv: list[str] | None = None) -> int:
     rp = sub.add_parser("report", help="coverage and translation measures for one or more app folders")
     rp.add_argument("app_dirs", nargs="+")
     rp.add_argument("--json", action="store_true")
+    rp.add_argument("--ai", action="store_true", help="use the LLM pathway for what the rules cannot do")
     rp.set_defaults(fn=cmd_report)
     args = p.parse_args(argv)
     return int(args.fn(args))

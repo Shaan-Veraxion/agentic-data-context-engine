@@ -29,6 +29,7 @@ class AppMeasures:
     connection_dialects: dict[str, str] = field(default_factory=dict)
     unresolved_variables: list[str] = field(default_factory=list)
     inputs_to_resolve: int = 0
+    ai: dict[str, int] = field(default_factory=dict)  # LLM pathway outcomes: memory, ai_validated, ai_checked, ...
 
     @property
     def understood_ratio(self) -> float:
@@ -47,7 +48,7 @@ def _normalise(reason: str) -> str:
     return re.sub(r"'[^']*'|\"[^\"]*\"", "'…'", reason)[:100]
 
 
-def measure(app: BIApp, t: Translation) -> AppMeasures:
+def measure(app: BIApp, t: Translation, outcomes: list[Any] | None = None) -> AppMeasures:
     done: set[int] = set()
     blocked: set[int] = set()
     causes: Counter[tuple[str, str]] = Counter()
@@ -81,7 +82,8 @@ def measure(app: BIApp, t: Translation) -> AppMeasures:
         root_causes=[(tier, reason, n) for (tier, reason), n in causes.most_common()], knock_on=knock_on,
         issues=dict(Counter(i.code for i in app.issues).most_common()),
         connection_dialects=dict(app.connection_dialects), unresolved_variables=unresolved,
-        inputs_to_resolve=len(inputs) + len(app.sources))
+        inputs_to_resolve=len(inputs) + len(app.sources),
+        ai=dict(Counter(o.status for o in outcomes or [])))
 
 
 def _done(t: Translation, table: str, looped: set[int]) -> bool:

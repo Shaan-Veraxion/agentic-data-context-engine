@@ -1,0 +1,21 @@
+20261001T030000.000+0000 Execution started.
+20261001T030000.001+0000 0001  SET ThousandSep=','
+20261001T030000.002+0000 0002  SET DecimalSep='.'
+20261001T030000.003+0000 0003  LIB CONNECT TO 'Dremio_Shop'
+20261001T030000.005+0000 0005  Sales:
+20261001T030000.006+0000 0006  LOAD SaleID, Customer, SaleDate,
+20261001T030000.007+0000 0007       Num#(AmountText, '#,##0.00') AS Amount,
+20261001T030000.008+0000 0008       SubField(Path, '/', 3) AS Country,
+20261001T030000.009+0000 0009       KeepChar(Code, '0123456789') AS CodeDigits,
+20261001T030000.010+0000 0010       Round(Num#(AmountText, '#,##0.00'), 10) AS AmountRounded,
+20261001T030000.011+0000 0011       Class(Num#(AmountText, '#,##0.00'), 500) AS AmountBand
+20261001T030000.012+0000 0012  SQL SELECT SaleID, Customer, SaleDate, AmountText, Path, Code FROM "shop"."raw"."sales"
+20261001T030000.012+0000       7 Lines fetched
+20261001T030000.014+0000 0014  Running:
+20261001T030000.015+0000 0015  NOCONCATENATE LOAD SaleID, Customer, SaleDate, Amount,
+20261001T030000.016+0000 0016       If(Customer = Previous(Customer), RangeSum(Peek('RunningTotal'), Amount), Amount) AS RunningTotal
+20261001T030000.017+0000 0017  RESIDENT Sales ORDER BY Customer, SaleDate
+20261001T030000.017+0000       7 Lines fetched
+20261001T030000.019+0000 0019  STORE Sales INTO [lib://QVD/Sales.qvd] (qvd)
+20261001T030000.020+0000 0020  STORE Running INTO [lib://QVD/Running.qvd] (qvd)
+20261001T030000.999+0000       Execution finished.

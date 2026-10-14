@@ -40,3 +40,26 @@ async def test_full_qlik_path_reaches_v4_and_publishes_a_pack(tmp_path):
     assert {"namespace": "qvd://", "name": "lib://QVD/Orders.qvd"} in orders_job["outputs"]
     report = store.get(f"{prefix}/validation.md").decode()
     assert "| Orders | V4 | local |" in report
+
+
+async def test_llm_pathway_in_the_pipeline_reaches_v4_and_remembers(tmp_path):
+    """Agent 28 with the model gateway (replaying recorded Groq answers): statements the rules cannot translate are
+    proposed by the model, validated against the reload log and QVDs, and stored as translation memory."""
+    from adce_gateway.config import load_config
+    from adce_gateway.gateway import ModelGateway, Recordings
+
+    root = Path(__file__).resolve().parents[3]
+    app = root / "eval" / "gold" / "bi" / "apps" / "longtail_local"
+    store, kg = LocalArtifactStore(tmp_path), MemoryKG()
+    files = []
+    for p in [app / "script.qvs", app / "reload.log", *sorted((app / "qvd").glob("*.qvd")),
+              *sorted((app / "sources").rglob("*.csv"))]:
+        name = p.relative_to(app).as_posix() if "sources" in p.parts else p.name
+        files.append({"name": name, "key": store.put(f"uploads/longtail_local/{name}", p.read_bytes())})
+    gw = ModelGateway("replay", Recordings(root / "eval" / "recordings"),
+                      config=load_config(root / "deploy" / "gateway" / "groq-free.toml"))
+    out: dict = dict(await run_pipeline(app_id="longtail_local", run_id="r1", files=files,
+                                         deps=Deps(kg=kg, artifacts=store, gateway=gw)))
+    assert out["levels"] == {"Sales": "V4", "Running": "V4"}
+    memory = await kg.facts(kind="translation_memory")
+    assert len(memory) == 2 and {f.value["status"] for f in memory} == {"ai_validated"}

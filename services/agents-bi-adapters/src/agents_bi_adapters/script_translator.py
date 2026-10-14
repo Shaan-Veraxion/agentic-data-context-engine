@@ -1,26 +1,30 @@
 """Agent 28: BI script translator. Load-script statements -> Dremio SQL (CTE chains).
 
-Rules first (adce_reversesql.compose). Statements the rules cannot translate (tier T2/T3) go to the model-gateway
-route translate_statement, with the statement text and its input columns only (never rows). An AI translation is
-accepted only if it parses as Dremio SQL; it is marked AI-assisted and needs review before trust is raised.
+Rules first (adce_reversesql.compose); reviewer SQL next; then the LLM pathway (adce_reversesql.ai_loop): translation
+memory, then the model gateway route translate_statement with the statement text and its input columns only (never
+rows). Every proposal is checked by code and, when the uploads hold data (reload log, QVDs, source extracts),
+validated locally; failures go back to the model with the problems found. Accepted translations are stored as
+translation_memory facts and reused by later runs of any app. AI-assisted SQL stays marked for review.
 """
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from adce_core.agent import AgentContext, AgentKind, AgentResult, AgentSpec, BaseAgent
 from adce_core.artifacts import content_key, put_json
 from adce_core.facts import Evidence, Fact, Trust
+from adce_reversesql.ai_loop import MemoryEntry, TranslationMemory, normalise, translate_with_ai
 from adce_reversesql.compose import compose
-from adce_reversesql.runtime import StatementTranslation, load_translation
+from adce_reversesql.runtime import load_translation, validator_from_files
 
 from .bi_extractor import table_key
 
 
 class ScriptTranslator(BaseAgent):
     spec = AgentSpec(number=28, name="bi_script_translator", version="0.1.0", kind=AgentKind.HYBRID,
-                     triggers=["bi_ir.ready"], emits=["bi_transform.ready"], writes=["bi_transform"],
-                     routes=["translate_statement"])
+                     triggers=["bi_ir.ready"], emits=["bi_transform.ready"],
+                     writes=["bi_transform", "translation_memory"], routes=["translate_statement"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         result = AgentResult()
@@ -37,22 +41,28 @@ class ScriptTranslator(BaseAgent):
                     ai_notes[u.statement] = "reviewer-provided SQL"
         if overrides:
             t = compose(loaded.app, overrides)
+        ai_outcomes: list[dict[str, Any]] = []
         if ctx.gateway is not None:
-            for r in t.tables.values():
-                for u in r.untranslated:
-                    if u.tier == "T1" or "depends on" in u.reason or u.statement in overrides:
-                        continue
-                    out = await self._ask(ctx, u.text, u.reason, u.input_columns)
-                    if out is not None:
-                        overrides[u.statement] = out.sql
-                        ai_notes[u.statement] = out.notes
+            memory = await self._memory(ctx)
+            known = {id(e) for e in memory.entries}
+            validator = validator_from_files(ctx.artifacts, job["files"], loaded.app) if job.get("files") else None
+            overrides, outcomes = await translate_with_ai(loaded.app, ctx.gateway, memory, overrides=overrides,
+                                                          validator=validator, task=f"{ctx.run_id}:translate")
+            for o in outcomes:
+                ai_outcomes.append({"statement": o.statement, "table": o.table, "status": o.status,
+                                    "attempts": len(o.attempts), "notes": o.notes})
+                if o.sql and o.status != "memory":
+                    ai_notes[o.statement] = f"{o.status}: {o.notes}"
+            for e in memory.entries:
+                if id(e) not in known:
+                    await self._remember(ctx, result, e)
             if overrides:
                 t = compose(loaded.app, overrides)
         key = put_json(ctx.artifacts, content_key(f"apps/{ctx.app_id}/translation",
                                                   repr(sorted(overrides.items())).encode() + job["bi_ir_key"].encode(),
                                                   ".json"),
                        {"bi_ir_key": job["bi_ir_key"], "overrides": {str(k): v for k, v in overrides.items()},
-                        "ai_notes": {str(k): v for k, v in ai_notes.items()}})
+                        "ai_notes": {str(k): v for k, v in ai_notes.items()}, "ai_outcomes": ai_outcomes})
         result.artifacts.append(key)
         for name, r in t.tables.items():
             if r.mapping and not r.steps:
@@ -77,17 +87,24 @@ class ScriptTranslator(BaseAgent):
         result.events.append("bi_transform.ready")
         return result
 
-    async def _ask(self, ctx: AgentContext, text: str, reason: str,
-                   columns: list[str] | None) -> StatementTranslation | None:
-        from adce_gateway.gateway import BudgetExceeded, GatewayRefusal, OutputInvalid, ProviderError, ReplayMiss
+    async def _memory(self, ctx: AgentContext) -> TranslationMemory:
+        """The translation memory from knowledge facts: the latest entry per statement, without disproved ones."""
+        latest: dict[str, Any] = {}
+        for f in await ctx.kg.facts(kind="translation_memory"):
+            latest[f.subject] = f
+        mem = TranslationMemory()
+        for f in latest.values():
+            if f.value.get("status") != "disproved":
+                mem.entries.append(MemoryEntry(**{k: f.value[k] for k in ("statement", "input_columns", "sql",
+                                                                          "status", "app_id") if k in f.value}))
+        return mem
 
-        try:
-            res = await ctx.gateway.call("translate_statement",  # type: ignore[union-attr]
-                                         {"statement": text, "why_rules_failed": reason,
-                                          "input_relation": "src", "input_columns": columns},
-                                         StatementTranslation, task=f"{ctx.run_id}:translate")
-        except (ReplayMiss, GatewayRefusal, OutputInvalid, ProviderError, BudgetExceeded):
-            return None  # the statement stays untranslated and goes to the review queue
-        out = res.output
-        assert isinstance(out, StatementTranslation)
-        return out if out.translatable and out.sql.strip() else None
+    async def _remember(self, ctx: AgentContext, result: AgentResult, e: MemoryEntry) -> None:
+        key = hashlib.sha256((normalise(e.statement) + "|" + ",".join(e.input_columns or [])).encode()).hexdigest()
+        await self.propose(ctx, Fact(
+            kind="translation_memory", subject=f"memory:{key[:24]}", trust=Trust.VALIDATED
+            if e.status == "ai_validated" else Trust.INFERRED,
+            value={"statement": e.statement, "input_columns": e.input_columns, "sql": e.sql, "status": e.status,
+                   "app_id": e.app_id},
+            evidence=[Evidence(kind="query_result" if e.status == "ai_validated" else "rule_check",
+                               ref=f"{ctx.app_id}:{ctx.run_id}")]), result)

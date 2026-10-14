@@ -20,7 +20,7 @@ def langfuse_tracer() -> Any | None:
     try:
         from langfuse import Langfuse  # pyright: ignore[reportMissingImports]  (optional extra)
     except ImportError:
-        log.warning("LANGFUSE_* is set but the langfuse package is not installed (adce-gateway[tracing])")
+        log.info("LANGFUSE_* is set but the langfuse package is not installed (adce-gateway[tracing])")
         return None
     client = Langfuse()
 

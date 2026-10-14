@@ -22,3 +22,6 @@ apps/workbench/.next/
 # real client scripts: never committed
 scripts.md
 eval/private/
+
+# LLM pathway: translation memory and recordings (can contain client script text)
+.adce/

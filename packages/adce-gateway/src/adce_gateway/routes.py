@@ -31,7 +31,7 @@ class Route(BaseModel):
 
 
 ROUTES: dict[str, Route] = {r.name: r for r in [
-    Route(name="translate_statement", tier="standard", effort="low", max_tokens=8000),
+    Route(name="translate_statement", tier="standard", effort="medium", max_tokens=8000, prompt_version="v2"),
     Route(name="translate_expression", tier="standard", effort="medium", max_tokens=8000),
     Route(name="repair_sql", tier="strong", effort="medium", max_tokens=12000),
     Route(name="diagnose_mismatch", tier="strong", effort="high", max_tokens=16000),

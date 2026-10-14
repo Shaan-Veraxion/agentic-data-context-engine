@@ -1,0 +1,8 @@
+SaleID,Customer,SaleDate,AmountText,Path,Code
+1,acme,2025-01-03,"1,234.50",/eu/de/berlin,AB-12-x
+2,acme,2025-01-09,310.00,/eu/de/hamburg,Q7-0-z
+3,bolt,2025-01-04,"2,048.10",/eu/fr/paris,ZZ-905
+4,acme,2025-02-11,77.25,/eu/de/berlin,C-3
+5,bolt,2025-02-01,999.99,/us/ny/nyc,N-44-1
+6,corp,2025-03-15,"15,000.00",/apac/sg/sg,S-8
+7,bolt,2025-03-20,12.40,/eu/fr/lyon,L-0-0

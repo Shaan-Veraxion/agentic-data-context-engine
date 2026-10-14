@@ -1,0 +1,20 @@
+SET ThousandSep=',';
+SET DecimalSep='.';
+LIB CONNECT TO 'Dremio_Shop';
+
+Sales:
+LOAD SaleID, Customer, SaleDate,
+     Num#(AmountText, '#,##0.00') AS Amount,
+     SubField(Path, '/', 3) AS Country,
+     KeepChar(Code, '0123456789') AS CodeDigits,
+     Round(Num#(AmountText, '#,##0.00'), 10) AS AmountRounded,
+     Class(Num#(AmountText, '#,##0.00'), 500) AS AmountBand;
+SQL SELECT SaleID, Customer, SaleDate, AmountText, Path, Code FROM "shop"."raw"."sales";
+
+Running:
+NOCONCATENATE LOAD SaleID, Customer, SaleDate, Amount,
+     If(Customer = Previous(Customer), RangeSum(Peek('RunningTotal'), Amount), Amount) AS RunningTotal
+RESIDENT Sales ORDER BY Customer, SaleDate;
+
+STORE Sales INTO [lib://QVD/Sales.qvd] (qvd);
+STORE Running INTO [lib://QVD/Running.qvd] (qvd);

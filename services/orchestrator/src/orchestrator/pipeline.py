@@ -94,7 +94,8 @@ async def resolve(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any
 
 
 async def translate(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
-    r = await ScriptTranslator()({"bi_ir_key": state.get("bi_ir_key")}, _ctx(state, runtime))
+    r = await ScriptTranslator()({"bi_ir_key": state.get("bi_ir_key"), "files": state.get("classified", [])},
+                                 _ctx(state, runtime))
     return {"translation_key": r.outputs["translation_key"], "events": r.events, "metrics": {"translate": r.metrics}}
 
 

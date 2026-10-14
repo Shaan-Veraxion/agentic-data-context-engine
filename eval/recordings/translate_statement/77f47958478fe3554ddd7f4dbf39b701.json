@@ -1,0 +1,53 @@
+{
+  "binding": "groq:openai/gpt-oss-120b",
+  "cost_usd": 0.0,
+  "inputs": {
+    "examples": [
+      {
+        "input_columns": [
+          "SaleID",
+          "Customer",
+          "SaleDate",
+          "AmountText",
+          "Path",
+          "Code"
+        ],
+        "sql": "SELECT \"src\".\"SaleID\" AS \"SaleID\", \"src\".\"Customer\" AS \"Customer\", \"src\".\"SaleDate\" AS \"SaleDate\", CAST(REPLACE(\"src\".\"AmountText\", ',', '') AS DOUBLE) AS \"Amount\", SPLIT_PART(\"src\".\"Path\", '/', 3) AS \"Country\", REGEXP_REPLACE(\"src\".\"Code\", '[^0-9]', '') AS \"CodeDigits\", (ROUND(CAST(REPLACE(\"src\".\"AmountText\", ',', '') AS DOUBLE) / 10) * 10) AS \"AmountRounded\", CONCAT(CAST(CAST(FLOOR(CAST(REPLACE(\"src\".\"AmountText\", ',', '') AS DOUBLE) / 500) * 500 AS BIGINT) AS VARCHAR), ' <= x < ', CAST(CAST(FLOOR(CAST(REPLACE(\"src\".\"AmountText\", ',', '') AS DOUBLE) / 500) * 500 + 500 AS BIGINT) AS VARCHAR)) AS \"AmountBand\" FROM \"src\"",
+        "statement": "LOAD SaleID, Customer, SaleDate,\n     Num#(AmountText, '#,##0.00') AS Amount,\n     SubField(Path, '/', 3) AS Country,\n     KeepChar(Code, '0123456789') AS CodeDigits,\n     Round(Num#(AmountText, '#,##0.00'), 10) AS AmountRounded,\n     Class(Num#(AmountText, '#,##0.00'), 500) AS AmountBand"
+      }
+    ],
+    "input_columns": [
+      "SaleID",
+      "Customer",
+      "SaleDate",
+      "Amount",
+      "Country",
+      "CodeDigits",
+      "AmountRounded",
+      "AmountBand"
+    ],
+    "input_relation": "src",
+    "previous_attempts": [],
+    "settings": {
+      "DecimalSep": ".",
+      "ThousandSep": ","
+    },
+    "statement": "LOAD SaleID, Customer, SaleDate, Amount,\n     If(Customer = Previous(Customer), RangeSum(Peek('RunningTotal'), Amount), Amount) AS RunningTotal\nRESIDENT Sales ORDER BY Customer, SaleDate",
+    "why_rules_failed": "function Previous()"
+  },
+  "model": "openai/gpt-oss-120b",
+  "output": {
+    "notes": "",
+    "sql": "SELECT \"src\".\"SaleID\" AS \"SaleID\", \"src\".\"Customer\" AS \"Customer\", \"src\".\"SaleDate\" AS \"SaleDate\", \"src\".\"Amount\" AS \"Amount\", SUM(COALESCE(\"src\".\"Amount\",0)) OVER (PARTITION BY \"src\".\"Customer\" ORDER BY \"src\".\"SaleDate\" ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS \"RunningTotal\" FROM \"src\"",
+    "translatable": true
+  },
+  "prompt_version": "v2",
+  "provider": "groq",
+  "route": "translate_statement",
+  "usage": {
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 0,
+    "input_tokens": 1483,
+    "output_tokens": 1174
+  }
+}

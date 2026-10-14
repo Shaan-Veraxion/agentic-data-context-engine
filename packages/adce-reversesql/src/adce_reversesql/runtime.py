@@ -66,3 +66,49 @@ def local_venue_from_files(store: ArtifactStore, files: list[dict[str, Any]], wo
     if src_root.exists():
         venue.add_source_dir(src_root)
     return venue, qvds
+
+
+def validator_from_files(store: ArtifactStore, files: list[dict[str, Any]], app: BIApp) -> Any:
+    """A validator for the LLM pathway (ai_loop.Validator) built from uploaded files: the local venue over source
+    extracts and QVDs, the reload log, and the stored QVDs' headers and contents. With no data it still runs the
+    SQL (V2) and reports no comparisons."""
+    from adce_qlik import parse_reload_log, read_qvd_header
+
+    from .local import read_qvd
+
+    venue, qvd_paths = local_venue_from_files(store, files)
+    logs = [f for f in files if f["class"] == "reload_log"]
+    log = parse_reload_log(store.get(logs[-1]["key"]).decode("utf-8", errors="replace")) if logs else None
+    targets = {PurePosixPath(s.target.replace("\\", "/")).name.lower(): s.target for s in app.stores}
+    headers: dict[str, Any] = {}
+    contents: dict[str, Any] = {}
+    for fname, path in qvd_paths.items():
+        target = targets.get(fname)
+        try:
+            data = read_qvd(path)
+        except Exception:  # noqa: BLE001 - header-only QVD: row counts still checkable
+            data = None
+        if target is None:
+            if data is not None:
+                venue.add_qvd(f"lib://local/{fname}", path)
+            continue
+        headers[target] = read_qvd_header(path)
+        if data is not None:
+            contents[target] = data
+            venue.add_qvd(target, path)
+
+    return make_validator(venue, log, headers, contents)
+
+
+def make_validator(venue: LocalVenue, log: Any, headers: dict[str, Any], contents: dict[str, Any]) -> Any:
+    """ai_loop.Validator over a local venue: the level reached and every failed comparison, worded the same way
+    everywhere (the wording is part of the retry prompt, so recordings replay only if it is stable)."""
+    from .reconcile import Reconciler
+
+    def validate(t: Translation, table: str) -> tuple[str, list[str]]:
+        tv = Reconciler(t, venue, log, headers, contents).validate(table)
+        problems = [f"{c.check} {c.subject}: expected {c.expected}, got {c.actual}" for c in tv.comparisons
+                    if not c.ok] + tv.errors
+        return (tv.level.name if tv.level >= 0 else "none"), problems
+
+    return validate
