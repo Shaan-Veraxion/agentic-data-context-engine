@@ -1,0 +1,1455 @@
+{
+ "summary": {
+  "plain": {
+   "valid_trials": 12,
+   "invalid_trials": 4,
+   "correct": 11,
+   "correct_rate": 0.917,
+   "model_calls_per_trial": 1.58,
+   "tool_calls_per_trial": 0.0,
+   "tokens_per_trial": 5111,
+   "seconds_per_trial": 89.5,
+   "per_case": {
+    "apps/longtail_local": "2/2",
+    "apps/rulefix_local": "2/2",
+    "llm/date_custom_monthnames": "2/2",
+    "llm/mapsubstring_inline": "0/1",
+    "llm/num_text_settings": "1/1",
+    "llm/previous_change_flag": "2/2",
+    "llm/subfield_last_count": "1/1",
+    "llm/textbetween_purgechar": "1/1"
+   }
+  },
+  "tools": {
+   "valid_trials": 9,
+   "invalid_trials": 7,
+   "correct": 8,
+   "correct_rate": 0.889,
+   "model_calls_per_trial": 1.56,
+   "tool_calls_per_trial": 0.67,
+   "tokens_per_trial": 15427,
+   "seconds_per_trial": 270.9,
+   "per_case": {
+    "apps/longtail_local": "2/2",
+    "apps/rulefix_local": "1/1",
+    "llm/date_custom_monthnames": "1/1",
+    "llm/mapsubstring_inline": "0/1",
+    "llm/num_text_settings": "1/1",
+    "llm/previous_change_flag": "1/1",
+    "llm/subfield_last_count": "1/1",
+    "llm/textbetween_purgechar": "1/1"
+   }
+  }
+ },
+ "trials": [
+  {
+   "case": "apps/longtail_local",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 132.7,
+   "model_calls": 2,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    },
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 2,
+   "input_tokens": 3069,
+   "output_tokens": 2217,
+   "outcomes": [
+    {
+     "table": "Sales",
+     "statement": 3,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    },
+    {
+     "table": "Running",
+     "statement": 5,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "apps/longtail_local",
+   "arm": "tools",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 485.7,
+   "model_calls": 3,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 2,
+     "tools": [
+      "check_sql"
+     ],
+     "error": ""
+    },
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 3,
+     "tools": [
+      "check_sql"
+     ],
+     "error": ""
+    },
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 2,
+   "turns": 6,
+   "input_tokens": 13441,
+   "output_tokens": 7511,
+   "outcomes": [
+    {
+     "table": "Sales",
+     "statement": 3,
+     "status": "ai_validated",
+     "attempts": 2,
+     "model_calls": 2,
+     "tool_calls": 2
+    },
+    {
+     "table": "Running",
+     "statement": 5,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [
+    "check_sql"
+   ],
+   "trial": 1
+  },
+  {
+   "case": "apps/rulefix_local",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 70.5,
+   "model_calls": 2,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "diagnose_mismatch",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    },
+    {
+     "route": "diagnose_mismatch",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 2,
+   "input_tokens": 1965,
+   "output_tokens": 6875,
+   "outcomes": [
+    {
+     "table": "Products",
+     "statement": 1,
+     "status": "ai_repaired",
+     "attempts": 2,
+     "model_calls": 2,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "apps/rulefix_local",
+   "arm": "tools",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 970.1,
+   "model_calls": 3,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "diagnose_mismatch",
+     "ok": true,
+     "turns": 8,
+     "tools": [],
+     "error": ""
+    },
+    {
+     "route": "diagnose_mismatch",
+     "ok": true,
+     "turns": 8,
+     "tools": [],
+     "error": ""
+    },
+    {
+     "route": "diagnose_mismatch",
+     "ok": true,
+     "turns": 6,
+     "tools": [
+      "check_fix"
+     ],
+     "error": ""
+    }
+   ],
+   "tool_calls": 1,
+   "turns": 22,
+   "input_tokens": 33512,
+   "output_tokens": 38464,
+   "outcomes": [
+    {
+     "table": "Products",
+     "statement": 1,
+     "status": "ai_repaired",
+     "attempts": 3,
+     "model_calls": 3,
+     "tool_calls": 1
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [
+    "check_fix"
+   ],
+   "trial": 1
+  },
+  {
+   "case": "llm/date_custom_monthnames",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 7.4,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 1339,
+   "output_tokens": 2514,
+   "outcomes": [
+    {
+     "table": "D",
+     "statement": 2,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "llm/date_custom_monthnames",
+   "arm": "tools",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 123.0,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 2,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 2,
+   "input_tokens": 3641,
+   "output_tokens": 3284,
+   "outcomes": [
+    {
+     "table": "D",
+     "statement": 2,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "llm/mapsubstring_inline",
+   "arm": "plain",
+   "status": "fail",
+   "valid": true,
+   "correct": false,
+   "seconds": 1.8,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 1285,
+   "output_tokens": 207,
+   "outcomes": [
+    {
+     "table": "Addr",
+     "statement": 2,
+     "status": "declined",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [
+    "[check] Addr blocking rule failures",
+    "[reconcile] Addr level",
+    "[rows] Addr rows"
+   ],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "llm/mapsubstring_inline",
+   "arm": "tools",
+   "status": "fail",
+   "valid": true,
+   "correct": false,
+   "seconds": 62.1,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 1756,
+   "output_tokens": 352,
+   "outcomes": [
+    {
+     "table": "Addr",
+     "statement": 2,
+     "status": "declined",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [
+    "[check] Addr blocking rule failures",
+    "[reconcile] Addr level",
+    "[rows] Addr rows"
+   ],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "llm/num_text_settings",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 62.7,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 1298,
+   "output_tokens": 996,
+   "outcomes": [
+    {
+     "table": "Pay",
+     "statement": 3,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "llm/num_text_settings",
+   "arm": "tools",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 123.2,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 2,
+     "tools": [
+      "check_sql"
+     ],
+     "error": ""
+    }
+   ],
+   "tool_calls": 1,
+   "turns": 2,
+   "input_tokens": 3635,
+   "output_tokens": 1164,
+   "outcomes": [
+    {
+     "table": "Pay",
+     "statement": 3,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 1
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [
+    "check_sql"
+   ],
+   "trial": 1
+  },
+  {
+   "case": "llm/previous_change_flag",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 64.0,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 1306,
+   "output_tokens": 1907,
+   "outcomes": [
+    {
+     "table": "Flags",
+     "statement": 3,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "llm/previous_change_flag",
+   "arm": "tools",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 62.7,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 1775,
+   "output_tokens": 897,
+   "outcomes": [
+    {
+     "table": "Flags",
+     "statement": 3,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "llm/subfield_last_count",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 4.3,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 1291,
+   "output_tokens": 832,
+   "outcomes": [
+    {
+     "table": "P",
+     "statement": 1,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "llm/subfield_last_count",
+   "arm": "tools",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 123.1,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 2,
+     "tools": [
+      "check_sql"
+     ],
+     "error": ""
+    }
+   ],
+   "tool_calls": 1,
+   "turns": 2,
+   "input_tokens": 3648,
+   "output_tokens": 1785,
+   "outcomes": [
+    {
+     "table": "P",
+     "statement": 1,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 1
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [
+    "check_sql"
+   ],
+   "trial": 1
+  },
+  {
+   "case": "llm/textbetween_purgechar",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 265.4,
+   "model_calls": 3,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    },
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    },
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 3,
+   "input_tokens": 4150,
+   "output_tokens": 4262,
+   "outcomes": [
+    {
+     "table": "L",
+     "statement": 1,
+     "status": "ai_validated",
+     "attempts": 3,
+     "model_calls": 3,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "llm/textbetween_purgechar",
+   "arm": "tools",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 64.2,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 1768,
+   "output_tokens": 1847,
+   "outcomes": [
+    {
+     "table": "L",
+     "statement": 1,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "apps/longtail_local",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 425.2,
+   "model_calls": 4,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    },
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    },
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    },
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 4,
+   "input_tokens": 6984,
+   "output_tokens": 10797,
+   "outcomes": [
+    {
+     "table": "Sales",
+     "statement": 3,
+     "status": "ai_validated",
+     "attempts": 3,
+     "model_calls": 3,
+     "tool_calls": 0
+    },
+    {
+     "table": "Running",
+     "statement": 5,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 2
+  },
+  {
+   "case": "apps/longtail_local",
+   "arm": "tools",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 423.9,
+   "model_calls": 2,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 3,
+     "tools": [],
+     "error": ""
+    },
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 3,
+     "tools": [
+      "check_sql"
+     ],
+     "error": ""
+    }
+   ],
+   "tool_calls": 1,
+   "turns": 6,
+   "input_tokens": 10849,
+   "output_tokens": 9517,
+   "outcomes": [
+    {
+     "table": "Sales",
+     "statement": 3,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    },
+    {
+     "table": "Running",
+     "statement": 5,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 1
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [
+    "check_sql"
+   ],
+   "trial": 2
+  },
+  {
+   "case": "apps/rulefix_local",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 30.8,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "diagnose_mismatch",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 121,
+   "output_tokens": 3142,
+   "outcomes": [
+    {
+     "table": "Products",
+     "statement": 1,
+     "status": "ai_repaired",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 2
+  },
+  {
+   "case": "apps/rulefix_local",
+   "arm": "tools",
+   "status": "fail",
+   "valid": false,
+   "correct": false,
+   "seconds": 427.9,
+   "model_calls": 1,
+   "failed_calls": 1,
+   "calls": [
+    {
+     "route": "diagnose_mismatch",
+     "ok": true,
+     "turns": 8,
+     "tools": [],
+     "error": ""
+    },
+    {
+     "route": "diagnose_mismatch",
+     "ok": false,
+     "turns": null,
+     "tools": [],
+     "error": "ProviderError: route diagnose_mismatch: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_<redacted>"
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 8,
+   "input_tokens": 10200,
+   "output_tokens": 14220,
+   "outcomes": [
+    {
+     "table": "Products",
+     "statement": -1,
+     "status": "skipped",
+     "attempts": 2,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [
+    "[translate] AI outcomes",
+    "[reconcile] Products level"
+   ],
+   "errors": [
+    "ProviderError: route diagnose_mismatch: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 19846"
+   ],
+   "tools_used": [],
+   "trial": 2
+  },
+  {
+   "case": "llm/date_custom_monthnames",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 5.7,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 1339,
+   "output_tokens": 1389,
+   "outcomes": [
+    {
+     "table": "D",
+     "statement": 2,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 2
+  },
+  {
+   "case": "llm/date_custom_monthnames",
+   "arm": "tools",
+   "status": "fail",
+   "valid": false,
+   "correct": false,
+   "seconds": 60.9,
+   "model_calls": 0,
+   "failed_calls": 1,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": false,
+     "turns": null,
+     "tools": [],
+     "error": "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_"
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 0,
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "outcomes": [
+    {
+     "table": "D",
+     "statement": 2,
+     "status": "skipped",
+     "attempts": 1,
+     "model_calls": 0,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [
+    "[check] D blocking rule failures",
+    "[reconcile] D level",
+    "[rows] D rows"
+   ],
+   "errors": [
+    "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199"
+   ],
+   "tools_used": [],
+   "trial": 2
+  },
+  {
+   "case": "llm/mapsubstring_inline",
+   "arm": "plain",
+   "status": "fail",
+   "valid": false,
+   "correct": false,
+   "seconds": 60.9,
+   "model_calls": 0,
+   "failed_calls": 1,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": false,
+     "turns": null,
+     "tools": [],
+     "error": "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_"
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 0,
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "outcomes": [
+    {
+     "table": "Addr",
+     "statement": 2,
+     "status": "skipped",
+     "attempts": 1,
+     "model_calls": 0,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [
+    "[check] Addr blocking rule failures",
+    "[reconcile] Addr level",
+    "[rows] Addr rows"
+   ],
+   "errors": [
+    "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199"
+   ],
+   "tools_used": [],
+   "trial": 2
+  },
+  {
+   "case": "llm/mapsubstring_inline",
+   "arm": "tools",
+   "status": "fail",
+   "valid": false,
+   "correct": false,
+   "seconds": 60.9,
+   "model_calls": 0,
+   "failed_calls": 1,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": false,
+     "turns": null,
+     "tools": [],
+     "error": "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_"
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 0,
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "outcomes": [
+    {
+     "table": "Addr",
+     "statement": 2,
+     "status": "skipped",
+     "attempts": 1,
+     "model_calls": 0,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [
+    "[check] Addr blocking rule failures",
+    "[reconcile] Addr level",
+    "[rows] Addr rows"
+   ],
+   "errors": [
+    "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199"
+   ],
+   "tools_used": [],
+   "trial": 2
+  },
+  {
+   "case": "llm/num_text_settings",
+   "arm": "plain",
+   "status": "fail",
+   "valid": false,
+   "correct": false,
+   "seconds": 181.1,
+   "model_calls": 1,
+   "failed_calls": 1,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    },
+    {
+     "route": "translate_statement",
+     "ok": false,
+     "turns": null,
+     "tools": [],
+     "error": "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_"
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 1298,
+   "output_tokens": 601,
+   "outcomes": [
+    {
+     "table": "Pay",
+     "statement": 3,
+     "status": "skipped",
+     "attempts": 2,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [
+    "[check] Pay blocking rule failures",
+    "[reconcile] Pay level",
+    "[rows] Pay rows"
+   ],
+   "errors": [
+    "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199"
+   ],
+   "tools_used": [],
+   "trial": 2
+  },
+  {
+   "case": "llm/num_text_settings",
+   "arm": "tools",
+   "status": "fail",
+   "valid": false,
+   "correct": false,
+   "seconds": 61.0,
+   "model_calls": 0,
+   "failed_calls": 1,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": false,
+     "turns": null,
+     "tools": [],
+     "error": "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_"
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 0,
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "outcomes": [
+    {
+     "table": "Pay",
+     "statement": 3,
+     "status": "skipped",
+     "attempts": 1,
+     "model_calls": 0,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [
+    "[check] Pay blocking rule failures",
+    "[reconcile] Pay level",
+    "[rows] Pay rows"
+   ],
+   "errors": [
+    "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199"
+   ],
+   "tools_used": [],
+   "trial": 2
+  },
+  {
+   "case": "llm/previous_change_flag",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 3.3,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 1306,
+   "output_tokens": 744,
+   "outcomes": [
+    {
+     "table": "Flags",
+     "statement": 3,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 2
+  },
+  {
+   "case": "llm/previous_change_flag",
+   "arm": "tools",
+   "status": "fail",
+   "valid": false,
+   "correct": false,
+   "seconds": 61.0,
+   "model_calls": 0,
+   "failed_calls": 1,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": false,
+     "turns": null,
+     "tools": [],
+     "error": "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_"
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 0,
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "outcomes": [
+    {
+     "table": "Flags",
+     "statement": 3,
+     "status": "skipped",
+     "attempts": 1,
+     "model_calls": 0,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [
+    "[check] Flags blocking rule failures",
+    "[reconcile] Flags level",
+    "[rows] Flags rows"
+   ],
+   "errors": [
+    "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199"
+   ],
+   "tools_used": [],
+   "trial": 2
+  },
+  {
+   "case": "llm/subfield_last_count",
+   "arm": "plain",
+   "status": "fail",
+   "valid": false,
+   "correct": false,
+   "seconds": 61.0,
+   "model_calls": 0,
+   "failed_calls": 1,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": false,
+     "turns": null,
+     "tools": [],
+     "error": "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_"
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 0,
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "outcomes": [
+    {
+     "table": "P",
+     "statement": 1,
+     "status": "skipped",
+     "attempts": 1,
+     "model_calls": 0,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [
+    "[check] P blocking rule failures",
+    "[reconcile] P level",
+    "[rows] P rows"
+   ],
+   "errors": [
+    "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198"
+   ],
+   "tools_used": [],
+   "trial": 2
+  },
+  {
+   "case": "llm/subfield_last_count",
+   "arm": "tools",
+   "status": "fail",
+   "valid": false,
+   "correct": false,
+   "seconds": 60.9,
+   "model_calls": 0,
+   "failed_calls": 1,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": false,
+     "turns": null,
+     "tools": [],
+     "error": "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_"
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 0,
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "outcomes": [
+    {
+     "table": "P",
+     "statement": 1,
+     "status": "skipped",
+     "attempts": 1,
+     "model_calls": 0,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [
+    "[check] P blocking rule failures",
+    "[reconcile] P level",
+    "[rows] P rows"
+   ],
+   "errors": [
+    "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198"
+   ],
+   "tools_used": [],
+   "trial": 2
+  },
+  {
+   "case": "llm/textbetween_purgechar",
+   "arm": "plain",
+   "status": "fail",
+   "valid": false,
+   "correct": false,
+   "seconds": 61.0,
+   "model_calls": 0,
+   "failed_calls": 1,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": false,
+     "turns": null,
+     "tools": [],
+     "error": "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_"
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 0,
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "outcomes": [
+    {
+     "table": "L",
+     "statement": 1,
+     "status": "skipped",
+     "attempts": 1,
+     "model_calls": 0,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [
+    "[check] L blocking rule failures",
+    "[reconcile] L level",
+    "[rows] L rows"
+   ],
+   "errors": [
+    "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198"
+   ],
+   "tools_used": [],
+   "trial": 2
+  },
+  {
+   "case": "llm/textbetween_purgechar",
+   "arm": "tools",
+   "status": "fail",
+   "valid": false,
+   "correct": false,
+   "seconds": 61.0,
+   "model_calls": 0,
+   "failed_calls": 1,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": false,
+     "turns": null,
+     "tools": [],
+     "error": "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_"
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 0,
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "outcomes": [
+    {
+     "table": "L",
+     "statement": 1,
+     "status": "skipped",
+     "attempts": 1,
+     "model_calls": 0,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [
+    "[check] L blocking rule failures",
+    "[reconcile] L level",
+    "[rows] L rows"
+   ],
+   "errors": [
+    "ProviderError: route translate_statement: every provider failed: groq: RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198"
+   ],
+   "tools_used": [],
+   "trial": 2
+  }
+ ]
+}

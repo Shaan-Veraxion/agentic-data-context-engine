@@ -1,0 +1,761 @@
+{
+ "summary": {
+  "plain": {
+   "valid_trials": 8,
+   "invalid_trials": 0,
+   "correct": 6,
+   "correct_rate": 0.75,
+   "model_calls_per_trial": 1.5,
+   "tool_calls_per_trial": 0.0,
+   "tokens_per_trial": 4250,
+   "seconds_per_trial": 50.2,
+   "per_case": {
+    "apps/longtail_local": "0/1",
+    "apps/rulefix_local": "1/1",
+    "llm/date_custom_monthnames": "1/1",
+    "llm/mapsubstring_inline": "0/1",
+    "llm/num_text_settings": "1/1",
+    "llm/previous_change_flag": "1/1",
+    "llm/subfield_last_count": "1/1",
+    "llm/textbetween_purgechar": "1/1"
+   }
+  },
+  "tools": {
+   "valid_trials": 8,
+   "invalid_trials": 0,
+   "correct": 6,
+   "correct_rate": 0.75,
+   "model_calls_per_trial": 1.0,
+   "tool_calls_per_trial": 2.12,
+   "tokens_per_trial": 9324,
+   "seconds_per_trial": 144.4,
+   "per_case": {
+    "apps/longtail_local": "1/1",
+    "apps/rulefix_local": "0/1",
+    "llm/date_custom_monthnames": "1/1",
+    "llm/mapsubstring_inline": "0/1",
+    "llm/num_text_settings": "1/1",
+    "llm/previous_change_flag": "1/1",
+    "llm/subfield_last_count": "1/1",
+    "llm/textbetween_purgechar": "1/1"
+   }
+  }
+ },
+ "trials": [
+  {
+   "case": "apps/longtail_local",
+   "arm": "plain",
+   "status": "fail",
+   "valid": true,
+   "correct": false,
+   "seconds": 197.4,
+   "model_calls": 4,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    },
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    },
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    },
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 4,
+   "input_tokens": 7488,
+   "output_tokens": 7845,
+   "outcomes": [
+    {
+     "table": "Sales",
+     "statement": 3,
+     "status": "failed",
+     "attempts": 4,
+     "model_calls": 4,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [
+    "[translate] untranslated statements",
+    "[translate] AI outcomes",
+    "[check] Sales blocking rule failures",
+    "[check] Running blocking rule failures",
+    "[reconcile] Sales level",
+    "[reconcile] Running level"
+   ],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "apps/longtail_local",
+   "arm": "tools",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 245.0,
+   "model_calls": 2,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 3,
+     "tools": [
+      "check_sql",
+      "check_sql"
+     ],
+     "error": ""
+    },
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 2,
+     "tools": [
+      "check_sql"
+     ],
+     "error": ""
+    }
+   ],
+   "tool_calls": 3,
+   "turns": 5,
+   "input_tokens": 7567,
+   "output_tokens": 3437,
+   "outcomes": [
+    {
+     "table": "Sales",
+     "statement": 3,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 2
+    },
+    {
+     "table": "Running",
+     "statement": 5,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 1
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [
+    "check_sql"
+   ],
+   "trial": 1
+  },
+  {
+   "case": "apps/rulefix_local",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 100.6,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "diagnose_mismatch",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 889,
+   "output_tokens": 3193,
+   "outcomes": [
+    {
+     "table": "Products",
+     "statement": 1,
+     "status": "ai_repaired",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "apps/rulefix_local",
+   "arm": "tools",
+   "status": "fail",
+   "valid": true,
+   "correct": false,
+   "seconds": 670.9,
+   "model_calls": 0,
+   "failed_calls": 3,
+   "calls": [
+    {
+     "route": "diagnose_mismatch",
+     "ok": false,
+     "turns": null,
+     "tools": [
+      "check_fix",
+      "(rejected turn) (Error code: 400 - {'error': {'message': \"Tool call validation failed: tool call validation failed: attempted to call tool 'check_fix' which does not match request.tool_choice: 'submit_answer'\", 'type')"
+     ],
+     "error": "OutputInvalid: groq2:openai/gpt-oss-120b: no valid submit_answer after 6 turns"
+    },
+    {
+     "route": "diagnose_mismatch",
+     "ok": false,
+     "turns": null,
+     "tools": [
+      "get_facts",
+      "check_fix",
+      "(rejected turn) (Error code: 400 - {'error': {'message': \"Tool call validation failed: tool call validation failed: attempted to call tool 'check_fix' which does not match request.tool_choice: 'submit_answer'\", 'type')"
+     ],
+     "error": "OutputInvalid: groq2:openai/gpt-oss-120b: no valid submit_answer after 6 turns"
+    },
+    {
+     "route": "diagnose_mismatch",
+     "ok": false,
+     "turns": null,
+     "tools": [
+      "search_context",
+      "check_fix",
+      "(rejected turn) (Error code: 400 - {'error': {'message': \"Tool call validation failed: tool call validation failed: attempted to call tool 'check_fix' which does not match request.tool_choice: 'submit_answer'\", 'type')"
+     ],
+     "error": "OutputInvalid: groq2:openai/gpt-oss-120b: no valid submit_answer after 6 turns"
+    }
+   ],
+   "tool_calls": 8,
+   "turns": 0,
+   "input_tokens": 17518,
+   "output_tokens": 28188,
+   "outcomes": [
+    {
+     "table": "Products",
+     "statement": -1,
+     "status": "failed",
+     "attempts": 3,
+     "model_calls": 0,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [
+    "[translate] AI outcomes",
+    "[reconcile] Products level"
+   ],
+   "errors": [
+    "OutputInvalid: groq2:openai/gpt-oss-120b: no valid submit_answer after 6 turns",
+    "OutputInvalid: groq2:openai/gpt-oss-120b: no valid submit_answer after 6 turns",
+    "OutputInvalid: groq2:openai/gpt-oss-120b: no valid submit_answer after 6 turns"
+   ],
+   "tools_used": [
+    "(rejected turn)",
+    "check_fix",
+    "get_facts",
+    "search_context"
+   ],
+   "trial": 1
+  },
+  {
+   "case": "llm/date_custom_monthnames",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 64.9,
+   "model_calls": 2,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    },
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 2,
+   "input_tokens": 3084,
+   "output_tokens": 2941,
+   "outcomes": [
+    {
+     "table": "D",
+     "statement": 2,
+     "status": "ai_validated",
+     "attempts": 2,
+     "model_calls": 2,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "llm/date_custom_monthnames",
+   "arm": "tools",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 63.2,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 2,
+     "tools": [
+      "check_sql"
+     ],
+     "error": ""
+    }
+   ],
+   "tool_calls": 1,
+   "turns": 2,
+   "input_tokens": 3961,
+   "output_tokens": 2008,
+   "outcomes": [
+    {
+     "table": "D",
+     "statement": 2,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 1
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [
+    "check_sql"
+   ],
+   "trial": 1
+  },
+  {
+   "case": "llm/mapsubstring_inline",
+   "arm": "plain",
+   "status": "fail",
+   "valid": true,
+   "correct": false,
+   "seconds": 2.2,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 1285,
+   "output_tokens": 374,
+   "outcomes": [
+    {
+     "table": "Addr",
+     "statement": 2,
+     "status": "declined",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [
+    "[check] Addr blocking rule failures",
+    "[reconcile] Addr level",
+    "[rows] Addr rows"
+   ],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "llm/mapsubstring_inline",
+   "arm": "tools",
+   "status": "fail",
+   "valid": true,
+   "correct": false,
+   "seconds": 62.7,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 3,
+     "tools": [
+      "(rejected turn) (Error code: 400 - {'error': {'message': \"Tool call validation failed: tool call validation failed: attempted to call tool 'json' which was not in request.tools\", 'type': 'invalid_request_error', 'code)",
+      "(rejected turn) (Error code: 400 - {'error': {'message': \"Tool call validation failed: tool call validation failed: attempted to call tool 'json' which was not in request.tools\", 'type': 'invalid_request_error', 'code)"
+     ],
+     "error": ""
+    }
+   ],
+   "tool_calls": 2,
+   "turns": 3,
+   "input_tokens": 411,
+   "output_tokens": 167,
+   "outcomes": [
+    {
+     "table": "Addr",
+     "statement": 2,
+     "status": "declined",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 2
+    }
+   ],
+   "failed_checks": [
+    "[check] Addr blocking rule failures",
+    "[reconcile] Addr level",
+    "[rows] Addr rows"
+   ],
+   "errors": [],
+   "tools_used": [
+    "(rejected turn)"
+   ],
+   "trial": 1
+  },
+  {
+   "case": "llm/num_text_settings",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 2.8,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 1298,
+   "output_tokens": 536,
+   "outcomes": [
+    {
+     "table": "Pay",
+     "statement": 3,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "llm/num_text_settings",
+   "arm": "tools",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 10.1,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 2,
+     "tools": [
+      "check_sql"
+     ],
+     "error": ""
+    }
+   ],
+   "tool_calls": 1,
+   "turns": 2,
+   "input_tokens": 1971,
+   "output_tokens": 512,
+   "outcomes": [
+    {
+     "table": "Pay",
+     "statement": 3,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 1
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [
+    "check_sql"
+   ],
+   "trial": 1
+  },
+  {
+   "case": "llm/previous_change_flag",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 4.0,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 282,
+   "output_tokens": 556,
+   "outcomes": [
+    {
+     "table": "Flags",
+     "statement": 3,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "llm/previous_change_flag",
+   "arm": "tools",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 7.7,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 1710,
+   "output_tokens": 1001,
+   "outcomes": [
+    {
+     "table": "Flags",
+     "statement": 3,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "llm/subfield_last_count",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 17.2,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 1291,
+   "output_tokens": 606,
+   "outcomes": [
+    {
+     "table": "P",
+     "statement": 1,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "llm/subfield_last_count",
+   "arm": "tools",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 33.5,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 2,
+     "tools": [
+      "check_sql"
+     ],
+     "error": ""
+    }
+   ],
+   "tool_calls": 1,
+   "turns": 2,
+   "input_tokens": 3527,
+   "output_tokens": 840,
+   "outcomes": [
+    {
+     "table": "P",
+     "statement": 1,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 1
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [
+    "check_sql"
+   ],
+   "trial": 1
+  },
+  {
+   "case": "llm/textbetween_purgechar",
+   "arm": "plain",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 12.3,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 1,
+     "tools": [],
+     "error": ""
+    }
+   ],
+   "tool_calls": 0,
+   "turns": 1,
+   "input_tokens": 1296,
+   "output_tokens": 1033,
+   "outcomes": [
+    {
+     "table": "L",
+     "statement": 1,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 0
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [],
+   "trial": 1
+  },
+  {
+   "case": "llm/textbetween_purgechar",
+   "arm": "tools",
+   "status": "pass",
+   "valid": true,
+   "correct": true,
+   "seconds": 61.8,
+   "model_calls": 1,
+   "failed_calls": 0,
+   "calls": [
+    {
+     "route": "translate_statement",
+     "ok": true,
+     "turns": 2,
+     "tools": [
+      "check_sql"
+     ],
+     "error": ""
+    }
+   ],
+   "tool_calls": 1,
+   "turns": 2,
+   "input_tokens": 507,
+   "output_tokens": 1270,
+   "outcomes": [
+    {
+     "table": "L",
+     "statement": 1,
+     "status": "ai_validated",
+     "attempts": 1,
+     "model_calls": 1,
+     "tool_calls": 1
+    }
+   ],
+   "failed_checks": [],
+   "errors": [],
+   "tools_used": [
+    "check_sql"
+   ],
+   "trial": 1
+  }
+ ]
+}

@@ -1,6 +1,6 @@
 """The gateway's tool loop with a scripted model: tools run, results go back, a bad answer is returned to the model
 as an error, the final answer is validated, and the whole exchange is recorded and replayed without the model."""
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from adce_gateway.config import load_config
@@ -85,7 +85,7 @@ async def test_an_answer_alias_counts_as_the_answer(tmp_path):
     toml.write_text('[providers.p]\nkind = "openai_compatible"\nbase_url = "http://x"\nanswer_aliases = ["json"]\n'
                     '[models]\nstrong = "p:m"\nstandard = "p:m"\nlight = "p:m"\n', encoding="utf-8")
     model = Scripted([[("json", {"sql": "SELECT 2", "translatable": True})]])
-    gw = ModelGateway("record", Recordings(tmp_path / "rec"), clients={"p": model}, config=load_config(toml))
+    gw = ModelGateway("record", Recordings(tmp_path / "rec"), clients=cast(Any, {"p": model}), config=load_config(toml))
     r = await gw.call("translate_statement", {"statement": "LOAD 4"}, Answer, tools=tools([]))
     assert r.output == Answer(sql="SELECT 2", translatable=True)
 

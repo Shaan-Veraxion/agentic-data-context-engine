@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -53,7 +54,7 @@ async def run_trial(case: Case, arm: str) -> dict[str, Any]:
             "outcomes": [{k: o.get(k) for k in ("table", "statement", "status", "attempts", "model_calls",
                                                  "tool_calls")} for o in outcomes],
             "failed_checks": [f"[{c.section}] {c.name}" for c in r.checks if not c.ok][:10],
-            "errors": [e[:300] for e in errors][:5],
+            "errors": [re.sub(r"org_[A-Za-z0-9]+", "org_<redacted>", e)[:300] for e in errors][:5],
             "tools_used": sorted({t["tool"] for c in calls for t in c.get("tools") or []})}
 
 

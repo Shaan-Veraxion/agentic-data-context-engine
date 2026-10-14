@@ -21,7 +21,9 @@ from . import privacy
 SUBMIT = "submit_answer"
 # appended to the route's system prompt when tools are offered (the prompt itself stays the same for both modes)
 TOOLS_NOTE = ("\n\n## Tools\nYou can call the tools offered before answering: use a check tool to test a candidate "
-              "against the real checks and data, and the lookup tools when the input does not say enough. Do not "
+              "against the real checks and data, and the lookup tools when the input does not say enough: when "
+              "the statement uses another table, a mapping table or a variable, look it up (for example its LOAD "
+              "statement and inline data) before you decide it cannot be translated. Do not "
               "call the same tool with the same arguments twice. Finish by calling submit_answer; its arguments are "
               "your final answer.")
 MAX_RESULT_CHARS = 6000

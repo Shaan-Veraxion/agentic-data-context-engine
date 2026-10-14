@@ -31,7 +31,13 @@ uv run adce-bench run joins/ --agents 26 -v   # one suite, agent 26 (prerequisit
 uv run adce-bench run --all-variants          # every data variant, AI off and replay
 uv run adce-bench serve                       # the test bench page: http://127.0.0.1:8765
 uv run pytest services/testbench              # the same runs, as CI does
+uv run adce-bench run llm/ --ai live --tools  # LLM steps may call tools (check_sql, get_statements, kg-mcp)
+uv run adce-bench eval --trials 2             # live LLM evaluation, arms plain vs tools (eval/results/)
 ```
+
+Every run goes through kg-mcp (an in-process server), as agents do in a deployment. The `llm/` suite holds
+statements the rules cannot translate; in CI they run with AI off and must stay untranslated, and `eval` runs
+them live. Each eval trial starts clean (no recorded answers reused, empty memory) and is saved as it finishes.
 
 ## Variants
 

@@ -117,6 +117,43 @@ P4 and PD are broken into packages at the start of each phase.
 | Development provider: Groq free tier, gpt-oss-120b (gpt-oss-20b fallback) through deploy/gateway/groq-free.toml | No billing; this laptop cannot run a strong local model. Free tier limits: ~8k tokens/min, 200k tokens/day for 120b; a request counts its output budget | Billing approved: change the config to Claude on Vertex |
 | Measured (live, fresh memory): untranslatable statements (longtail_local) 4/4 trials to V4; rule correction (rulefix_local) 3/4 trials, plus 2 failed single runs | Model answers vary between runs; recordings make CI deterministic | More fixtures and real apps |
 
+### Test bench, MCP, tools, learning over time (2026-10-15, fifth build session)
+| Decision | Why | Revisit if |
+|---|---|---|
+| Test cases per agent in `eval/cases` (generated from `services/testbench/.../catalogue.py`, hand-computed oracles) and a local test bench (`adce-bench serve`): any agent or chain, AI off / replay / live, data variants, row diffs, playground, approvals | "Test each agent and combinations before moving on". Its first run found 7 translation bugs and a pipeline wiring gap, all fixed | — |
+| Agents reach knowledge through **kg-mcp** (ADR-2): `McpKG` over the in-process transport in tests and the bench, over HTTP in deployments (`ADCE_KG_TRANSPORT=mcp`, set in the Helm chart) | The architecture's rule, now true in code. Writes are policy-checked locally and batched (fact ids are content hashes); MCP adds about 0.4 s to a full app run | — |
+| LLM steps can call **tools** through the gateway, for any provider: `check_sql` / `check_fix` (the real checks and local validation), `get_statements` (script context), kg-mcp read tools (context packs, similar facts); answers come through `submit_answer` | ADR-4/ADR-5: agents use the knowledge service; the model can test its answer before giving it | — |
+| **Tools are off by default** (`ADCE_LLM_TOOLS=false`) | Measured on Groq gpt-oss-120b (below): same accuracy as without tools, 3× the tokens and time, which matters on a 200k tokens/day free tier | Evaluated again on Claude (Vertex) or with a larger quota; and the MapSubString case once the lookup hint is measured |
+| gpt-oss on Groq needs tool-use handling: `tool_choice=auto`, an answer alias (`json`), grace turns after the forced answer turn, and turns the API rejects go back to the model | Found in the first live trial: every tools-arm failure was protocol, not reasoning | — |
+| The rate limiter never credits back unused output budget | Groq counts the requested budget; crediting it back caused 429s and wasted fallbacks | — |
+| **Learning over time**: every reuse of a learned answer is re-checked on the app's data and kept as a `memory_check` fact; confirmed on two apps = *proven*, contradicted anywhere = *disproved* and retired. `orchestrator.learning rerun` re-runs every app from its uploads (Helm CronJob, daily); `report` lists the memory with its evidence | A learned answer is proven only on the data it saw (the rule correction learned on rulefix_local is wrong for whole-number prices: test_learning shows it disproved by such an app) | Event-driven re-runs (ADR-6 outbox and streams) replace the schedule |
+
+**Measured: LLM pathway with and without tools** (`adce-bench eval`, Groq gpt-oss-120b, 8 cases with hand oracles, every trial
+fresh: no recorded answers, empty memory; results in `eval/results/`):
+
+| Run | Arm | Valid trials | Correct | Tokens / case | Seconds / case |
+|---|---|---|---|---|---|
+| 1 (before the tool-use fixes) | plain | 8 | 6 (75%) | 4,250 | 50 |
+| 1 | tools | 8 | 6 (75%) | 9,300 | 144 |
+| 2 (after, 2 trials; quota ran out mid-way) | plain | 12 | 11 (92%) | 5,100 | 90 |
+| 2 | tools | 9 | 8 (89%) | 15,400 | 271 |
+
+Both arms miss `llm/mapsubstring_inline` (the mapping table is elsewhere in the script; with tools the model did not look it
+up: a lookup hint was added afterwards, not yet measured). Tools helped once (run 1, longtail_local: plain failed 4 attempts,
+tools passed by checking its SQL) and cost more on the diagnosis route (rulefix_local: up to 72k tokens).
+
+**Architecture check (starting stage)**: where the code stands against docs/architecture.md.
+
+| Architecture | Built | Not yet |
+|---|---|---|
+| ADR-2 kg-mcp is the only way agents use knowledge | yes: McpKG; policy on every write; read tools for models | per-agent tool allow-lists from Keycloak tokens; validator re-running data checks; 9 of the 16 tools (no get_neighbors, get_lineage, find_join_paths, get_feedback_history, link_entities, update_fact, flag_conflict, read-only Cypher, events) |
+| ADR-4 one agent contract; context pack first | yes for the contract; LLM steps can fetch context packs as tools | deterministic agents do not read context packs (they do not need them yet) |
+| ADR-5 HITL; learning from decisions | review items and decisions exist; learning from machine-validated answers, proven/disproved over time | reviewer decisions as few-shot examples (`get_feedback_history`) |
+| ADR-6 outbox + Redis Streams, re-run affected steps | — | events; re-runs are scheduled instead |
+| ADR-7 model gateway | provider-neutral, budgets, memo/replay, rate limits, tool use, privacy guard | Presidio masking (a row-shape guard is used instead) |
+| ADR-10 evaluation as a product feature | test bench, per-agent cases, live LLM evaluation in arms with repeated trials | results into Langfuse datasets |
+| Agents of the Qlik path (1, 27, 28, 24, 25, 26, 20 + 21, 22, 23, 29) | all built and runnable alone or chained on the bench | 19 lineage is part of 20 (lite); Dremio execution (phase PD) |
+
 ## 4. Repository layout (as built)
 
 ```
