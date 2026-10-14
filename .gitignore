@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+# real client material stays out of git unless cleared
+eval/gold/bi/apps/*/private/
+.env
+
+# terraform
+deploy/terraform/**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+# node
+apps/workbench/node_modules/
+apps/workbench/.next/
