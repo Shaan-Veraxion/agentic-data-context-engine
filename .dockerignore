@@ -1,0 +1,10 @@
+.venv
+**/__pycache__
+**/.pytest_cache
+.ruff_cache
+.git
+docs
+eval
+apps/workbench/node_modules
+apps/workbench/.next
+deploy/compose/.env
