@@ -1,0 +1,22 @@
+[project]
+name = "adce-kg-mcp"
+version = "0.1.0"
+description = "Knowledge service tools over MCP (FastMCP 3.x) on the KGPort adapter"
+requires-python = ">=3.12"
+dependencies = ["adce-core", "adce-kg", "fastmcp>=3.4,<4"]
+
+[tool.uv.sources]
+adce-core = { workspace = true }
+adce-qlik = { workspace = true }
+adce-kg = { workspace = true }
+adce-gateway = { workspace = true }
+adce-agents-ingestion = { workspace = true }
+adce-agents-bi-adapters = { workspace = true }
+adce-orchestrator = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kg_mcp"]
