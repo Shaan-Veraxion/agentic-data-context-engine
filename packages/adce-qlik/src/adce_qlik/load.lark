@@ -1,0 +1,97 @@
+// Qlik LOAD statement grammar (QlikView and Qlik Sense), after prefixes and labels are removed and $(…) expanded.
+// Parsed with LALR and a contextual lexer, so keywords like TOTAL or ORDER stay usable as field names.
+
+?start: load
+
+load: LOAD [DISTINCT] fields [source] [filter] [group] [order]
+
+fields: field ("," field)*
+field: STAR                         -> star_field
+     | expr [AS alias]              -> expr_field
+alias: NAME | BRACKETED | DQUOTED | SQUOTED
+
+source: FROM fileref [fmt]          -> from_file
+      | RESIDENT tableref           -> resident
+      | INLINE inline_body [fmt]    -> inline
+      | AUTOGENERATE expr           -> autogenerate
+      | EXTENSION NAME "." NAME "(" [args] ")" -> extension
+inline_body: BRACKETED | DQUOTED | SQUOTED
+fileref: BRACKETED | SQUOTED | DQUOTED | BAREPATH
+fmt: LPAR_FMT FMT_BODY? ")"
+tableref: NAME | BRACKETED | DQUOTED
+
+filter: WHERE expr                  -> where
+      | WHILE expr                  -> while_
+group: GROUP BY expr ("," expr)*
+order: ORDER BY order_item ("," order_item)*
+order_item: expr [ASC | DESC]
+
+?expr: or_expr
+?or_expr: xor_expr | or_expr OR xor_expr         -> binop
+?xor_expr: and_expr | xor_expr XOR and_expr     -> binop
+?and_expr: not_expr | and_expr AND not_expr     -> binop
+?not_expr: cmp_expr | NOT not_expr              -> unop
+?cmp_expr: cat_expr
+         | cmp_expr CMP_OP cat_expr             -> binop
+         | cmp_expr LIKE cat_expr               -> binop
+         | cmp_expr PRECEDES cat_expr           -> binop
+         | cmp_expr FOLLOWS cat_expr            -> binop
+?cat_expr: add_expr | cat_expr AMP add_expr     -> binop
+?add_expr: mul_expr | add_expr ADD_OP mul_expr  -> binop
+?mul_expr: unary | mul_expr MUL_OP unary        -> binop
+?unary: atom | ADD_OP unary                     -> unop
+?atom: NUMBER                                   -> number
+     | SQUOTED                                  -> string
+     | call
+     | NAME                                     -> field_ref
+     | BRACKETED                                -> field_ref
+     | DQUOTED                                  -> field_ref
+     | "(" expr ")"
+
+call: NAME "(" [modifier] [args] ")"
+modifier: DISTINCT | TOTAL | ALL | NODISTINCT
+args: arg ("," arg)*
+arg: expr | STAR -> star_arg
+
+LOAD.3: /load\b/i
+DISTINCT.3: /distinct\b/i
+NODISTINCT.3: /nodistinct\b/i
+TOTAL.3: /total\b/i
+ALL.3: /all\b/i
+AS.3: /as\b/i
+FROM.3: /from\b/i
+RESIDENT.3: /resident\b/i
+INLINE.3: /inline\b/i
+AUTOGENERATE.3: /autogenerate\b/i
+EXTENSION.3: /extension\b/i
+WHERE.3: /where\b/i
+WHILE.3: /while\b/i
+GROUP.3: /group\b/i
+ORDER.3: /order\b/i
+BY.3: /by\b/i
+ASC.3: /asc\b/i
+DESC.3: /desc\b/i
+AND.3: /and\b/i
+OR.3: /or\b/i
+XOR.3: /xor\b/i
+NOT.3: /not\b/i
+LIKE.3: /like\b/i
+PRECEDES.3: /precedes\b/i
+FOLLOWS.3: /follows\b/i
+
+NAME: /[A-Za-z_À-￿%#@][\w.%#@$À-￿]*/
+BRACKETED: /\[(?:[^\]]|\]\])*\]/
+DQUOTED: /"(?:[^"]|"")*"/
+SQUOTED: /'(?:[^']|'')*'/
+NUMBER: /(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?/
+BAREPATH.2: /[A-Za-z][\w+.-]*:\/\/[^\s();]+|[^\s\[\]'"();,]+\.(qvd|csv|txt|tab|xlsx|xls|parquet|json|xml|qvx|html?)\b/i
+LPAR_FMT: "("
+FMT_BODY: /[^)]+/
+CMP_OP: "<>" | "<=" | ">=" | "=" | "<" | ">"
+ADD_OP: "+" | "-"
+MUL_OP: "/" | "*"
+STAR: "*"
+AMP: "&"
+
+%import common.WS
+%ignore WS
