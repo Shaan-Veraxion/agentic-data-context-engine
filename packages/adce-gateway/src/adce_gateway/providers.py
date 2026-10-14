@@ -56,7 +56,9 @@ class ProviderConfig(BaseModel):
     max_tokens_param: Literal["max_completion_tokens", "max_tokens"] = "max_completion_tokens"  # older servers
     headers: dict[str, str] = Field(default_factory=dict)
     timeout_s: float = 600.0
-    max_retries: int = 2
+    max_retries: int = 2  # SDK retries with back-off on 429 / 5xx
+    rpm: int | None = None  # requests per minute allowed (free tiers); the gateway waits instead of failing
+    tpm: int | None = None  # tokens per minute allowed
 
     def env(self, var: str | None) -> str | None:
         return os.environ.get(var) if var else None

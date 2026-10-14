@@ -1,0 +1,23 @@
+# Development on Groq's free tier: gpt-oss-120b for every tier, gpt-oss-20b for light work.
+# Key: GROQ_API_KEY (console.groq.com -> API Keys), in deploy/compose/.env or the environment; never in git.
+# rpm / tpm: set them to the limits your Groq console shows for these models; the gateway waits instead of failing.
+
+[providers.groq]
+kind = "openai_compatible"
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+structured_output = "json_schema"   # Groq supports JSON Schema mode for gpt-oss; outputs are validated here anyway
+reasoning_effort = true             # gpt-oss takes low / medium / high reasoning effort
+max_retries = 5
+rpm = 30
+tpm = 8000
+
+[models]
+strong = "groq:openai/gpt-oss-120b"
+standard = "groq:openai/gpt-oss-120b"
+light = "groq:openai/gpt-oss-20b"
+
+# Free tier: no cost. Paid Groq prices can be added here (USD per million tokens) for budgets.
+# [prices."groq:openai/gpt-oss-120b"]
+# input = 0.0
+# output = 0.0

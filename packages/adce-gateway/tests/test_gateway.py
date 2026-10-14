@@ -219,3 +219,18 @@ def test_example_configs_load():
         cfg = load_config(f)
         for name, route in ROUTES.items():
             assert cfg.bindings(name, route.tier)
+
+
+def test_rate_limiter_waits_for_room():
+    from adce_gateway.limits import RateLimiter
+
+    now = [10.0]
+    lim = RateLimiter(rpm=2, tpm=1000, clock=lambda: now[0])
+    lim._events.extend([[0.0, 100.0], [10.0, 100.0]])
+    assert lim.wait_time(100) == pytest.approx(50.0)  # third request waits for the first to leave the window
+    now[0] = 61.0
+    assert lim.wait_time(100) == 0.0
+    lim2 = RateLimiter(rpm=None, tpm=1000, clock=lambda: 30.0)
+    lim2._events.extend([[0.0, 600.0], [20.0, 300.0]])
+    assert lim2.wait_time(200) == pytest.approx(30.0)  # 600 + 300 + 200 > 1000: wait until the 600 expires
+    assert lim2.wait_time(100) == 0.0

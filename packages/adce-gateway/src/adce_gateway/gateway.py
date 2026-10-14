@@ -28,6 +28,7 @@ from pydantic import BaseModel, ValidationError
 
 from . import privacy
 from .config import Binding, GatewayConfig, default_config, load_config
+from .limits import RateLimiter, estimate_tokens
 from .providers import GatewayRefusal, OutputInvalid, ProviderClient, ProviderError, Usage, build_client
 from .routes import ROUTES, Route
 
@@ -123,6 +124,15 @@ class ModelGateway:
         self.routes = routes or ROUTES
         self._sem = asyncio.Semaphore(concurrency)
         self.tracer = tracer
+        self._limiters: dict[str, RateLimiter] = {}
+
+    def _limiter(self, provider: str) -> RateLimiter | None:
+        cfg = self.config.providers.get(provider)
+        if cfg is None or (cfg.rpm is None and cfg.tpm is None):
+            return None
+        if provider not in self._limiters:
+            self._limiters[provider] = RateLimiter(cfg.rpm, cfg.tpm)
+        return self._limiters[provider]
 
     def _client(self, provider: str) -> ProviderClient:
         if self._shared is not None:
@@ -159,10 +169,15 @@ class ModelGateway:
         errors: list[str] = []
         for b in bindings:
             attempts.append(b.key)
+            limiter = self._limiter(b.provider)
+            # expected size: the prompt plus a typical answer; corrected with the reported usage afterwards
+            entry = await limiter.acquire(estimate_tokens(system + user) + min(max_tokens, 1500)) if limiter else None
             try:
                 async with self._sem:
                     out, usage, model = await self._complete_with_retry(b, system, user, output_model, max_tokens,
                                                                         effort)
+                if entry is not None:
+                    RateLimiter.settle(entry, usage.input_tokens + usage.cache_read_tokens + usage.output_tokens)
             except ProviderError as e:
                 errors.append(str(e))
                 continue  # next fallback
