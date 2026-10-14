@@ -19,8 +19,9 @@ from adce_core.bi_ir import Issue, Statement, StatementKind as K, Variable, Vari
 
 from .classify import classify
 from .evaluate import NotEvaluable, as_text, evaluate_text, truthy
+from .libraries import library_call, library_of_include
 from .reload_log import ReloadLog
-from .splitter import split_script
+from .splitter import RawStatement, split_script
 from .variables import ASSIGN, _candidates, _eval_let, _recover_from_log, _strip_set, expand
 
 MAX_ITER = 200
@@ -143,6 +144,11 @@ def splice_includes(statements: list[Statement], files: dict[str, str], issues: 
         m = INCLUDE_RX.match(expand(st.text, env)[0])
         target = m.group(2).strip().strip("'\"[]") if m else ""
         name = by_name.get(PurePosixPath(target.replace("\\", "/")).name.lower()) if target else None
+        if name is None and (lib := library_of_include(target)):
+            issues.append(Issue(statement=st.index, code="library_include", span=st.span,
+                                message=f"{target!r} is a known library ({lib}); its routines are modelled"))
+            out.append(st)
+            continue
         if name is None or depth >= MAX_INCLUDE_DEPTH:
             code = "include_missing" if name is None else "include_too_deep"
             issues.append(Issue(statement=st.index, code=code, span=st.span,
@@ -236,6 +242,14 @@ class _Runner:
     def _call(self, st: Statement, text: str, context: list[str], conditional: bool) -> None:
         m = CALL_RX.match(text)
         sub = self.subs.get(m.group(1).lower()) if m else None
+        if sub is None and m and (lib := library_call(m.group(1), _split_args(m.group(2) or ""))):
+            self.issues.append(Issue(statement=st.index, code="library_call", span=st.span,
+                                     message=lib.note))
+            ctx = [*context, f"CALL {m.group(1)} (library model)"]
+            for text_ in lib.statements:
+                raw = RawStatement(text=text_, raw=text_, span=st.span, terminated=True)
+                self._simple(classify(raw, st.index), ctx, conditional)
+            return
         if sub is None or self.call_depth >= 20:
             self.issues.append(Issue(statement=st.index, code="call_unresolved", span=st.span,
                                      message=f"CALL target not defined before the call: {text[:80]}"))

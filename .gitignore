@@ -18,3 +18,7 @@ deploy/terraform/**/.terraform/
 # node
 apps/workbench/node_modules/
 apps/workbench/.next/
+
+# real client scripts: never committed
+scripts.md
+eval/private/

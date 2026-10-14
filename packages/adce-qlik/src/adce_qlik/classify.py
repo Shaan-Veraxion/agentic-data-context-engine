@@ -9,7 +9,7 @@ from .splitter import RawStatement
 
 LABEL = re.compile(r"""^\s*(?P<label>\[[^\]]*\]|"[^"]*"|\$\([^)]*\)|[^\s:;\[\]"'(),=$]+)\s*:(?![:/=\\])""")
 
-_P = r"\s*(?:\([^)]*\))?"  # optional "(TableName)"
+_P = r"\s*(?:\((?:[^()]|\$\([^()]*\))*\))?"  # optional "(TableName)", which may contain $(variable)
 PREFIXES = [re.compile(p, re.IGNORECASE) for p in (
     r"no\s*concatenate\b",
     r"concatenate\b" + _P,
@@ -90,6 +90,11 @@ def classify(raw: RawStatement, index: int) -> Statement:
                 text = text[pm.end():].lstrip()
                 break
         else:
+            # Qlik also accepts the label after the prefixes: "NOCONCATENATE T: LOAD ..." or "LEFT JOIN (A) [B]: LOAD"
+            if prefixes and label is None and (m := LABEL.match(text)):
+                label = m.group("label").strip("[]\"")
+                text = text[m.end():].lstrip()
+                continue
             break
     kind = K.OTHER
     for rx, k in HEADS:

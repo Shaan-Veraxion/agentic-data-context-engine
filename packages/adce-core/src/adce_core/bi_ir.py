@@ -129,7 +129,9 @@ class Expr(BaseModel):
     name: str | None = None  # field name, function name, or operator
     value: str | int | float | None = None  # literal value
     args: list[Expr] = Field(default_factory=list)
-    modifier: str | None = None  # DISTINCT / TOTAL / ALL in aggregations
+    modifier: str | None = None  # DISTINCT / TOTAL / ALL in aggregations ("DISTINCT TOTAL" when both)
+    set_expr: str | None = None  # set analysis of an aggregation, as written: {<Year={2024}>}
+    total_dims: list[str] | None = None  # TOTAL <Field, ...>: the dimensions TOTAL keeps
     text: str = ""  # exact source text of this expression
 
     def fields(self) -> list[str]:
@@ -159,6 +161,7 @@ class LoadSource(BaseModel):
     tables: list[str] = Field(default_factory=list)  # tables referenced by embedded SQL
     columns: list[str] = Field(default_factory=list)  # known output columns of the source, if any
     inline_rows: list[list[str]] = Field(default_factory=list)
+    dialect: str | None = None  # SQL dialect of embedded SQL (sqlglot name), e.g. oracle, tsql, dremio
 
 
 class LoadOp(BaseModel):
@@ -205,8 +208,17 @@ class QlikTable(BaseModel):
     steps: list[TableStep] = Field(default_factory=list)
     fields: list[str] = Field(default_factory=list)
     dropped_at: int | None = None
-    renamed_from: list[str] = Field(default_factory=list)
+    earlier_drops: list[int] = Field(default_factory=list)  # drops before the name was loaded again
+    renamed_from: list[str] = Field(default_factory=list)  # earlier Qlik names, oldest first
+    renamed_at: list[int] = Field(default_factory=list)  # statement of each RENAME TABLE (same order)
+    qlik_name: str | None = None  # the table's last Qlik name when `name` had to differ (a dropped table whose
+    #                               name was taken over by a later RENAME)
     stored_to: list[str] = Field(default_factory=list)
+
+    def name_at(self, statement: int) -> str:
+        """The Qlik name this table had when `statement` ran."""
+        names = [*self.renamed_from, self.qlik_name or self.name]
+        return names[sum(1 for r in self.renamed_at if r < statement)]
 
 
 class StoreOp(BaseModel):
@@ -223,6 +235,45 @@ class Issue(BaseModel):
     span: SourceSpan | None = None
 
 
+class MasterMeasure(BaseModel):
+    """A reusable measure from the app's library."""
+
+    id: str
+    label: str
+    expression: str
+    description: str = ""
+
+
+class MasterDimension(BaseModel):
+    id: str
+    label: str
+    fields: list[str] = Field(default_factory=list)  # field or drill-down fields; expressions start with "="
+
+
+class VisualDimension(BaseModel):
+    label: str
+    field: str  # field name, or an expression starting with "=" (calculated dimension)
+    library_id: str | None = None
+
+
+class VisualMeasure(BaseModel):
+    id: str
+    label: str
+    expression: str
+    library_id: str | None = None
+
+
+class Visual(BaseModel):
+    """A chart or table on a sheet: the grain (dimensions) and the figures (measures) a report shows."""
+
+    id: str
+    type: str  # table, pivot-table, barchart, kpi, ...
+    title: str = ""
+    sheet: str | None = None
+    dimensions: list[VisualDimension] = Field(default_factory=list)
+    measures: list[VisualMeasure] = Field(default_factory=list)
+
+
 class BIApp(BaseModel):
     """The BI IR for one application."""
 
@@ -231,10 +282,15 @@ class BIApp(BaseModel):
     tables: dict[str, QlikTable] = Field(default_factory=dict)
     stores: list[StoreOp] = Field(default_factory=list)
     connections: list[str] = Field(default_factory=list)
+    connection_dialects: dict[str, str] = Field(default_factory=dict)  # connection -> SQL dialect of its SELECTs
     sources: list[LogicalSource] = Field(default_factory=list)
     variables: dict[str, Variable] = Field(default_factory=dict)
     issues: list[Issue] = Field(default_factory=list)
     coverage: Coverage = Field(default_factory=Coverage)
+    # front end (sheets and charts), when the app's objects are supplied
+    measures: list[MasterMeasure] = Field(default_factory=list)
+    dimensions: list[MasterDimension] = Field(default_factory=list)
+    visuals: list[Visual] = Field(default_factory=list)
 
     def data_tables(self) -> list[QlikTable]:
         return [t for t in self.tables.values() if not t.mapping and t.dropped_at is None]

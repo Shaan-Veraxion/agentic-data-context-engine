@@ -34,6 +34,7 @@ from sqlglot import exp
 from sqlglot.errors import ParseError
 
 from .load_parser import LoadParseError, ParsedLoad, parse_load, unquote_name
+from .sql_dialect import detect as detect_dialect
 
 _NAME = r"(\[[^\]]+\]|\"[^\"]+\"|'[^']+'|[^\s,;()]+)"
 CONNECT_RX = re.compile(rf"(?is)connect\s+(?:to\s+)?{_NAME}")
@@ -56,10 +57,12 @@ def _names(text: str) -> list[str]:
 
 
 class _Builder:
-    def __init__(self, doc: ScriptDocument, sql_dialect: str, qvd_columns: dict[str, list[str]] | None = None) -> None:
+    def __init__(self, doc: ScriptDocument, sql_dialect: str | None, qvd_columns: dict[str, list[str]] | None = None,
+                 connection_dialects: dict[str, str] | None = None) -> None:
         self.doc = doc
         self.qvd_columns = {k.lower(): v for k, v in (qvd_columns or {}).items()}
-        self.dialect = sql_dialect
+        self.dialect = sql_dialect  # None: detected per statement
+        self.configured_dialects = connection_dialects or {}
         self.app = BIApp(app_id=doc.app_id, variables=doc.variables)
         self.connection: str | None = None
         self.pending: list[tuple[Statement, ParsedLoad]] = []
@@ -163,16 +166,23 @@ class _Builder:
 
     def _sql(self, st: Statement, text: str) -> None:
         sql = re.sub(r"(?is)^sql\s+", "", text).strip()
-        src = LoadSource(kind="sql", ref=sql, connection=self.connection)
+        if self.dialect:
+            dialect = self.dialect
+        else:
+            dialect, how = detect_dialect(sql, self.connection, configured=self.configured_dialects,
+                                          learned=self.app.connection_dialects)
+            if self.connection and how in ("configured", "sql text", "connection name"):
+                self.app.connection_dialects.setdefault(self.connection, dialect)
+        src = LoadSource(kind="sql", ref=sql, connection=self.connection, dialect=dialect)
         try:
-            tree = sqlglot.parse_one(sql, read=self.dialect)
+            tree = sqlglot.parse_one(sql, read=dialect)
             src.tables = list(dict.fromkeys(_table_path(t) for t in tree.find_all(exp.Table)))
             if isinstance(tree, exp.Select):
                 cols = [e.alias_or_name for e in tree.expressions]
                 src.columns = [] if any(isinstance(e, exp.Star) or c == "*" for e, c in zip(tree.expressions, cols,
                                                                                              strict=True)) else cols
         except ParseError as e:
-            self.issue(st, "sql_parse_error", str(e).splitlines()[0])
+            self.issue(st, "sql_parse_error", f"({dialect}) {str(e).splitlines()[0]}")
             src.tables = re.findall(r"(?i)\bfrom\s+([\w.\"\[\]]+)", sql)
         for t in src.tables:
             self.add_source(LogicalSource(connection=self.connection, path=t, kind="sql_table"))
@@ -191,6 +201,9 @@ class _Builder:
     def _finalize(self, chain: list[tuple[Statement, ParsedLoad]], *, sql: bool = False,
                   parse_error: str | None = None) -> None:
         head = chain[0][0]
+        if head.label is None and (label := next((s.label for s, _ in chain if s.label), None)):
+            # Qlik takes a label written further down a preceding-LOAD chain: "LOAD a; [T]: SQL SELECT ..."
+            head = head.model_copy(update={"label": label})
         ops: list[LoadOp] = []
         for i, (st, p) in enumerate(chain):
             is_sql = sql and i == len(chain) - 1
@@ -220,7 +233,7 @@ class _Builder:
 
         if action in (TableAction.JOIN, TableAction.CONCATENATE):
             name = target or self.last_table
-            if name is None or name not in self.app.tables:
+            if name is None or name not in self.app.tables or self.app.tables[name].dropped_at is not None:
                 self.issue(head, "unknown_target", f"{action.value} target {name!r} not found")
                 name = self._new_name(head, ops[-1].source)
                 step.action = TableAction.CREATE
@@ -245,6 +258,17 @@ class _Builder:
                 same.steps.append(step)
                 self.last_table = same.name
                 return
+        old = self.app.tables.get(name)
+        if old is not None and old.dropped_at is not None and not old.mapping:
+            # the name was freed by DROP TABLE: Qlik creates a new table with the same name
+            t = self.app.tables[name]
+            t.earlier_drops.append(old.dropped_at)
+            t.dropped_at = None
+            t.steps.append(step)
+            t.fields = fields
+            t.name_inferred = head.label is None
+            self.last_table = name
+            return
         if name in self.app.tables:
             n = 1
             while f"{name}-{n}" in self.app.tables:
@@ -346,8 +370,20 @@ class _Builder:
         if m := RENAME_TABLE_RX.match(text):
             old, new = unquote_name(m.group(1)), unquote_name(m.group(2))
             if old in self.app.tables:
+                prev = self.app.tables.get(new)
+                if prev is not None:
+                    if prev.dropped_at is None:
+                        self.issue(st, "rename_conflict", f"RENAME TABLE {old} TO {new}: {new!r} already exists")
+                        return
+                    # the dropped table keeps its history under a distinct key
+                    n = 1
+                    while f"{new}~{n}" in self.app.tables:
+                        n += 1
+                    prev.qlik_name, prev.name = new, f"{new}~{n}"
+                    self.app.tables[prev.name] = self.app.tables.pop(new)
                 t = self.app.tables.pop(old)
                 t.renamed_from.append(old)
+                t.renamed_at.append(st.index)
                 t.name = new
                 self.app.tables[new] = t
                 if self.last_table == old:
@@ -368,8 +404,10 @@ def _union(a: list[str], b: list[str]) -> list[str]:
     return a + [x for x in b if x not in a]
 
 
-def build_app(doc: ScriptDocument, *, sql_dialect: str = "dremio",
-              qvd_columns: dict[str, list[str]] | None = None) -> BIApp:
-    """sql_dialect: dialect of SQL embedded in the scripts (Dremio for this estate).
+def build_app(doc: ScriptDocument, *, sql_dialect: str | None = None,
+              qvd_columns: dict[str, list[str]] | None = None,
+              connection_dialects: dict[str, str] | None = None) -> BIApp:
+    """sql_dialect: force one dialect for all embedded SQL; by default it is detected per connection and statement
+    (sql_dialect.detect), with connection_dialects (connection name -> sqlglot dialect) taking precedence.
     qvd_columns: QVD file name -> field names from its header, used to resolve LOAD * FROM x.qvd."""
-    return _Builder(doc, sql_dialect, qvd_columns).build()
+    return _Builder(doc, sql_dialect, qvd_columns, connection_dialects).build()
