@@ -59,6 +59,7 @@ class Deps:
     kg: KGPort
     artifacts: ArtifactStore
     gateway: Any | None = None
+    llm_tools: bool = False  # LLM steps may call tools (settings.llm_tools); knowledge tools come over MCP
 
 
 def _ctx(state: PipelineState, runtime: Runtime[Deps]) -> AgentContext:
@@ -95,8 +96,8 @@ async def resolve(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any
 
 
 async def translate(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
-    r = await ScriptTranslator()({"bi_ir_key": state.get("bi_ir_key"), "files": state.get("classified", [])},
-                                 _ctx(state, runtime))
+    r = await ScriptTranslator()({"bi_ir_key": state.get("bi_ir_key"), "files": state.get("classified", []),
+                                  "llm_tools": runtime.context.llm_tools}, _ctx(state, runtime))
     return {"translation_key": r.outputs["translation_key"], "events": r.events, "metrics": {"translate": r.metrics}}
 
 

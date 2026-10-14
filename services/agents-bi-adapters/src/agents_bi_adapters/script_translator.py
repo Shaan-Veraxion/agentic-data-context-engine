@@ -46,17 +46,23 @@ class ScriptTranslator(BaseAgent):
             memory = await self._memory(ctx)
             known = {id(e) for e in memory.entries}
             validator = validator_from_files(ctx.artifacts, job["files"], loaded.app) if job.get("files") else None
+            use_tools = bool(job.get("llm_tools"))
+            # read-only knowledge tools come from kg-mcp when the agent reaches knowledge over MCP (ADR-2)
+            kg_tools = await ctx.kg.tools() if use_tools and hasattr(ctx.kg, "tools") else []  # type: ignore[attr-defined]
             overrides, outcomes = await translate_with_ai(loaded.app, ctx.gateway, memory, overrides=overrides,
-                                                          validator=validator, task=f"{ctx.run_id}:translate")
+                                                          validator=validator, task=f"{ctx.run_id}:translate",
+                                                          tools=use_tools, kg_tools=kg_tools)
             if validator is not None:
                 # agent 26's diagnosis, run here so corrected SQL flows to synthesis, checks and the pack: tables
                 # the rules translated but the data contradicts get one statement corrected (diagnose_mismatch)
                 overrides, fixes = await repair_with_ai(loaded.app, ctx.gateway, memory, validator,
-                                                        overrides=overrides, task=f"{ctx.run_id}:diagnose")
+                                                        overrides=overrides, task=f"{ctx.run_id}:diagnose",
+                                                        tools=use_tools, kg_tools=kg_tools)
                 outcomes += fixes
             for o in outcomes:
                 ai_outcomes.append({"statement": o.statement, "table": o.table, "status": o.status,
-                                    "attempts": len(o.attempts), "notes": o.notes})
+                                    "attempts": len(o.attempts), "model_calls": o.model_calls,
+                                    "tool_calls": o.tool_calls, "notes": o.notes})
                 if o.sql and o.status != "memory":
                     ai_notes[o.statement] = f"{o.status}: {o.notes}"
             for e in memory.entries:

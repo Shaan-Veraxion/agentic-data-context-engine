@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # and the model for each tier; without it, Claude on Vertex AI (vertex_project, vertex_region).
     gateway_mode: Literal["replay", "record", "live"] = "replay"
     gateway_config: str | None = None
+    # LLM steps may call tools (check their SQL, read script context, kg-mcp lookups) before answering
+    llm_tools: bool = False
+    # how agents reach the knowledge service: in-process (tests, CLI) or the kg-mcp service (ADR-2)
+    kg_transport: Literal["inprocess", "mcp"] = "inprocess"
+    kg_mcp_url: str = "http://localhost:8701/mcp"
     vertex_project: str | None = None
     vertex_region: str = "global"
     gateway_replay_dir: str = "eval/recordings"

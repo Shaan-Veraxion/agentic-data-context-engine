@@ -42,7 +42,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         if args.all_variants:
             variants = [Variant(ai, d) for ai in AI_MODES[:2] for d in DATA_VARIANTS]
         elif args.ai or args.data:
-            variants = [Variant(args.ai or "off", args.data or "full")]
+            variants = [Variant(args.ai or "off", args.data or "full", args.tools)]
         else:
             variants = default_variants(c)
         for v in variants:
@@ -89,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--ai", choices=AI_MODES)
     r.add_argument("--data", choices=DATA_VARIANTS)
     r.add_argument("--all-variants", action="store_true", help="every data variant, with AI off and replay")
+    r.add_argument("--tools", action="store_true", help="LLM steps may call tools (with --ai replay or live)")
     r.add_argument("--json", help="write the results to this file")
     r.add_argument("-v", "--verbose", action="store_true")
     r.set_defaults(fn=cmd_run)

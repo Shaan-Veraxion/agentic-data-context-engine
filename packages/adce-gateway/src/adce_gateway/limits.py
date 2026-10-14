@@ -56,4 +56,6 @@ class RateLimiter:
 
     @staticmethod
     def settle(entry: list[float], actual_tokens: int) -> None:
-        entry[1] = float(actual_tokens)
+        """Correct the estimate upwards only: providers such as Groq count the requested output budget toward the
+        minute's tokens, not just the tokens produced, so crediting back unused budget leads to 429s."""
+        entry[1] = max(entry[1], float(actual_tokens))

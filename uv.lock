@@ -240,12 +240,20 @@ dependencies = [
     { name = "fastmcp" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "adce-orchestrator" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "adce-core", editable = "packages/adce-core" },
     { name = "adce-kg", editable = "packages/adce-kg" },
     { name = "fastmcp", specifier = ">=3.4,<4" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "adce-orchestrator", editable = "services/orchestrator" }]
 
 [[package]]
 name = "adce-orchestrator"
@@ -320,6 +328,7 @@ dependencies = [
     { name = "adce-agents-reversesql" },
     { name = "adce-core" },
     { name = "adce-gateway" },
+    { name = "adce-kg-mcp" },
     { name = "adce-orchestrator" },
     { name = "adce-reversesql" },
     { name = "fastapi" },
@@ -334,6 +343,7 @@ requires-dist = [
     { name = "adce-agents-reversesql", editable = "services/agents-reversesql" },
     { name = "adce-core", editable = "packages/adce-core" },
     { name = "adce-gateway", editable = "packages/adce-gateway" },
+    { name = "adce-kg-mcp", editable = "services/kg-mcp" },
     { name = "adce-orchestrator", editable = "services/orchestrator" },
     { name = "adce-reversesql", editable = "packages/adce-reversesql" },
     { name = "fastapi", specifier = ">=0.115" },

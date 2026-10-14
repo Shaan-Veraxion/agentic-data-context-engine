@@ -9,7 +9,9 @@ Run:  uv run python -m kg_mcp.server  (listens on ADCE_KG_MCP_PORT, default 8701
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -42,6 +44,10 @@ class FactIn(BaseModel):
     evidence: list[EvidenceIn]
     agent: str
     agent_version: str = "0.1.0"
+
+
+def _words(text: str) -> set[str]:
+    return {w.lower() for w in re.findall(r"[A-Za-z_#$][A-Za-z0-9_#$.]*|\d+", text or "")}
 
 
 def _fact_out(f: Fact) -> dict[str, Any]:
@@ -81,6 +87,24 @@ def create_server(kg_factory: Callable[[], Awaitable[KGPort]]) -> FastMCP:
         return {"fact_id": fid}
 
     @mcp.tool
+    async def propose_facts(facts: list[FactIn], ctx: Context) -> dict[str, Any]:
+        """Propose several facts at once (each passes the same policy). Returns their ids in order."""
+        ids = []
+        for fact in facts:
+            try:
+                ids.append(await kg_of(ctx).propose_fact(Fact(**fact.model_dump(exclude={"evidence"}),
+                                                              evidence=[Evidence(**e.model_dump())
+                                                                        for e in fact.evidence])))
+            except PolicyError as e:
+                raise ToolError(f"policy: {e} (fact {len(ids)} of the batch)") from e
+        return {"fact_ids": ids}
+
+    @mcp.tool
+    async def register_entities(entities: list[dict[str, Any]], ctx: Context) -> list[str]:
+        """Register several entities at once (idempotent)."""
+        return [await kg_of(ctx).register_entity(Entity(**e)) for e in entities]
+
+    @mcp.tool
     async def get_entity(key: str, ctx: Context) -> dict[str, Any] | None:
         """One entity by key."""
         e = await kg_of(ctx).entity(key)
@@ -97,6 +121,22 @@ def create_server(kg_factory: Callable[[], Awaitable[KGPort]]) -> FastMCP:
     async def search_context(text: str, ctx: Context, limit: int = 10) -> list[dict[str, Any]]:
         """Full-text search over current facts."""
         return [_fact_out(f) for f in await kg_of(ctx).search(text, limit=limit)]
+
+    @mcp.tool
+    async def find_similar_facts(kind: str, text: str, ctx: Context, limit: int = 5,
+                                 field: str | None = None) -> list[dict[str, Any]]:
+        """Current facts of one kind ranked by word overlap with `text` (in `value[field]`, or the whole value),
+        e.g. kind=translation_memory, field=statement: earlier accepted translations of similar statements."""
+        want = _words(text)
+        scored = []
+        for f in await kg_of(ctx).facts(kind=kind):
+            have = _words(str(f.value.get(field)) if field else json.dumps(f.value, default=str))
+            if want and have:
+                score = len(want & have) / len(want | have)
+                if score > 0:
+                    scored.append((score, f))
+        scored.sort(key=lambda x: -x[0])
+        return [{"similarity": round(sc, 3), **_fact_out(f)} for sc, f in scored[:limit]]
 
     @mcp.tool
     async def get_context_pack(key: str, ctx: Context, limit: int = 50) -> dict[str, Any]:

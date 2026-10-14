@@ -19,6 +19,11 @@ diagnose_mismatch route sees each statement's SQL and the failed comparisons and
 statement, accepted only when every comparison then passes. An accepted correction is remembered with
 replaces_rule=True: later runs apply it to the same statement before the rules, and reports list it as a
 candidate for a permanent rule.
+
+With tools=True the model can also act before answering (gateway tool use, adce_gateway.tools): check_sql /
+check_fix run the same checks and local validation the loop runs afterwards, get_statements shows the script's
+other load statements, and kg_tools (read-only kg-mcp tools: context packs, similar facts) give what the knowledge
+service knows. One gateway call, however many tool turns it takes, counts as one attempt.
 """
 from __future__ import annotations
 
@@ -125,6 +130,8 @@ class Outcome:
     sql: str | None = None
     attempts: list[dict[str, Any]] = field(default_factory=list)
     notes: str = ""
+    model_calls: int = 0  # gateway calls answered (live, memo or replay)
+    tool_calls: int = 0  # tools the model called inside those calls
 
 
 def static_problems(sql: str, input_columns: list[str] | None) -> list[str]:
@@ -166,8 +173,8 @@ def _roots(t: Translation, done: set[int]) -> list[Untranslated]:
 async def translate_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory, *,
                             overrides: dict[int, str] | None = None, validator: Validator | None = None,
                             max_attempts: int = 4, max_rounds: int = 5, task: str = "ai_loop",
-                            on_outcome: Callable[[Outcome], None] | None = None
-                            ) -> tuple[dict[int, str], list[Outcome]]:
+                            on_outcome: Callable[[Outcome], None] | None = None, tools: bool = False,
+                            kg_tools: list[Any] | None = None) -> tuple[dict[int, str], list[Outcome]]:
     overrides = dict(overrides or {})
     settings = _settings(app)
     outcomes: list[Outcome] = []
@@ -202,7 +209,8 @@ async def translate_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory,
         stop = False
         for u in todo:
             tried.add(u.statement)
-            o = await _one(app, u, overrides, gateway, memory, settings, validator, max_attempts, task)
+            o = await _one(app, u, overrides, gateway, memory, settings, validator, max_attempts, task,
+                           tools, kg_tools)
             outcomes.append(o)
             if on_outcome:
                 on_outcome(o)
@@ -217,7 +225,8 @@ async def translate_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory,
 
 
 async def _one(app: BIApp, u: Untranslated, overrides: dict[int, str], gateway: Any, memory: TranslationMemory,
-               settings: dict[str, Any], validator: Validator | None, max_attempts: int, task: str) -> Outcome:
+               settings: dict[str, Any], validator: Validator | None, max_attempts: int, task: str,
+               tools: bool = False, kg_tools: list[Any] | None = None) -> Outcome:
     o = Outcome(u.table, u.statement, u.span, u.reason, "failed")
     hit = memory.exact(u.text, u.input_columns)
     if hit is not None:
@@ -238,8 +247,12 @@ async def _one(app: BIApp, u: Untranslated, overrides: dict[int, str], gateway: 
                   "examples": [{"statement": e.statement, "input_columns": e.input_columns, "sql": e.sql}
                                for e in memory.similar(u.text)],
                   "previous_attempts": feedback}
+        kw: dict[str, Any] = {}
+        if tools:
+            inputs |= {"table_key": f"app:{app.app_id}/table:{u.table}", "app_key": f"app:{app.app_id}"}
+            kw["tools"] = statement_tools(app, u, overrides, validator) + list(kg_tools or [])
         try:
-            res = await gateway.call("translate_statement", inputs, StatementTranslation, task=task)
+            res = await gateway.call("translate_statement", inputs, StatementTranslation, task=task, **kw)
         except OutputInvalid as e:  # the model's output broke the schema: one attempt used, try again
             o.attempts.append({"error": f"OutputInvalid: {e}"})
             continue
@@ -250,6 +263,7 @@ async def _one(app: BIApp, u: Untranslated, overrides: dict[int, str], gateway: 
             return o
         out = res.output
         assert isinstance(out, StatementTranslation)
+        _count(o, res)
         o.notes = out.notes
         if not out.translatable or not out.sql.strip():
             o.status = "declined"
@@ -296,8 +310,8 @@ def _statements(t: Translation, table: str) -> list[dict[str, Any]]:
 async def repair_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory, validator: Validator, *,
                          overrides: dict[int, str] | None = None, tables: list[str] | None = None,
                          max_attempts: int = 3, task: str = "ai_repair",
-                         on_outcome: Callable[[Outcome], None] | None = None
-                         ) -> tuple[dict[int, str], list[Outcome]]:
+                         on_outcome: Callable[[Outcome], None] | None = None, tools: bool = False,
+                         kg_tools: list[Any] | None = None) -> tuple[dict[int, str], list[Outcome]]:
     """Agent 26's diagnosis: fix tables whose SQL runs but contradicts the evidence."""
     from adce_gateway.gateway import BudgetExceeded, GatewayRefusal, OutputInvalid, ProviderError, ReplayMiss
 
@@ -318,10 +332,15 @@ async def repair_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory, va
         o = Outcome(table, -1, "", "; ".join(problems[:5]), "failed")
         feedback: list[dict[str, Any]] = []
         for _ in range(max_attempts):
+            inputs: dict[str, Any] = {"table": table, "level": level, "statements": stmts,
+                                      "failed_comparisons": problems, "settings": _settings(app),
+                                      "previous_attempts": feedback}
+            kw: dict[str, Any] = {}
+            if tools:
+                inputs |= {"table_key": f"app:{app.app_id}/table:{table}", "app_key": f"app:{app.app_id}"}
+                kw["tools"] = repair_tools(app, table, stmts, overrides, validator) + list(kg_tools or [])
             try:
-                res = await gateway.call("diagnose_mismatch", {
-                    "table": table, "level": level, "statements": stmts, "failed_comparisons": problems,
-                    "settings": _settings(app), "previous_attempts": feedback}, MismatchFix, task=task)
+                res = await gateway.call("diagnose_mismatch", inputs, MismatchFix, task=task, **kw)
             except OutputInvalid as e:
                 o.attempts.append({"error": f"OutputInvalid: {e}"})
                 continue
@@ -331,6 +350,7 @@ async def repair_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory, va
                 break
             fix = res.output
             assert isinstance(fix, MismatchFix)
+            _count(o, res)
             o.notes = f"{fix.cause}: {fix.explanation}"
             target = next((s for s in stmts if s["statement"] == fix.statement), None)
             if target is None or not fix.sql.strip():
@@ -382,3 +402,63 @@ def _verify(app: BIApp, u: Untranslated, sql: str, overrides: dict[int, str],
     if data_problems:  # any failed comparison (row counts, field values) rejects the answer, whatever the level
         return False, data_problems, level
     return True, [], level  # no failures: validated when the level is V3+, otherwise checked only
+
+
+def _count(o: Outcome, res: Any) -> None:
+    o.model_calls += 1
+    o.tool_calls += len(getattr(res, "tool_calls", []) or [])
+
+
+def _tool(name: str, description: str, properties: dict[str, Any], required: list[str],
+          run: Callable[[dict[str, Any]], Any]) -> Any:
+    from adce_gateway.tools import Tool
+
+    async def call(args: dict[str, Any]) -> Any:
+        return run(args)
+
+    return Tool(name, description, {"type": "object", "properties": properties, "required": required}, call)
+
+
+def _statements_tool(app: BIApp) -> Any:
+    ops = [(t.name, step.action.value, op) for t in app.tables.values() for step in t.steps for op in step.ops]
+
+    def run(args: dict[str, Any]) -> Any:
+        table = args.get("table")
+        rows = [{"statement": op.statement, "table": name, "action": action, "text": op.text[:1500]}
+                for name, action, op in sorted(ops, key=lambda x: x[2].statement) if not table or name == table]
+        return {"statements": rows[:40], "more": max(0, len(rows) - 40)}
+
+    return _tool("get_statements", "The script's load statements in execution order (statement number, table, "
+                 "action, text); optionally only one table's.", {"table": {"type": "string"}}, [], run)
+
+
+def statement_tools(app: BIApp, u: Untranslated, overrides: dict[int, str], validator: Validator | None) -> list[Any]:
+    """check_sql: the checks and validation the answer will face; get_statements: script context."""
+
+    def check(args: dict[str, Any]) -> Any:
+        ok, problems, level = _verify(app, u, str(args.get("sql", "")), overrides, validator)
+        return {"ok": ok, "level": level, "problems": problems[:15],
+                "validated_against_data": validator is not None}
+
+    return [_tool("check_sql", "Run your candidate SQL (reading src) through the same checks and local data "
+                  "validation your final answer will face. Returns ok, the level reached and the problems.",
+                  {"sql": {"type": "string"}}, ["sql"], check), _statements_tool(app)]
+
+
+def repair_tools(app: BIApp, table: str, stmts: list[dict[str, Any]], overrides: dict[int, str],
+                 validator: Validator) -> list[Any]:
+    def check(args: dict[str, Any]) -> Any:
+        sid, sql = args.get("statement"), str(args.get("sql", ""))
+        target = next((x for x in stmts if x["statement"] == sid), None)
+        if target is None:
+            return {"ok": False, "problems": [f"statement {sid} is not one of the table's statements"]}
+        bad = static_problems(sql, target["input_columns"])
+        if not bad:
+            t2 = compose(app, {**overrides, target["statement"]: sql})
+            bad = [x.reason for x in t2.tables[table].untranslated] or validator(t2, table)[1]
+        return {"ok": not bad, "problems": bad[:15]}
+
+    return [_tool("check_fix", "Replace one statement's SQL and run the table against its evidence again. "
+                  "Returns ok and the comparisons that still fail.",
+                  {"statement": {"type": "integer"}, "sql": {"type": "string"}}, ["statement", "sql"], check),
+            _statements_tool(app)]

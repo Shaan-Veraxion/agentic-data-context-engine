@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, Field, ValidationError
+
+from .tools import ToolCall, Turn
 
 KINDS = ("anthropic", "anthropic_vertex", "anthropic_bedrock", "openai_compatible")
 
@@ -60,6 +62,11 @@ class ProviderConfig(BaseModel):
     rpm: int | None = None  # requests per minute allowed (free tiers); the gateway waits instead of failing
     max_output_tokens: int | None = None  # cap on a route's output budget (some APIs count it toward TPM)
     tpm: int | None = None  # tokens per minute allowed
+    # tool use on small quotas: output budget of each tool turn (the final answer keeps max_output_tokens) and the
+    # longest tool result sent back; every turn resends the conversation, so both count toward tpm
+    tool_turn_tokens: int | None = None
+    tool_choice: Literal["required", "auto"] = "required"  # auto: some models answer in text after tools
+    tool_result_chars: int | None = None
 
     def env(self, var: str | None) -> str | None:
         return os.environ.get(var) if var else None
@@ -68,6 +75,19 @@ class ProviderConfig(BaseModel):
 class ProviderClient(Protocol):
     async def complete(self, model: str, system: str, user: str, output_model: type[BaseModel], *,
                        max_tokens: int, effort: str | None) -> tuple[BaseModel, Usage, str]: ...
+
+
+class ToolUseClient(Protocol):
+    """Tool use (tools.py): a conversation in the provider's own message format, one model turn at a time."""
+
+    def start(self, system: str, user: str) -> Any: ...
+
+    async def turn(self, model: str, conv: Any, tools: list[dict[str, Any]], force: str | None, *,
+                   max_tokens: int, effort: str | None) -> Turn: ...
+
+    def add_results(self, conv: Any, results: list[tuple[ToolCall, str]]) -> None: ...
+
+    def nudge(self, conv: Any, text: str) -> None: ...
 
 
 # ---------------------------------------------------------------------------------------------- Anthropic (Claude)
@@ -121,6 +141,44 @@ class AnthropicClient:
                       cache_read_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
                       cache_write_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0)
         return resp.parsed_output, usage, resp.model
+
+    def start(self, system: str, user: str) -> Any:
+        return {"system": system, "messages": [{"role": "user", "content": user}]}
+
+    async def turn(self, model: str, conv: Any, tools: list[dict[str, Any]], force: str | None, *,
+                   max_tokens: int, effort: str | None) -> Turn:
+        kwargs: dict[str, Any] = {}
+        if effort:
+            kwargs["output_config"] = {"effort": effort}
+        try:
+            resp = await self.client.messages.create(
+                model=model, max_tokens=max_tokens,
+                system=[{"type": "text", "text": conv["system"], "cache_control": {"type": "ephemeral"}}],
+                messages=conv["messages"],
+                tools=[{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]}
+                       for t in tools],
+                tool_choice={"type": "tool", "name": force} if force else {"type": "any"}, **kwargs)
+        except self._errors as e:
+            raise ProviderError(f"{self.cfg.name}: {type(e).__name__}: {e}") from e
+        if resp.stop_reason == "refusal":
+            raise GatewayRefusal(f"{self.cfg.name}/{model}: model refused")
+        conv["messages"].append({"role": "assistant", "content": [b.model_dump(exclude_none=True)
+                                                                  for b in resp.content]})
+        calls = [ToolCall(b.id, b.name, b.input if isinstance(b.input, dict) else None, json.dumps(b.input))
+                 for b in resp.content if b.type == "tool_use"]
+        text = "".join(b.text for b in resp.content if b.type == "text")
+        u = resp.usage
+        usage = Usage(input_tokens=u.input_tokens, output_tokens=u.output_tokens,
+                      cache_read_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
+                      cache_write_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0)
+        return Turn(calls, text, usage, resp.model)
+
+    def add_results(self, conv: Any, results: list[tuple[ToolCall, str]]) -> None:
+        conv["messages"].append({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": c.id, "content": text} for c, text in results]})
+
+    def nudge(self, conv: Any, text: str) -> None:
+        conv["messages"].append({"role": "user", "content": text})
 
 
 # ---------------------------------------------------------------------------------------------- OpenAI-compatible
@@ -182,6 +240,59 @@ class OpenAICompatibleClient:
             usage = Usage(input_tokens=u.prompt_tokens - cached, output_tokens=u.completion_tokens,
                           cache_read_tokens=cached)
         return out, usage, resp.model or model
+
+
+    def start(self, system: str, user: str) -> Any:
+        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+    async def turn(self, model: str, conv: Any, tools: list[dict[str, Any]], force: str | None, *,
+                   max_tokens: int, effort: str | None) -> Turn:
+        kwargs: dict[str, Any] = {self.cfg.max_tokens_param: max_tokens}
+        if effort and self.cfg.reasoning_effort:
+            kwargs["reasoning_effort"] = {"xhigh": "high", "max": "high"}.get(effort, effort)
+        try:
+            resp = await self.client.chat.completions.create(
+                model=model, messages=conv,
+                tools=cast(Any, [{"type": "function", "function": t} for t in tools]),
+                tool_choice={"type": "function", "function": {"name": force}} if force else self.cfg.tool_choice,
+                **kwargs)
+        except self._errors as e:
+            raise ProviderError(f"{self.cfg.name}: {type(e).__name__}: {e}") from e
+        except self._status as e:
+            if e.status_code == 400 and "tool" in str(e).lower():
+                # the API refused the model's tool use (unknown tool, no tool call): tell the model, keep going
+                return Turn([], "", Usage(), model, rejected=str(e)[:400])
+            if e.status_code == 400:
+                raise OutputInvalid(f"{self.cfg.name}/{model}: {str(e)[:300]}") from e
+            raise ProviderError(f"{self.cfg.name}: HTTP {e.status_code}: {str(e)[:300]}") from e
+        msg = resp.choices[0].message
+        if getattr(msg, "refusal", None):
+            raise GatewayRefusal(f"{self.cfg.name}/{model}: model refused")
+        calls = []
+        for tc in msg.tool_calls or []:
+            raw = tc.function.arguments or ""
+            try:
+                args = json.loads(raw) if raw.strip() else {}
+            except ValueError:
+                args = None
+            calls.append(ToolCall(tc.id, tc.function.name, args if isinstance(args, dict) else None, raw))
+        conv.append({"role": "assistant", "content": msg.content or "",
+                     **({"tool_calls": [{"id": c.id, "type": "function",
+                                         "function": {"name": c.name, "arguments": c.raw or "{}"}} for c in calls]}
+                        if calls else {})})
+        u = resp.usage
+        usage = Usage()
+        if u is not None:
+            cached = getattr(getattr(u, "prompt_tokens_details", None), "cached_tokens", 0) or 0
+            usage = Usage(input_tokens=u.prompt_tokens - cached, output_tokens=u.completion_tokens,
+                          cache_read_tokens=cached)
+        return Turn(calls, msg.content or "", usage, resp.model or model)
+
+    def add_results(self, conv: Any, results: list[tuple[ToolCall, str]]) -> None:
+        conv.extend({"role": "tool", "tool_call_id": c.id, "content": text} for c, text in results)
+
+    def nudge(self, conv: Any, text: str) -> None:
+        conv.append({"role": "user", "content": text})
 
 
 def _strip_fences(text: str) -> str:

@@ -2,8 +2,9 @@
 # Key: GROQ_API_KEY (console.groq.com -> API Keys), in deploy/compose/.env or the environment; never in git.
 # rpm / tpm: set them to the limits your Groq console shows for these models; the gateway waits instead of failing.
 # The free tier also has a daily token limit per model (200,000 tokens a day for gpt-oss-120b when this was
-# written; about 60-80 translation calls). When it is used up the routes below fall back to gpt-oss-20b, which
-# has its own daily allowance; when both are used up, statements are skipped (not failed) until the next run.
+# written; about 60-80 translation calls). When it is used up the routes below fall back to a second key
+# (GROQ_API_KEY_2, optional: another account's allowance), then to gpt-oss-20b; when all are used up, statements
+# are skipped (not failed) until the next run.
 
 [providers.groq]
 kind = "openai_compatible"
@@ -15,6 +16,23 @@ max_retries = 5
 rpm = 30
 tpm = 8000
 max_output_tokens = 4000           # Groq counts the output budget toward TPM: keep prompt + this under tpm
+tool_turn_tokens = 2000            # tool use: each turn resends the conversation, so keep turns small
+tool_result_chars = 2000
+tool_choice = "auto"               # with "required", Groq rejects a gpt-oss reply that answers in text
+
+[providers.groq2]
+kind = "openai_compatible"
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY_2"
+structured_output = "json_schema"
+reasoning_effort = true
+max_retries = 2
+rpm = 30
+tpm = 8000
+max_output_tokens = 4000
+tool_turn_tokens = 2000
+tool_result_chars = 2000
+tool_choice = "auto"               # with "required", Groq rejects a gpt-oss reply that answers in text
 
 [models]
 strong = "groq:openai/gpt-oss-120b"
@@ -22,10 +40,10 @@ standard = "groq:openai/gpt-oss-120b"
 light = "groq:openai/gpt-oss-20b"
 
 [routes.translate_statement]
-fallbacks = ["groq:openai/gpt-oss-20b"]
+fallbacks = ["groq2:openai/gpt-oss-120b", "groq:openai/gpt-oss-20b"]
 
 [routes.diagnose_mismatch]
-fallbacks = ["groq:openai/gpt-oss-20b"]
+fallbacks = ["groq2:openai/gpt-oss-120b", "groq:openai/gpt-oss-20b"]
 
 # Free tier: no cost. Paid Groq prices can be added here (USD per million tokens) for budgets.
 # [prices."groq:openai/gpt-oss-120b"]

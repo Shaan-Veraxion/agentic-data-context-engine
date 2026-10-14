@@ -83,9 +83,10 @@ def resolve_chain(selected: list[int]) -> list[tuple[int, bool]]:
 class Variant:
     ai: str = "off"  # off | replay | live
     data: str = "full"
+    tools: bool = False  # LLM steps may call tools (check_sql, get_statements, kg-mcp lookups)
 
     def label(self) -> str:
-        return f"ai={self.ai} data={self.data}"
+        return f"ai={self.ai}{'+tools' if self.tools else ''} data={self.data}"
 
 
 @dataclass
@@ -109,11 +110,12 @@ class RunResult:
     status: str = "pass"  # pass | fail | error | xfail | xpass
     seconds: float = 0.0
     gateway: dict[str, Any] = field(default_factory=dict)
+    kg_calls: int = 0  # knowledge reads and writes made over MCP
 
     def to_dict(self) -> dict[str, Any]:
         return {"case": self.case, "variant": self.variant.__dict__, "chain": self.chain, "steps": self.steps,
                 "checks": [c.__dict__ for c in self.checks], "rows": self.rows, "status": self.status,
-                "seconds": round(self.seconds, 2), "gateway": self.gateway,
+                "seconds": round(self.seconds, 2), "gateway": self.gateway, "kg_calls": self.kg_calls,
                 "passed": sum(c.ok for c in self.checks), "failed": sum(not c.ok for c in self.checks)}
 
 
@@ -178,13 +180,18 @@ class Runner:
         calls: list[dict[str, Any]] = []
         if gateway is not None:
             _log_calls(gateway, calls)
-        ctx = AgentContext(kg=self.kg, artifacts=self.store, run_id="bench", app_id=app_id, gateway=gateway)
         self.state = {"files": self.upload(), "app_id": app_id}
-        for n, auto in chain:
-            step = await (self._pipeline(ctx) if n == PIPELINE else self._step(n, auto, ctx))
-            res.steps.append(step)
-            if step["error"]:
-                break
+        from kg_mcp.client import McpKG
+
+        # agents reach knowledge through kg-mcp (ADR-2), here an in-process server over the run's store
+        async with McpKG.serving(self.kg) as kg:
+            ctx = AgentContext(kg=kg, artifacts=self.store, run_id="bench", app_id=app_id, gateway=gateway)
+            for n, auto in chain:
+                step = await (self._pipeline(ctx) if n == PIPELINE else self._step(n, auto, ctx))
+                res.steps.append(step)
+                if step["error"]:
+                    break
+            res.kg_calls = kg.calls
         if gateway is not None:
             res.gateway = {"mode": gateway.mode, "calls": calls}
         self._check(res)
@@ -205,7 +212,7 @@ class Runner:
         if n == 27:
             return {"files": files}
         if n == 28:
-            return {"bi_ir_key": s.get("bi_ir_key"), "files": files}
+            return {"bi_ir_key": s.get("bi_ir_key"), "files": files, "llm_tools": self.variant.tools}
         if n == 21:
             return {"files": files}
         job = {"bi_ir_key": s.get("bi_ir_key"), "translation_key": s.get("translation_key"), "files": files,
@@ -230,6 +237,8 @@ class Runner:
             out["traceback"] = traceback.format_exc()
             return out
         self._absorb(n, r.outputs)
+        if hasattr(ctx.kg, "flush"):
+            await ctx.kg.flush()  # McpKG buffers writes
         facts = (await self.kg.facts())[before:]
         keys = list(r.artifacts) + [v for k in ("sql_keys", "chart_keys", "files")
                                     if isinstance(r.outputs.get(k), dict) for v in r.outputs[k].values()]
@@ -255,7 +264,8 @@ class Runner:
                                "auto": False, "error": None}
         try:
             st = dict(await run_pipeline(app_id=self.state["app_id"], run_id="bench", files=self.state["files"],
-                                         deps=Deps(kg=self.kg, artifacts=self.store, gateway=ctx.gateway)))
+                                         deps=Deps(kg=ctx.kg, artifacts=self.store, gateway=ctx.gateway,
+                                                   llm_tools=self.variant.tools)))
         except Exception as e:  # noqa: BLE001
             out["error"] = f"{type(e).__name__}: {e}"
             out["traceback"] = traceback.format_exc()
@@ -431,6 +441,7 @@ def _log_calls(gateway: Any, calls: list[dict[str, Any]]) -> None:
             raise
         u = r.usage
         entry.update({"model": r.model, "provider": r.provider, "source": r.source, "latency_ms": r.latency_ms,
+                      "turns": r.turns, "tools": r.tool_calls,
                       "input_tokens": getattr(u, "input_tokens", None),
                       "output_tokens": getattr(u, "output_tokens", None), "cost_usd": r.cost_usd,
                       "output": _jsonable(r.output.model_dump())})

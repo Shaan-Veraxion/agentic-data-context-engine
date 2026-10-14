@@ -5,6 +5,9 @@ description = "Knowledge service tools over MCP (FastMCP 3.x) on the KGPort adap
 requires-python = ">=3.12"
 dependencies = ["adce-core", "adce-kg", "fastmcp>=3.4,<4"]
 
+[dependency-groups]
+dev = ["adce-orchestrator"]
+
 [tool.uv.sources]
 adce-core = { workspace = true }
 adce-qlik = { workspace = true }
