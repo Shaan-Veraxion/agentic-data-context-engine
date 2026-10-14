@@ -1,0 +1,35 @@
+{
+  "realm": "adce",
+  "enabled": true,
+  "roles": {
+    "realm": [
+      {"name": "viewer"}, {"name": "reviewer"}, {"name": "approver"}, {"name": "admin"}
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "adce-workbench",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "redirectUris": ["http://localhost:3001/*"],
+      "webOrigins": ["http://localhost:3001"],
+      "attributes": {"pkce.code.challenge.method": "S256"}
+    },
+    {
+      "clientId": "adce-api",
+      "publicClient": false,
+      "secret": "adce-api-local-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false
+    }
+  ],
+  "users": [
+    {
+      "username": "reviewer",
+      "enabled": true,
+      "email": "reviewer@adce.local",
+      "credentials": [{"type": "password", "value": "reviewer", "temporary": false}],
+      "realmRoles": ["viewer", "reviewer"]
+    }
+  ]
+}

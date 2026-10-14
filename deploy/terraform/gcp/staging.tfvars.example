@@ -1,0 +1,5 @@
+project             = "your-gcp-project"
+region              = "europe-west1"
+environment         = "staging"
+namespace           = "adce"
+deletion_protection = false

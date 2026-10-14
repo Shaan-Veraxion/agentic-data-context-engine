@@ -1,0 +1,16 @@
+# Client install: their Kubernetes, their stores, their model endpoint and their identity provider.
+image:
+  python: { repository: registry.client.example/adce/adce-python, tag: "0.1.0" }
+  workbench: { repository: registry.client.example/adce/adce-workbench, tag: "0.1.0" }
+config:
+  ADCE_S3_ENDPOINT: https://s3.client.example
+  ADCE_S3_BUCKET: adce
+  ADCE_VERTEX_PROJECT: client-vertex-project
+  ADCE_KEYCLOAK_ISSUER: https://login.client.example/realms/adce
+  ADCE_KG_GROUP: client
+secrets:
+  existingSecret: adce-secrets
+services:
+  api-gateway: { replicas: 1 }
+  kg-mcp: { replicas: 1 }
+  workbench: { replicas: 1 }

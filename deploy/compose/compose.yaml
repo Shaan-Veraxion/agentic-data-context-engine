@@ -1,0 +1,122 @@
+# Local ADCE stack. Profiles:
+#   (default) core stores: Postgres (fact log, outbox, checkpoints), Neo4j (knowledge service), S3 (artifacts)
+#   obs       Langfuse v3 (web + worker + ClickHouse + Redis), using the same Postgres and S3
+#   auth      Keycloak (dev realm)
+# Start:  docker compose -f deploy/compose/compose.yaml --env-file deploy/compose/.env up -d
+# There is no Dremio in this phase (see docs/implementation-plan.md, phase PD).
+name: adce
+
+x-env: &pg
+  POSTGRES_USER: ${PG_USER:-adce}
+  POSTGRES_PASSWORD: ${PG_PASSWORD:-adce}
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      <<: *pg
+      POSTGRES_DB: adce
+    ports: ["${PG_PORT:-5433}:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-adce} -d adce"]
+      interval: 5s
+      retries: 20
+
+  neo4j:
+    image: neo4j:5.26-community
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-adce-neo4j-pass}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_server_memory_heap_max__size: 1G
+    ports: ["${NEO4J_HTTP_PORT:-7474}:7474", "${NEO4J_BOLT_PORT:-7687}:7687"]
+    volumes: [neo4jdata:/data]
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p ${NEO4J_PASSWORD:-adce-neo4j-pass} 'RETURN 1' || exit 1"]
+      interval: 10s
+      retries: 30
+
+  # S3-compatible object storage. MinIO images are no longer publicly distributed (2025), so the local stack uses
+  # SeaweedFS (Apache-2.0). Code uses only the S3 API; staging and production use GCS.
+  s3:
+    image: chrislusf/seaweedfs:4.48
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-s3.config=/etc/seaweedfs/s3.json", "-ip.bind=0.0.0.0"]
+    ports: ["${S3_PORT:-8333}:8333"]
+    volumes:
+      - s3data:/data
+      - ./seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333/status || exit 1"]
+      interval: 10s
+      retries: 20
+
+  # ---------------------------------------------------------------- obs profile: Langfuse v3
+  clickhouse:
+    profiles: [obs]
+    image: clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes: [chdata:/var/lib/clickhouse]
+
+  redis:
+    profiles: [obs]
+    image: redis:7.4
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-adce-redis}"]
+
+  langfuse-worker: &langfuse
+    profiles: [obs]
+    image: langfuse/langfuse-worker:3
+    depends_on: [postgres, s3, redis, clickhouse]
+    environment: &lfenv
+      DATABASE_URL: postgresql://${PG_USER:-adce}:${PG_PASSWORD:-adce}@postgres:5432/langfuse
+      SALT: ${LANGFUSE_SALT:-adce-local-salt}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      TELEMETRY_ENABLED: "false"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: ${REDIS_PASSWORD:-adce-redis}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-adce}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-adce-s3-pass}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://s3:8333
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-adce-local-nextauth}
+      LANGFUSE_INIT_ORG_ID: adce
+      LANGFUSE_INIT_PROJECT_ID: adce-local
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-adce-local}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-adce-local}
+      LANGFUSE_INIT_USER_EMAIL: admin@adce.local
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_ADMIN_PASSWORD:-adce-admin-pass}
+
+  langfuse-web:
+    <<: *langfuse
+    image: langfuse/langfuse:3
+    ports: ["${LANGFUSE_PORT:-3000}:3000"]
+
+  # ---------------------------------------------------------------- auth profile: Keycloak
+  keycloak:
+    profiles: [auth]
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-adce-admin-pass}
+    ports: ["${KEYCLOAK_PORT:-8080}:8080"]
+    volumes: [../keycloak:/opt/keycloak/data/import:ro]
+
+volumes:
+  pgdata:
+  neo4jdata:
+  s3data:
+  chdata:

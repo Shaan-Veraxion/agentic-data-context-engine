@@ -1,0 +1,45 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env: { POSTGRES_USER: adce, POSTGRES_PASSWORD: adce, POSTGRES_DB: adce_test }
+        ports: ["5433:5432"]
+        options: --health-cmd "pg_isready -U adce" --health-interval 5s --health-retries 20
+      neo4j:
+        image: neo4j:5.26-community
+        env: { NEO4J_AUTH: neo4j/adce-neo4j-pass }
+        ports: ["7687:7687"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --all-packages
+      - run: uv run ruff check .
+      - run: uv run pyright
+      - run: uv run pytest   # integration tests run against the service containers; S3 ones skip without it
+  workbench:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: apps/workbench } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: npm install -g pnpm@9.15.9 && pnpm install --frozen-lockfile && pnpm build
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: for v in values.yaml values-staging.yaml values-client.yaml; do helm lint deploy/helm/adce -f deploy/helm/adce/$v; done
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform -chdir=deploy/terraform/gcp init -backend=false && terraform -chdir=deploy/terraform/gcp validate
+  images:
+    runs-on: ubuntu-latest
+    needs: [python, workbench]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f deploy/docker/python.Dockerfile -t adce-python:ci .
+      - run: docker build -f deploy/docker/workbench.Dockerfile -t adce-workbench:ci .

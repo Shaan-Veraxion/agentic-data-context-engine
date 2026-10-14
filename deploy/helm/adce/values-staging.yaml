@@ -1,0 +1,17 @@
+# Staging on Google Cloud (infrastructure: deploy/terraform/gcp). Replace PROJECT and the hosts.
+# Secrets (adce-secrets) are synced from Secret Manager; Neo4j runs from its official Helm chart in the cluster.
+image:
+  python: { repository: europe-west1-docker.pkg.dev/PROJECT/adce/adce-python, tag: "0.1.0" }
+  workbench: { repository: europe-west1-docker.pkg.dev/PROJECT/adce/adce-workbench, tag: "0.1.0" }
+serviceAccount:
+  annotations: { iam.gke.io/gcp-service-account: adce-workloads@PROJECT.iam.gserviceaccount.com }
+config:
+  ADCE_VERTEX_PROJECT: PROJECT
+  ADCE_S3_BUCKET: PROJECT-adce-staging-artifacts
+  ADCE_KEYCLOAK_ISSUER: https://auth.staging.example.com/realms/adce
+secrets:
+  existingSecret: adce-secrets
+ingress:
+  enabled: true
+  className: gce
+  host: adce.staging.example.com

@@ -1,0 +1,84 @@
+# Configuration differs per environment only through values and secrets (ADR-15).
+image:
+  python: { repository: adce-python, tag: "0.1.0", pullPolicy: IfNotPresent }
+  workbench: { repository: adce-workbench, tag: "0.1.0", pullPolicy: IfNotPresent }
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: adce
+  annotations: {}  # GKE workload identity: iam.gke.io/gcp-service-account: adce-workloads@<project>.iam.gserviceaccount.com
+
+# Non-secret settings (ADCE_* environment variables, see packages/adce-core/src/adce_core/settings.py)
+config:
+  ADCE_NEO4J_URI: bolt://neo4j:7687
+  ADCE_NEO4J_USER: neo4j
+  ADCE_KG_GROUP: adce
+  ADCE_S3_ENDPOINT: https://storage.googleapis.com   # GCS through its S3-compatible XML API in Google Cloud
+  ADCE_S3_BUCKET: adce-artifacts
+  ADCE_S3_REGION: auto
+  ADCE_GATEWAY_MODE: live                            # replay | record | live
+  ADCE_VERTEX_PROJECT: ""
+  ADCE_VERTEX_REGION: global
+  ADCE_EMBEDDER: vertex                              # vertex | hash
+  ADCE_AUTH_MODE: keycloak
+  ADCE_KEYCLOAK_ISSUER: https://auth.example.com/realms/adce
+  GRAPHITI_TELEMETRY_ENABLED: "false"
+
+# Secret values: reference an existing secret (recommended; e.g. synced from Secret Manager), or let the chart
+# create one from secrets.values (development only).
+secrets:
+  existingSecret: ""
+  values:
+    ADCE_PG_DSN: ""
+    ADCE_NEO4J_PASSWORD: ""
+    ADCE_S3_ACCESS_KEY: ""
+    ADCE_S3_SECRET_KEY: ""
+
+services:
+  api-gateway:
+    enabled: true
+    image: python
+    command: ["python", "-m", "api_gateway", "--port", "8700"]
+    port: 8700
+    replicas: 2
+    health: /health
+    resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { memory: 2Gi } }
+  kg-mcp:
+    enabled: true
+    image: python
+    command: ["python", "-m", "kg_mcp.server"]
+    port: 8701
+    replicas: 2
+    env: { ADCE_KG_MCP_PORT: "8701" }
+    resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { memory: 1Gi } }
+  hitl-service:
+    enabled: true
+    image: python
+    command: ["uvicorn", "hitl_service.api:app", "--host", "0.0.0.0", "--port", "8702"]
+    port: 8702
+    replicas: 1
+    health: /items?status=open
+    resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 512Mi } }
+  workbench:
+    enabled: true
+    image: workbench
+    port: 3001
+    replicas: 2
+    health: /
+    env: { ADCE_API_INTERNAL: "http://adce-api-gateway:8700" }
+    resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 512Mi } }
+
+migrations:
+  enabled: true
+  command: ["alembic", "-c", "migrations/alembic.ini", "upgrade", "head"]
+
+ingress:
+  enabled: false
+  className: ""
+  host: adce.example.com
+  tls: []
+  annotations: {}
+
+podSecurityContext: { runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001 }
+securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }

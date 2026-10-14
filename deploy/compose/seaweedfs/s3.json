@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "adce",
+      "credentials": [{"accessKey": "adce", "secretKey": "adce-s3-pass"}],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}
