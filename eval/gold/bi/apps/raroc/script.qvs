@@ -1,0 +1,842 @@
+//-----------------------------RAROC---------------------------//
+//---------------------------------Pluto--------------------------------------------------------
+Let vPlutoStartDate = Date(Date#(vStart_Date,'MM/DD/YYYY'),'YYYY-MM-DD');
+LET vPlutoEndDate = Date(Date#(vEnd_Date,'MM/DD/YYYY'),'YYYY-MM-DD');
+Trace Pluto $(vPlutoStartDate) $(vPlutoEndDate);
+
+
+LIB CONNECT TO '$(vPlutoConnect)';
+[Pluto_Tmp]:
+Load *
+where Date(floor("IHDate"),'YYYY-MM-DD')>='$(vPlutoStartDate)'
+and Date(floor("IHDate"),'YYYY-MM-DD')<='$(vPlutoEndDate)';
+SQL select distinct
+    TH.GroupcoID as GROUPCOID,
+    AD.ADName as CPname,
+    S.expirydate,
+    S.OpeningDate,
+    S.Status,
+    S.ActualCost,
+    S.SecID as 'Security ID',
+    S.IssuingbankID,
+    AD1.ADName as 'issuing bank',
+    CT1.desc_ as 'issue bank country',
+    S.currencycode,
+    S.value,
+    S.USDEquivalentvalue,
+    IH.date as 'IHDate'
+FROM
+    tblinvoicehead IH ,
+    tbltrans T,
+    tbltranstrades TT,
+    tblTradesPayment TP,
+    tbltradesheader TH,
+    tblSecurity S,
+    tbladdresses AD1,
+    tbladdresses AD2,
+    tblCodeDescriptions C,
+    tblCCountries CT1,
+    tblAddresses AD,
+    tblcsystemusers U
+where
+
+    IH.PurchsaleFlag ='P'
+    and IH.InvoiceID =T.trnInvoiceID
+    and T.trnreversedoutflag= 0
+    and T.trndeletedflag =0
+    and T.TrnID = TT.transID
+    and TT.tradeID = TH.tradeID
+    and TH.iscancelledtrade =0
+    and TH.CPID = AD.ADID
+    and TH.tradeID = TP.tradeID
+    and TP.financeperson =U.userID
+    and TP.CreditType = C.Cd_Id AND C.cd_Type = 'CR'
+    and TP.SecurityID = S.SecID
+    and S.Purchasesale='P'
+    and S.SecType in ('LCS','LCD')
+    and S.IssuingBankID = AD1.ADID
+    and AD1.ADcountry = CT1.countrycode
+    ;
+
+
+//--Entity Expansion
+LIB CONNECT TO '$(vPlutoConnect)';
+LEFT JOIN (Pluto_Tmp)
+
+LOAD *;
+SQL SELECT GroupCoCode as GROUPCOID,
+    GroupCoName as Entity,
+    GCCountry as CountryID
+FROM Pluto.dbo.tblCGroupCompanies;
+
+
+//--Country Name
+LIB CONNECT TO '$(vPlutoConnect)';
+LEFT JOIN (Pluto_Tmp)
+LOAD * ;
+SQL SELECT distinct CountryCode as CountryID,
+    "Desc_" as Country
+FROM Pluto.dbo.tblCCountries;
+
+//--Bank Group
+LEFT JOIN (Pluto_Tmp)
+LOAD
+    "Bank Name" as 'issuing bank',
+    "Group" as "BANK_GROUP"
+FROM ['$(vPath1)/'Master Group Look-up.xlsx]
+(ooxml, embedded labels, table is Sheet1);
+
+//---Scope Bank Groups
+Inner Join (Pluto_Tmp)
+LOAD "List of Banks" as BANK_GROUP //, "List of Banks" as Left_bankGroup
+FROM ['$(vPath1)/'Master Group Look-up.xlsx]
+(ooxml, embedded labels, table is Scope );
+
+
+qualify * ;
+//----Removing Duplicates on Security ID
+[Pluto]:
+NoConcatenate Load distinct
+      GROUPCOID as GROUPCOID,
+      CPname as CPname,
+      expirydate as expirydate,
+      OpeningDate as OpeningDate,
+      ActualCost as ActualCost,
+      [Security ID] ,
+      IssuingbankID as IssuingbankID,
+      [issuing bank] as 'issuing bank',
+      [issue bank country] as 'issue bank country',
+      currencycode as currencycode,
+      value as value,
+      USDEquivalentvalue as USDEquivalentvalue,
+      CountryID as COUNTRYID,
+      Country as COUNTRY,
+      BANK_GROUP as BANK_GROUP,
+      Entity as ENTITY
+Resident [Pluto_Tmp];
+Unqualify *;
+drop table [Pluto_Tmp];
+
+//-----------------------------------Titan LC Import-------------------------------------------------------//
+Let vTitanStartDate= Date(Date#(vStart_Date,'MM/DD/YYYY'),'DD-MM-YYYY');
+Let vTitanEndDate = Date(Date#(vEnd_Date,'MM/DD/YYYY'),'DD-MM-YYYY');
+Trace Titan $(vTitanStartDate) $(vTitanEndDate);
+
+LIB CONNECT TO 'TITAN SE20 REF';
+LOAD DESCRIPTION AS BENEFICIARY,ID as EXPORTER_ID,RISK_COUNTRY_ID as BENE_RISK_COUNTRY_ID
+    ,DESCRIPTION as APPLICANT,ID AS GROUP_COMPANY,RISK_COUNTRY_ID;
+[Company_vw]:
+  SQL SELECT COMP_EXP.DESCRIPTION ,rawtohex(ID) as ID,rawtohex(RISK_COUNTRY_ID) as RISK_COUNTRY_ID
+  FROM COMPANY_VW COMP_EXP
+  WHERE COMP_EXP.effective_to is null;
+[Country_vw]:
+Noconcatenate LOAD DESCRIPTION as APPLICANT_COUNTRY,ID as RISK_COUNTRY_ID,
+     ID AS BENE_RISK_COUNTRY_ID,DESCRIPTION AS BENEFICIARY_COUNTRY;
+  SQL SELECT  CTY_GC.DESCRIPTION  ,rawtohex(CTY_GC.ID) as ID
+  FROM COUNTRY_VW CTY_GC
+  WHERE CTY_GC.effective_to is null;
+LEFT JOIN ([Company_vw])
+Load APPLICANT_COUNTRY, RISK_COUNTRY_ID
+  Resident Country_vw;
+
+Left Join  ([Company_vw])
+Load  BENE_RISK_COUNTRY_ID, BENEFICIARY_COUNTRY
+  Resident Country_vw;
+
+Drop table Country_vw;
+
+
+LIB CONNECT TO 'TITAN SE20';
+Titan_Tmp:
+SELECT DISTINCT
+  CS.CREDIT_SECURITY_ID,
+  CS.ASSIGNMENT_REFERENCE,
+  rawtohex(CS.ISSUING_BRANCH) as ISSUING_BRANCH,
+  CS.AMOUNT,
+  CS.BALANCE_AMOUNT,
+  CS.LOC_ISSUE_DATE ISSUE_DATE,
+  CS.LOC_DATE_OF_EXPIRY EXPIRY_DATE,
+  CS.SECURITY_DIRECTION,
+  CS.effective_FROM,
+  CS.SECURITY_STATUS,
+  rawtohex(CS.SECURITIES_ENTITY_ID) as SECURITIES_ENTITY_ID,
+  OWNER_SID,
+  rawtohex(CS.group_company) as GROUP_COMPANY,
+  rawtohex(CS.exporter_id) as EXPORTER_ID,
+  rawtohex(CS.ISSUING_BANK) as ISSUING_BANK,
+  rawtohex(CS.CURRENCY) as CURRENCY,
+  rawtohex(CS.BUSINESS_LINE) as BUSINESS_LINE
+FROM FIN_ALL_CREDIT_SEC_QV_VW CS
+WHERE
+CS.SECURITY_DIRECTION in ('Import','Export')
+AND CS.EFFECTIVE_TO > SYSDATE
+AND CS.LOC_ISSUE_DATE >= TO_DATE('$(vTitanStartDate)','DD-MM-YYYY')
+AND CS.LOC_ISSUE_DATE <= TO_DATE('$(vTitanEndDate)','DD-MM-YYYY');
+// trace date;
+// exit script;
+LIB CONNECT TO 'TITAN SE20 REF';
+LEFT JOIN (Titan_Tmp)
+LOAD DESCRIPTION,ACTIVE_DIRECTORY_SID as OWNER_SID;
+  SQL SELECT U.DESCRIPTION ,U.ACTIVE_DIRECTORY_SID
+  FROM user_vw U
+  WHERE  U.EFFECTIVE_TO IS NULL;
+// -------- APPLICANT
+LEFT JOIN (Titan_Tmp)
+  LOAD  APPLICANT, GROUP_COMPANY ,APPLICANT_COUNTRY
+  Resident Company_vw;
+
+// ------- BENEFICIARY
+LEFT JOIN (Titan_Tmp)
+  LOAD   BENEFICIARY,  EXPORTER_ID,  BENE_RISK_COUNTRY_ID, BENEFICIARY_COUNTRY
+  Resident Company_vw;
+
+// -------- BANK
+LIB CONNECT TO 'TITAN SE20 REF';
+LEFT JOIN (Titan_Tmp)
+  LOAD ID AS ISSUING_BANK,DESCRIPTION AS ISSUING_BANK_DESCRIPTION;
+//[BANK]:
+  SQL SELECT rawtohex(ID) as ID,BANK.DESCRIPTION
+  FROM BANKING_GROUP_VW BANK
+  WHERE BANK.EFFECTIVE_TO IS NULL ;
+
+LIB CONNECT TO 'TITAN SE20 REF';
+LEFT JOIN (Titan_Tmp)
+  LOAD ID AS ISSUING_BRANCH,DESCRIPTION AS ISSUING_BANK_BRANCH_DESCRIPTION;
+  SQL SELECT rawtohex(ID) as ID,BANK_BRANCH.NAME as DESCRIPTION
+  FROM BANK_BRANCHES_CVW BANK_BRANCH;
+
+// --- CURRENCY
+LIB CONNECT TO 'TITAN SE20 REF';
+LEFT JOIN (Titan_Tmp)
+  LOAD ID as CURRENCY, CODE;
+  SQL SELECT rawtohex(ID) as ID,  CCY.CODE
+  FROM CURRENCY_VW CCY
+  WHERE CCY.EFFECTIVE_TO IS NULL;
+
+// --- FEES
+LIB CONNECT TO 'TITAN SE20';
+LEFT JOIN (Titan_Tmp)
+  LOAD CREDIT_SECURITY_ID,CURRENCY as FEES_CURRENCY,AMOUNT as FEES_AMOUNT;
+  SQL  SELECT CREDIT_SECURITY_ID,CURRENCY_LABEL AS CURRENCY, SUM(CASE WHEN AMOUNT_DIR='PAY' THEN AMOUNT ELSE AMOUNT*-1 END) AMOUNT
+  FROM INV_CONTRACTUAL_CASHFLOWS_VW
+  WHERE CTRCT_CASHFLOW_PARENT_TYPE = 'CREDIT_SECURITY'
+  GROUP BY CREDIT_SECURITY_ID,CURRENCY_LABEL;
+
+LIB CONNECT TO 'TITAN SE20';
+LEFT JOIN (Titan_Tmp)
+  LOAD BUSINESS_LINE_ID AS BUSINESS_LINE,BUSINESS_LINE_SHORT_CODE AS BL_BUSINESS_LINE;
+  SQL SELECT  rawtohex(BL.BUSINESS_LINE_ID) as BUSINESS_LINE_ID,BL.BUSINESS_LINE_SHORT_CODE
+  FROM STREAMS_BUSINESS_LINES_VW BL;
+
+DROP TABLE [Company_vw];
+
+
+//--Bank Group -----
+LEFT JOIN (Titan_Tmp)
+LOAD
+    "Bank Name" as ISSUING_BANK_BRANCH_DESCRIPTION,
+    "Group" as "BANK_GROUP"
+FROM ['$(vPath1)'Master Group Look-up.xlsx]
+(ooxml, embedded labels, table is Sheet1);
+
+//---Scope Bank Groups ----
+// Inner Join (Titan_Tmp)
+// LOAD "List of Banks" as BANK_GROUP //, "List of Banks" as Left_bankGroup
+// FROM ['$(vPath)'Master Group Look-up.xlsx]
+// (ooxml, embedded labels, table is Scope );
+
+
+qualify * ;
+[TitanLCImport]:
+Load *
+resident Titan_Tmp;
+Unqualify*;
+
+drop table Titan_Tmp;
+
+//------------------------------------------------------------------
+//-----------------Incremetnally Load Monthly-------------------------
+LET vFileName='EMIR_PTF_REC_FX_MON*.csv';
+
+//------------Get the list of all FX Files
+FOR each File in FileList('$(vPath)$(vFileName)')
+
+FileDetails:
+Load
+	'$(File)' as FilePath,
+	FileTime( '$(File)' ) as FileTime,
+	Left(right('$(File)',len('$(File)')-index('$(File)','FX_MON',-1)-6),8)  as FileDateNumber,
+	Date(Date#(left(right('$(File)',len('$(File)')-index('$(File)','FX_MON',-1)-6),8) ,'YYYYMMDD')) as FileDate
+AutoGenerate 1;
+next File;
+
+FilesOrderMonthly:
+NoConcatenate Load
+	FilePath,
+	FileTime,
+	FileDateNumber,
+	FileDate,
+    YearName ( FileDate, 0, 10) as FileFiscalYear,
+    'Q' & if(Ceil(Month(FileDate)/3)=4,1,Ceil(Month(FileDate)/3)+1) as FileQuarter,
+    if(Ceil(Month(FileDate)/3)=4,1,Ceil(Month(FileDate)/3)+1) as FileQuarterNumber,
+    Month(QuarterStart("FileDate"))&'-'&Month(QuarterEnd("FileDate")) as FileQuarterName,
+    Month(FileDate)&'-'&Year(FileDate) as FileMonthYear,
+    Month(FileDate)&'-'&YearName ( FileDate, 0, 10) as FileMonthFiscalYear,
+    Month(FileDate) as FileMonth,
+    Year(FileDate) as FileYear,
+    Pick(WildMatch(Month(FileDate)&'-'&YearName ( FileDate, 0, 10), 'Jan-'&'$(vFiscalYear_Prev)', 'Feb-'&'$(vFiscalYear_Prev)', 'Mar-'&'$(vFiscalYear_Prev)', 'Apr-'&'$(vFiscalYear_Prev)', 'May-'&'$(vFiscalYear_Prev)', 'Jun-'&'$(vFiscalYear_Prev)', 'Jul-'&'$(vFiscalYear_Prev)', 'Aug-'&'$(vFiscalYear_Prev)', 'Sep-'&'$(vFiscalYear_Prev)', 'Oct-'&'$(vFiscalYear_Prev)', 'Nov-'&'$(vFiscalYear_Prev)', 'Dec-'&'$(vFiscalYear_Prev)'
+    ,'Jan-'&'$(vFiscalYear_Current)' , 'Feb-'&'$(vFiscalYear_Current)' , 'Mar-'&'$(vFiscalYear_Current)' , 'Apr-'&'$(vFiscalYear_Current)', 'May-'&'$(vFiscalYear_Current)', 'Jun-'&'$(vFiscalYear_Current)', 'Jul-'&'$(vFiscalYear_Current)', 'Aug-'&'$(vFiscalYear_Current)', 'Sep-'&'$(vFiscalYear_Current)', 'Oct-'&'$(vFiscalYear_Current)', 'Nov-'&'$(vFiscalYear_Current)', 'Dec-'&'$(vFiscalYear_Current)')
+    ,'Q2', 'Q2', 'Q2',  'Q3',  'Q3',  'Q3',  'Q4',  'Q4',  'Q4',  'Q1',  'Q1',  'Q1'
+    ,'Q6', 'Q6', 'Q6',  'Q7',  'Q7',  'Q7',  'Q8',  'Q8',  'Q8',  'Q5',  'Q5',  'Q5') as FileQuarter8,
+// 	Autonumber(FileDateNumber) as seq,
+    Rowno() as seq
+Resident FileDetails
+where YearName ( FileDate, 0, 10) =  '$(vFiscalYear_Current)' OR YearName ( FileDate, 0, 10) =  '$(vFiscalYear_Prev)'
+order by FileDateNumber DESC;
+
+drop tables FileDetails;
+
+//--- Count number of files---
+Right join (FilesOrderMonthly)
+Load max(seq) as CountFiles
+Resident FilesOrderMonthly;
+
+let vNoOfFiles = peek('CountFiles',0,'FilesOrderMonthly');
+
+
+[Fx_Murex]:
+Load * inline [1];
+Trace $(vNoOfFiles);
+
+
+For i=0 to $(vNoOfFiles)-1
+   LET vLoadfile = peek('FilePath',$(i),'FilesOrderMonthly');
+   LET vFileMonth = peek('FileMonth',$(i),'FilesOrderMonthly');
+   LET vFileYear = peek('FileYear',$(i),'FilesOrderMonthly');
+   LET vFileQuarter = peek('FileQuarter',$(i),'FilesOrderMonthly');
+   LET vFileQuarterNumber = peek('FileQuarterNumber',$(i),'FilesOrderMonthly');
+   LET vFileQuarter8 = peek('FileQuarter8',$(i),'FilesOrderMonthly');
+
+Concatenate ([Fx_Murex])
+LOAD
+    TRADEDON,
+    CONTRACTID,
+    TRADEID,
+    PACKAGEID,
+    ENTITY as CODE,
+    PORTFOLIO,
+    COUNTERPARTY,
+    PRODUCT_CLASS,
+    TRN_GRP,
+    TRN_TYPE,
+    CONTRACTNAME,
+    TYPOLOGY,
+    PLKEY,
+    FUT_CASH_PROCEED,
+    FIXING_DATE,
+    FIXING_PRICE,
+    DIRECTION,
+    NOTIONAL_1,
+    CCY1,
+    NOTIONAL_2,
+    CCY_2,
+    PRICE,
+    CALL_PUT,
+    DATE(Date#(STARTDATE,'DD-MMM-YY'),'DD/MM/YYYY') as STARTDATE,
+    DATE(Date#(ENDDATE,'DD-MMM-YY'),'DD/MM/YYYY') as ENDDATE,
+    DATE(Date#(EXPIRYDATE,'DD-MMM-YY'),'DD/MM/YYYY') as EXPIRYDATE,
+    PL_MTMVALUE as [MTM Q$(vFileQuarterNumber) (LCY$(vFileQuarterNumber))],
+    PL_MTMVALUE as [MTM $(vFileQuarter8) (LCY$(vFileQuarter8))_8],
+    PL_MTMCCY,
+    MTMDATE,
+    TRINITY_ID,
+    MARGIN_CCY1,
+    MARGIN_CCY2,
+    FEE0,
+    FEE_TYPE0,
+    FEE1,
+    FEE_TYPE1,
+    FEE2,
+    FEE_TYPE2,
+    IF(ISNULL(if( len(TRIM(FEE_TYPE0))=0,null(),FEE_TYPE0)),Null(),FEE_TYPE0)&
+    IF(ISNULL(if( len(TRIM(FEE_TYPE1))=0,null(),FEE_TYPE1)),NUll(),IF(NOT ISNULL(if( len(TRIM(FEE_TYPE0))=0,null(),FEE_TYPE0)),','&FEE_TYPE1,FEE_TYPE1))&
+    IF(ISNULL(if( len(TRIM(FEE_TYPE2))=0,null(),FEE_TYPE2)),NUll(),IF(NOT ISNULL(if( len(TRIM(FEE_TYPE1))=0,null(),FEE_TYPE1)),','&FEE_TYPE2,FEE_TYPE2)) as COMMENT
+	,'$(vFileMonth)' as TradeMonth,
+    '$(vFileQuarter)' as TradeQuarter,
+    '$(vFileYear)' as TradeYear
+    ,TRADEID&'-'&'$(vFileQuarter)'&'-'&'$(vFileYear)' as QuarterFileKey // Key to differentiate the Trade by Quarter
+FROM [$(vLoadfile)]
+(txt, codepage is 28592, embedded labels, delimiter is ';', msq)
+// WHERE Month(Date#(TRADEDON,'DD-MMM-YY'))= '$(vFileMonth)' and Year(Date#(TRADEDON,'DD-MMM-YY'))= '$(vFileYear)'
+;
+
+next i;
+Drop Table FilesOrderMonthly;
+
+
+//----------------Quarterly File load up -------------
+LET vFileName='EMIR_PTF_REC_FX_QTR*.csv';
+
+//------------Get the list of all FX Files
+FOR each File in FileList('$(vPath)$(vFileName)')
+
+FileDetails:
+Load
+	'$(File)' as FilePath,
+	FileTime( '$(File)' ) as FileTime,
+	Left(right('$(File)',len('$(File)')-index('$(File)','FX_QTR',-1)-6),8) as FileDateNumber,
+	Date(Date#(left(right('$(File)',len('$(File)')-index('$(File)','FX_QTR',-1)-6),8),'YYYYMMDD')) as FileDate
+AutoGenerate 1;
+next File
+
+FilesOrderQuarterly:
+NoConcatenate Load
+	FilePath,
+	FileTime,
+	FileDateNumber,
+	FileDate,
+    YearName ( FileDate, 0, 10) as FileFiscalYear,
+    'Q' & if(Ceil(Month(FileDate)/3)=4,1,Ceil(Month(FileDate)/3)+1) as FileQuarter,
+    if(Ceil(Month(FileDate)/3)=4,1,Ceil(Month(FileDate)/3)+1) as FileQuarterNumber,
+    Month(QuarterStart("FileDate"))&'-'&Month(QuarterEnd("FileDate")) as FileQuarterName,
+    Month(FileDate)&'-'&Year(FileDate) as FileMonthYear,
+    Month(FileDate)&'-'&YearName ( FileDate, 0, 10) as FileMonthFiscalYear,
+    Month(FileDate) as FileMonth,
+    Year(FileDate) as FileYear,
+    Pick(WildMatch(Month(FileDate)&'-'&YearName ( FileDate, 0, 10), 'Jan-'&'$(vFiscalYear_Prev)', 'Feb-'&'$(vFiscalYear_Prev)', 'Mar-'&'$(vFiscalYear_Prev)', 'Apr-'&'$(vFiscalYear_Prev)', 'May-'&'$(vFiscalYear_Prev)', 'Jun-'&'$(vFiscalYear_Prev)', 'Jul-'&'$(vFiscalYear_Prev)', 'Aug-'&'$(vFiscalYear_Prev)', 'Sep-'&'$(vFiscalYear_Prev)', 'Oct-'&'$(vFiscalYear_Prev)', 'Nov-'&'$(vFiscalYear_Prev)', 'Dec-'&'$(vFiscalYear_Prev)'
+    ,'Jan-'&'$(vFiscalYear_Current)' , 'Feb-'&'$(vFiscalYear_Current)' , 'Mar-'&'$(vFiscalYear_Current)' , 'Apr-'&'$(vFiscalYear_Current)', 'May-'&'$(vFiscalYear_Current)', 'Jun-'&'$(vFiscalYear_Current)', 'Jul-'&'$(vFiscalYear_Current)', 'Aug-'&'$(vFiscalYear_Current)', 'Sep-'&'$(vFiscalYear_Current)', 'Oct-'&'$(vFiscalYear_Current)', 'Nov-'&'$(vFiscalYear_Current)', 'Dec-'&'$(vFiscalYear_Current)')
+    ,'Q2', 'Q2', 'Q2',  'Q3',  'Q3',  'Q3',  'Q4',  'Q4',  'Q4',  'Q1',  'Q1',  'Q1'
+    ,'Q6', 'Q6', 'Q6',  'Q7',  'Q7',  'Q7',  'Q8',  'Q8',  'Q8',  'Q5',  'Q5',  'Q5') as FileQuarter8,
+	Rowno() as seq
+Resident FileDetails
+where YearName ( FileDate, 0, 10) =  '$(vFiscalYear_Current)' OR YearName ( FileDate, 0, 10) =  '$(vFiscalYear_Prev)'
+order by FileDateNumber DESC;
+
+drop tables FileDetails;
+
+
+Right join (FilesOrderQuarterly)
+Load max(seq) as CountFiles
+Resident FilesOrderQuarterly;
+
+let vNoOfFiles = peek('CountFiles',0,'FilesOrderQuarterly');
+
+For i=0 to $(vNoOfFiles)-1
+   LET vLoadfile = peek('FilePath',$(i),'FilesOrderQuarterly');
+   LET vFileMonth = peek('FileMonth',$(i),'FilesOrderQuarterly');
+   LET vFileYear = peek('FileYear',$(i),'FilesOrderQuarterly');
+   LET vFileQuarter = peek('FileQuarter',$(i),'FilesOrderQuarterly');
+   LET vFileQuarterNumber = peek('FileQuarterNumber',$(i),'FilesOrderQuarterly');
+   LET vFileQuarter8 = peek('FileQuarter8',$(i),'FilesOrderQuarterly');
+LEFT JOIN ([Fx_Murex])
+[Quarterly]:
+LOAD
+    PL_MTMVALUE as [QMTM Q$(vFileQuarterNumber) (LCY$(vFileQuarterNumber))],
+    PL_MTMVALUE as [QMTM $(vFileQuarter8) (LCY$(vFileQuarter8))_8],
+    TRADEID&'-'&'$(vFileQuarter)'&'-'&'$(vFileYear)' as QuarterFileKey // Key to differentiate the Trade by Quarter
+FROM [$(vLoadfile)]
+(txt, codepage is 28592, embedded labels, delimiter is ';', msq)
+;
+next i;
+Drop Table FilesOrderQuarterly;
+
+
+//--Add Empty MTM Quater columns
+FOR i=1 TO 4
+      LEFT JOIN (Fx_Murex)
+        LOAD * inline
+        ["QMTM Q$(i) (LCY$(i))"
+        0
+        ];
+NEXT i
+
+
+//----Entity Expansion
+LIB CONNECT TO 'TITAN SE20 REF';
+LEFT JOIN (Fx_Murex)
+LOAD *;
+SQL SELECT DISTINCT GC.CODE,
+					GC.DESCRIPTION as Entity,
+					rawtohex(GC.COUNTRY_OF_INCORPORATION_ID) as CountryID
+	FROM GROUP_COMPANY_VW GC;
+
+//----Country Name
+LIB CONNECT TO 'TITAN SE20 REF';
+LEFT JOIN (Fx_Murex)
+LOAD * ;
+SQL SELECT DISTINCT rawtohex(ID) as CountryID,
+					DESCRIPTION as Country
+	FROM COUNTRY_CVW ;
+//----Bank Group
+LEFT JOIN (Fx_Murex)
+LOAD
+    "Bank Name" as COUNTERPARTY,
+    "Group" as "BANK_GROUP"
+FROM ['$(vPath1)'Master Group Look-up.xlsx]
+(ooxml, embedded labels, table is Sheet1);
+
+
+qualify  *;
+[SD_FX_Swaps]:
+LOAD TRADEDON,
+	 'FX Swaps' as PRODUCT ,
+	 'Spot and Derivatives' as "Product Family",
+     '' as "Hub",
+     COUNTRY,
+     ENTITY,
+     COUNTERPARTY as Bank,
+     BANK_GROUP as "Bank Group",
+     CCY1 as "Currency1",
+     NOTIONAL_1 as "Amount1 (LCY1)",
+     '' as "Amount1 USD",
+     CCY_2 as "Currency2",
+     NOTIONAL_2 as "Amount2 (LCY2)",
+     STARTDATE as "Start Date",
+     ENDDATE as "Maturity Date",
+     FEE0+FEE1+FEE2 as "Other Fees (LCY1)",
+     '' as "Other Fees USD",
+     [QMTM Q1 (LCY1)] as "MTM Q1 (LCY1)",
+     [QMTM Q2 (LCY2)]as "MTM Q2 (LCY2)",
+     [QMTM Q3 (LCY3)] as "MTM Q3 (LCY3)",
+     [QMTM Q4 (LCY4)] as "MTM Q4 (LCY4)",
+     '' as "Time-weighted avg MTM (LCY1)",
+     '' as "Time-weighted avg MTM (USD)",
+     '' as "Collateral (LCY1)",
+     '' as "Collateral (EUR)",
+     'Group Support' as "Guarantor Name",
+     '' as Tag,
+     'N' as "Side Business",
+     COMMENT
+Resident Fx_Murex
+WHERE PRODUCT_CLASS = 'CURR FXD  SWLEG';
+
+[SD_FX_Forwards]:
+NoConcatenate LOAD
+	 TRADEDON,
+     'FX Forwards' as PRODUCT ,
+	 'Spot and Derivatives' as "Product Family",
+     '' as "Hub",
+     COUNTRY,
+     ENTITY,
+     COUNTERPARTY as Bank,
+     BANK_GROUP as "Bank Group",
+     DIRECTION as "Direction (Buy/Sell)",
+     '' as "Corridor (Yes/No)",
+     CCY1 as "Currency1",
+     NOTIONAL_1 as "Amount1 (LCY1)",
+     '' as "Amount1 USD",
+     CCY_2 as "Currency2",
+     NOTIONAL_2 as "Amount2 (LCY2)",
+     STARTDATE as "Start Date",
+     ENDDATE as "Maturity Date",
+     FEE0+FEE1+FEE2 as "Other Fees (LCY1)",
+     '' as "Other Fees USD",
+     [QMTM Q1 (LCY1)] as "MTM Q1 (LCY1)",
+     [QMTM Q2 (LCY2)]as "MTM Q2 (LCY2)",
+     [QMTM Q3 (LCY3)] as "MTM Q3 (LCY3)",
+     [QMTM Q4 (LCY4)] as "MTM Q4 (LCY4)",
+     '' as "Time-weighted avg MTM (LCY1)",
+     '' as "Time-weighted avg MTM (USD)",
+     '' as "Collateral (LCY1)",
+     '' as "Collateral (EUR)",
+     'Group Support' as "Guarantor Name",
+     '' as Tag,
+     'N' as "Side Business",
+     COMMENT
+Resident Fx_Murex
+WHERE PRODUCT_CLASS = 'CURR FXD  FXD';
+
+[SD_FX_Options]:
+NoConcatenate LOAD TRADEDON,
+	 'FX Options' as PRODUCT ,
+	 'Spot and Derivatives' as "Product Family",
+     '' as "Hub",
+     COUNTRY,
+     ENTITY,
+     COUNTERPARTY as Bank,
+     BANK_GROUP as "Bank Group",
+     DIRECTION as "Direction (Buy/Sell)",
+     IF(TRN_TYPE = 'SMP'  and TYPOLOGY = 'Vanilla Option FXD', 'No' , Null()) as "Corridor (Yes/No)",
+     CCY1 as "Currency1",
+     NOTIONAL_1 as "Amount1 (LCY1)",
+     '' as "Amount1 USD",
+     CCY_2 as "Currency2",
+     NOTIONAL_2 as "Amount2 (LCY2)",
+     STARTDATE as "Start Date",
+     ENDDATE as "Maturity Date",
+     FEE0+FEE1+FEE2 as "Other Fees (LCY1)",
+     '' as "Other Fees USD",
+     [QMTM Q1 (LCY1)] as "MTM Q1 (LCY1)",
+     [QMTM Q2 (LCY2)]as "MTM Q2 (LCY2)",
+     [QMTM Q3 (LCY3)] as "MTM Q3 (LCY3)",
+     [QMTM Q4 (LCY4)] as "MTM Q4 (LCY4)",
+     '' as "Time-weighted avg MTM (LCY1)",
+     '' as "Time-weighted avg MTM (USD)",
+     '' as "Collateral (LCY1)",
+     '' as "Collateral (EUR)",
+     'Group Support' as "Guarantor Name",
+     '' as Tag,
+     'N' as "Side Business",
+     COMMENT
+Resident Fx_Murex
+WHERE PRODUCT_CLASS = 'CURR OPT  SMP';
+Unqualify *;
+
+drop table Fx_Murex;
+
+//------------------------------------------------------------------------------------
+//-----------------Incremetnally Load Monthly-------------------------
+LET vFileName='EMIR_PTF_REC_IRD_MON_*.csv';
+
+//------------Get the list of all FX Files
+FOR each File in FileList('$(vPath)$(vFileName)')
+
+FileDetails:
+Load
+	'$(File)' as FilePath,
+	FileTime( '$(File)' ) as FileTime,
+	Left(right('$(File)',len('$(File)')-index('$(File)','IRD_MON',-1)-7),8) as FileDateNumber,
+	Date(Date#(left(right('$(File)',len('$(File)')-index('$(File)','IRD_MON',-1)-7),8),'YYYYMMDD')) as FileDate
+AutoGenerate 1;
+next File;
+
+FilesOrderMonthly:
+NoConcatenate Load
+	FilePath,
+	FileTime,
+	FileDateNumber,
+	FileDate,
+    YearName ( FileDate, 0, 10) as FileFiscalYear,
+    'Q' & if(Ceil(Month(FileDate)/3)=4,1,Ceil(Month(FileDate)/3)+1) as FileQuarter,
+    if(Ceil(Month(FileDate)/3)=4,1,Ceil(Month(FileDate)/3)+1) as FileQuarterNumber,
+    Month(QuarterStart("FileDate"))&'-'&Month(QuarterEnd("FileDate")) as FileQuarterName,
+    Month(FileDate)&'-'&Year(FileDate) as FileMonthYear,
+    Month(FileDate)&'-'&YearName ( FileDate, 0, 10) as FileMonthFiscalYear,
+    Month(FileDate) as FileMonth,
+    Year(FileDate) as FileYear,
+    Pick(WildMatch(Month(FileDate)&'-'&YearName ( FileDate, 0, 10), 'Jan-'&'$(vFiscalYear_Prev)', 'Feb-'&'$(vFiscalYear_Prev)', 'Mar-'&'$(vFiscalYear_Prev)', 'Apr-'&'$(vFiscalYear_Prev)', 'May-'&'$(vFiscalYear_Prev)', 'Jun-'&'$(vFiscalYear_Prev)', 'Jul-'&'$(vFiscalYear_Prev)', 'Aug-'&'$(vFiscalYear_Prev)', 'Sep-'&'$(vFiscalYear_Prev)', 'Oct-'&'$(vFiscalYear_Prev)', 'Nov-'&'$(vFiscalYear_Prev)', 'Dec-'&'$(vFiscalYear_Prev)'
+    ,'Jan-'&'$(vFiscalYear_Current)' , 'Feb-'&'$(vFiscalYear_Current)' , 'Mar-'&'$(vFiscalYear_Current)' , 'Apr-'&'$(vFiscalYear_Current)', 'May-'&'$(vFiscalYear_Current)', 'Jun-'&'$(vFiscalYear_Current)', 'Jul-'&'$(vFiscalYear_Current)', 'Aug-'&'$(vFiscalYear_Current)', 'Sep-'&'$(vFiscalYear_Current)', 'Oct-'&'$(vFiscalYear_Current)', 'Nov-'&'$(vFiscalYear_Current)', 'Dec-'&'$(vFiscalYear_Current)')
+    ,'Q2', 'Q2', 'Q2',  'Q3',  'Q3',  'Q3',  'Q4',  'Q4',  'Q4',  'Q1',  'Q1',  'Q1'
+    ,'Q6', 'Q6', 'Q6',  'Q7',  'Q7',  'Q7',  'Q8',  'Q8',  'Q8',  'Q5',  'Q5',  'Q5') as FileQuarter8,
+// 	Autonumber(FileDateNumber) as seq,
+    Rowno() as seq
+Resident FileDetails
+// where YearName ( FileDate, 0, 10) =  '$(vFiscalYear_Current)' OR YearName ( FileDate, 0, 10) =  '$(vFiscalYear_Prev)'
+order by FileDateNumber DESC;
+
+drop tables FileDetails;
+
+Right join (FilesOrderMonthly)
+Load max(seq) as CountFiles
+Resident FilesOrderMonthly;
+
+let vNoOfFiles = peek('CountFiles',0,'FilesOrderMonthly');
+Trace Monthly $(vNoOfFiles);
+
+[IRD_Murex]:
+Load * inline [1];
+Trace $(vNoOfFiles);
+
+
+For i=0 to $(vNoOfFiles)-1
+   LET vLoadfile = peek('FilePath',$(i),'FilesOrderMonthly');
+   LET vFileMonth = peek('FileMonth',$(i),'FilesOrderMonthly');
+   LET vFileYear = peek('FileYear',$(i),'FilesOrderMonthly');
+   LET vFileQuarter = peek('FileQuarter',$(i),'FilesOrderMonthly');
+   LET vFileQuarterNumber = peek('FileQuarterNumber',$(i),'FilesOrderMonthly');
+   LET vFileQuarter8 = peek('FileQuarter8',$(i),'FilesOrderMonthly');
+Concatenate ([IRD_Murex])
+LOAD
+    TRADEDON,
+    CONTRACTID,
+    TRADEID,
+    PACKAGEID,
+    ENTITY as CODE,
+    PORTFOLIO,
+    COUNTERPARTY,
+    PRODUCT_CLASS,
+    TRN_GRP,
+    TRN_TYPE,
+    CONTRACTNAME,
+    TYPOLOGY,
+    PLKEY,
+    FUT_CASH_PROCEED,
+    FIXING_DATE,
+    FIXING_PRICE,
+    DIRECTION,
+    NOTIONAL_1,
+    CCY1,
+    NOTIONAL_2,
+    CCY_2,
+    PRICE,
+    CALL_PUT,
+    DATE(Date#(STARTDATE,'DD-MMM-YY') ,'DD/MM/YYYY') as STARTDATE,
+    DATE(Date#(ENDDATE,'DD-MMM-YY'),'DD/MM/YYYY') as ENDDATE,
+    DATE(Date#(EXPIRYDATE,'DD-MMM-YY'),'DD/MM/YYYY') as EXPIRYDATE,
+//     DATE(Floor(TimeStamp#(STARTDATE,'DD/MM/YYYY hh:mm:ss')) ,'DD/MM/YYYY') as STARTDATE,
+//     DATE(Floor(TimeStamp#(ENDDATE,'DD/MM/YYYY hh:mm:ss')),'DD/MM/YYYY') as ENDDATE,
+//     DATE(Floor(TimeStamp#(EXPIRYDATE,'DD/MM/YYYY hh:mm:ss')),'DD/MM/YYYY') as EXPIRYDATE,
+    PL_MTMVALUE as [MTM Q$(vFileQuarterNumber) (LCY$(vFileQuarterNumber))],
+    PL_MTMVALUE as [MTM $(vFileQuarter8) (LCY$(vFileQuarter8))_8],
+    PL_MTMCCY,
+    MTMDATE,
+    TRINITY_ID,
+    MARGIN_CCY1,
+    MARGIN_CCY2,
+    FEE0,
+    FEE_TYPE0,
+    FEE1,
+    FEE_TYPE1,
+    FEE2,
+    FEE_TYPE2,
+    IF(ISNULL(if( len(TRIM(FEE_TYPE0))=0,null(),FEE_TYPE0)),Null(),FEE_TYPE0)&
+    IF(ISNULL(if( len(TRIM(FEE_TYPE1))=0,null(),FEE_TYPE1)),NUll(),IF(NOT ISNULL(if( len(TRIM(FEE_TYPE0))=0,null(),FEE_TYPE0)),','&FEE_TYPE1,FEE_TYPE1))&
+    IF(ISNULL(if( len(TRIM(FEE_TYPE2))=0,null(),FEE_TYPE2)),NUll(),IF(NOT ISNULL(if( len(TRIM(FEE_TYPE1))=0,null(),FEE_TYPE1)),','&FEE_TYPE2,FEE_TYPE2)) as COMMENT
+	,'$(vFileMonth)' as TradeMonth,
+    '$(vFileQuarter)' as TradeQuarter,
+    '$(vFileYear)' as TradeYear
+    ,TRADEID&'-'&'$(vFileQuarter)'&'-'&'$(vFileYear)' as QuarterFileKey
+FROM [$(vLoadfile)]
+(txt, codepage is 28592, embedded labels, delimiter is ';', msq)
+// WHERE Month(Date#(TRADEDON,'DD-MMM-YY'))= '$(vFileMonth)' and Year(Date#(TRADEDON,'DD-MMM-YY'))= '$(vFileYear)'
+;
+next i;
+Drop Table FilesOrderMonthly;
+
+//----------------Quarterly File load up -------------
+LET vFileName='EMIR_PTF_REC_IRD_QTR*.csv';
+
+//------------Get the list of all FX Files
+FOR each File in FileList('$(vPath)$(vFileName)')
+
+FileDetails:
+Load
+	'$(File)' as FilePath,
+	FileTime( '$(File)' ) as FileTime,
+	Left(right('$(File)',len('$(File)')-index('$(File)','IRD_QTR',-1)-7),8) as FileDateNumber,
+	Date(Date#(left(right('$(File)',len('$(File)')-index('$(File)','IRD_QTR',-1)-7),8),'YYYYMMDD')) as FileDate
+AutoGenerate 1;
+next File;
+
+FilesOrderQuarterly:
+NoConcatenate Load
+	FilePath,
+	FileTime,
+	FileDateNumber,
+	FileDate,
+    YearName ( FileDate, 0, 10) as FileFiscalYear,
+    'Q' & if(Ceil(Month(FileDate)/3)=4,1,Ceil(Month(FileDate)/3)+1) as FileQuarter,
+    if(Ceil(Month(FileDate)/3)=4,1,Ceil(Month(FileDate)/3)+1) as FileQuarterNumber,
+    Month(QuarterStart("FileDate"))&'-'&Month(QuarterEnd("FileDate")) as FileQuarterName,
+    Month(FileDate)&'-'&Year(FileDate) as FileMonthYear,
+    Month(FileDate)&'-'&YearName ( FileDate, 0, 10) as FileMonthFiscalYear,
+    Month(FileDate) as FileMonth,
+    Year(FileDate) as FileYear,
+    Pick(WildMatch(Month(FileDate)&'-'&YearName ( FileDate, 0, 10), 'Jan-'&'$(vFiscalYear_Prev)', 'Feb-'&'$(vFiscalYear_Prev)', 'Mar-'&'$(vFiscalYear_Prev)', 'Apr-'&'$(vFiscalYear_Prev)', 'May-'&'$(vFiscalYear_Prev)', 'Jun-'&'$(vFiscalYear_Prev)', 'Jul-'&'$(vFiscalYear_Prev)', 'Aug-'&'$(vFiscalYear_Prev)', 'Sep-'&'$(vFiscalYear_Prev)', 'Oct-'&'$(vFiscalYear_Prev)', 'Nov-'&'$(vFiscalYear_Prev)', 'Dec-'&'$(vFiscalYear_Prev)'
+    ,'Jan-'&'$(vFiscalYear_Current)' , 'Feb-'&'$(vFiscalYear_Current)' , 'Mar-'&'$(vFiscalYear_Current)' , 'Apr-'&'$(vFiscalYear_Current)', 'May-'&'$(vFiscalYear_Current)', 'Jun-'&'$(vFiscalYear_Current)', 'Jul-'&'$(vFiscalYear_Current)', 'Aug-'&'$(vFiscalYear_Current)', 'Sep-'&'$(vFiscalYear_Current)', 'Oct-'&'$(vFiscalYear_Current)', 'Nov-'&'$(vFiscalYear_Current)', 'Dec-'&'$(vFiscalYear_Current)')
+    ,'Q2', 'Q2', 'Q2',  'Q3',  'Q3',  'Q3',  'Q4',  'Q4',  'Q4',  'Q1',  'Q1',  'Q1'
+    ,'Q6', 'Q6', 'Q6',  'Q7',  'Q7',  'Q7',  'Q8',  'Q8',  'Q8',  'Q5',  'Q5',  'Q5') as FileQuarter8,
+	Rowno() as seq
+Resident FileDetails
+// where YearName ( FileDate, 0, 10) =  '$(vFiscalYear_Current)' OR YearName ( FileDate, 0, 10) =  '$(vFiscalYear_Prev)'
+order by FileDateNumber DESC;
+
+drop tables FileDetails;
+
+
+Right join (FilesOrderQuarterly)
+Load max(seq) as CountFiles
+Resident FilesOrderQuarterly;
+
+let vNoOfFiles = peek('CountFiles',0,'FilesOrderQuarterly');
+
+For i=0 to $(vNoOfFiles)-1
+   LET vLoadfile = peek('FilePath',$(i),'FilesOrderQuarterly');
+   LET vFileMonth = peek('FileMonth',$(i),'FilesOrderQuarterly');
+   LET vFileYear = peek('FileYear',$(i),'FilesOrderQuarterly');
+   LET vFileQuarter = peek('FileQuarter',$(i),'FilesOrderQuarterly');
+   LET vFileQuarterNumber = peek('FileQuarterNumber',$(i),'FilesOrderQuarterly');
+   LET vFileQuarter8 = peek('FileQuarter8',$(i),'FilesOrderQuarterly');
+
+LEFT JOIN ([IRD_Murex])
+[Quarterly]:
+LOAD
+    PL_MTMVALUE as [QMTM Q$(vFileQuarterNumber) (LCY$(vFileQuarterNumber))],
+    PL_MTMVALUE as [QMTM $(vFileQuarter8) (LCY$(vFileQuarter8))_8],
+    TRADEID&'-'&'$(vFileQuarter)'&'-'&'$(vFileYear)' as QuarterFileKey
+FROM [$(vLoadfile)]
+(txt, codepage is 28592, embedded labels, delimiter is ';', msq)
+;
+next i;
+Drop Table FilesOrderQuarterly;
+
+
+//--Add Empty MTM Quater columns
+FOR i=1 TO 4
+      LEFT JOIN (IRD_Murex)
+        LOAD * inline
+        ["QMTM Q$(i) (LCY$(i))"
+        0
+        ];
+NEXT i
+
+
+//----Entity Expansion
+LIB CONNECT TO 'TITAN SE20 REF';
+LEFT JOIN (IRD_Murex)
+LOAD *;
+SQL SELECT DISTINCT GC.CODE,
+					GC.DESCRIPTION as Entity,
+					rawtohex(GC.COUNTRY_OF_INCORPORATION_ID) as CountryID
+	FROM GROUP_COMPANY_VW GC;
+
+//----Country Name
+LIB CONNECT TO 'TITAN SE20 REF';
+LEFT JOIN (IRD_Murex)
+LOAD * ;
+SQL SELECT DISTINCT rawtohex(ID) as CountryID,
+					DESCRIPTION as Country
+	FROM COUNTRY_CVW ;
+//----Bank Group
+LEFT JOIN (IRD_Murex)
+LOAD
+    "Bank Name" as COUNTERPARTY,
+    "Group" as "BANK_GROUP"
+FROM ['$(vPath1)'Master Group Look-up.xlsx]
+(ooxml, embedded labels, table is Sheet1);
+
+
+qualify  *;
+[SD_IRD_SWAPS]:
+LOAD TRADEDON,
+	 'IRD Swaps' as PRODUCT ,
+	 'Spot and Derivatives' as "Product Family",
+     '' as "Hub",
+     COUNTRY,
+     ENTITY,
+     COUNTERPARTY as Bank,
+     BANK_GROUP as "Bank Group",
+     CCY1 as "Currency1",
+     NOTIONAL_1 as "Amount1 (LCY1)",
+     '' as "Amount1 USD",
+     CCY_2 as "Currency2",
+     NOTIONAL_2 as "Amount2 (LCY2)",
+     STARTDATE as "Start Date",
+     ENDDATE as "Maturity Date",
+     FEE0+FEE1+FEE2 as "Other Fees (LCY1)",
+     '' as "Other Fees USD",
+     [QMTM Q1 (LCY1)] as "MTM Q1 (LCY1)",
+     [QMTM Q2 (LCY2)]as "MTM Q2 (LCY2)",
+     [QMTM Q3 (LCY3)] as "MTM Q3 (LCY3)",
+     [QMTM Q4 (LCY4)] as "MTM Q4 (LCY4)",
+     '' as "Time-weighted avg MTM (LCY1)",
+     '' as "Time-weighted avg MTM (USD)",
+     '' as "Collateral (LCY1)",
+     '' as "Collateral (EUR)",
+     'Group Support' as "Guarantor Name",
+     '' as Tag,
+     'N' as "Side Business",
+     COMMENT
+Resident IRD_Murex;
+
+drop table IRD_Murex;

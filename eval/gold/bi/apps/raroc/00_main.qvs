@@ -1,0 +1,9 @@
+// PLACEHOLDER values: these are set in another tab / include of the real app.
+// Replace each with the value from the real app (or drop this file once a reload.log is available).
+SET vStart_Date = '04/01/2025';            // MM/DD/YYYY
+SET vEnd_Date = '03/31/2026';              // MM/DD/YYYY
+SET vPlutoConnect = 'Pluto';               // Qlik connection name for Pluto
+SET vPath = 'lib://Data/EMIR/';            // folder holding the EMIR_PTF_REC_*.csv files
+SET vPath1 = 'lib://Data/Lookups';         // folder holding Master Group Look-up.xlsx
+SET vFiscalYear_Current = '2025-2026';     // YearName(date, 0, 10) format
+SET vFiscalYear_Prev = '2024-2025';

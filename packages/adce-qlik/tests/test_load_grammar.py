@@ -31,6 +31,8 @@ def test_sources():
     assert (f.kind, f.ref, f.format) == ("file", "lib://Data/x.csv", "txt, utf8, embedded labels, delimiter is ','")
     inline = parse_load("LOAD * INLINE [\nK, V\n1, one\n2, two\n]").source
     assert inline.columns == ["K", "V"] and inline.inline_rows == [["1", "one"], ["2", "two"]]
+    quoted = parse_load("LOAD * INLINE [\n\"QMTM Q1 (LCY1)\", 'b, c'\n0, 'it''s'\n1,\n]").source
+    assert quoted.columns == ["QMTM Q1 (LCY1)", "b, c"] and quoted.inline_rows == [["0", "it's"], ["1", ""]]
     assert parse_load("LOAD a WHERE a > 1").source.kind == "preceding"
 
 

@@ -1,6 +1,7 @@
 """Parse a LOAD statement into fields, source, filters and grouping, with expressions as ExprAST."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -11,6 +12,12 @@ from lark import Lark, Token, Tree
 from lark.exceptions import LarkError
 
 GRAMMAR = Path(__file__).with_name("load.lark")
+TABLE_IS = re.compile(r"""(?i)\btable\s+is\s+(\[[^\]]+\]|"[^"]+"|'[^']+'|[^,)]+)""")
+
+
+def file_placeholder(ref: str, table: str | None) -> str:
+    """Name of a file input: the path, and the sheet/table inside it when the format names one."""
+    return f"{ref}#{table}" if table else ref
 
 
 @lru_cache
@@ -112,13 +119,15 @@ class _Builder:
             path = unquote_name(str(ref_node.children[0]))
             fmt_text = self._fmt(fmt)
             kind = "qvd" if path.lower().endswith(".qvd") or (fmt_text or "").strip().lower() == "qvd" else "file"
-            return LoadSource(kind=kind, ref=path, format=fmt_text)
+            m = TABLE_IS.search(fmt_text or "")
+            return LoadSource(kind=kind, ref=path, format=fmt_text,
+                              file_table=unquote_name(m.group(1).strip()) if m else None)
         if t == "resident":
             return LoadSource(kind="resident", ref=unquote_name(str(node.children[1].children[0])))
         if t == "inline":
             body, fmt = node.children[1], node.children[2]
             raw = unquote_name(str(body.children[0]))
-            rows = [[c.strip() for c in line.split(",")] for line in raw.strip().splitlines() if line.strip()]
+            rows = [_inline_cells(line) for line in raw.strip().splitlines() if line.strip()]
             return LoadSource(kind="inline", ref=None, format=self._fmt(fmt),
                               columns=rows[0] if rows else [], inline_rows=rows[1:])
         if t == "autogenerate":
@@ -133,6 +142,31 @@ class _Builder:
             return None
         body = [str(c) for c in fmt.children if isinstance(c, Token) and c.type == "FMT_BODY"]
         return body[0].strip() if body else ""
+
+
+def _inline_cells(line: str) -> list[str]:
+    """One INLINE row: comma separated; a cell in double or single quotes may hold commas, and the quotes are
+    removed (a doubled quote inside stands for one quote)."""
+    cells, cur, quote, i = [], "", None, 0
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            if ch == quote and line[i + 1:i + 2] == quote:
+                cur, i = cur + ch, i + 1
+            elif ch == quote:
+                quote = None
+            else:
+                cur += ch
+        elif ch in "\"'" and not cur.strip():
+            cur, quote = "", ch
+        elif ch == ",":
+            cells.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+        i += 1
+    cells.append(cur.strip())
+    return cells
 
 
 def parse_load(text: str) -> ParsedLoad:

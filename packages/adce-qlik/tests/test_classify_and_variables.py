@@ -21,6 +21,11 @@ def test_bracketed_label_and_mapping_prefix():
     assert (st.label, st.prefixes, st.kind) == ("Region Map", ["MAPPING"], K.LOAD)
 
 
+def test_label_after_prefix():
+    st = one("LEFT JOIN ([Fx_Murex])\n[Quarterly]:\nLOAD a RESIDENT T;")
+    assert (st.label, st.prefixes, st.kind) == ("Quarterly", ["LEFT JOIN ([Fx_Murex])"], K.LOAD)
+
+
 def test_set_with_colon_in_value_is_not_a_label():
     st = one("SET TimeFormat='hh:mm:ss';")
     assert st.label is None and st.kind == K.SET

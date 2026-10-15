@@ -1,0 +1,18 @@
+# Databases this app queries directly: the SQL dialect of its queries and where the database is in Dremio.
+# dialect is read from the script (Pluto.dbo.* is SQL Server; rawtohex/SYSDATE are Oracle).
+# dremio_source and default_schema are PLACEHOLDERS: replace them with the real Dremio source names and schemas.
+
+["Pluto"]                       # the value of vPlutoConnect (see 00_main.qvs)
+dialect = "tsql"
+dremio_source = "pluto"         # PLACEHOLDER
+default_schema = "Pluto.dbo"    # PLACEHOLDER: database.schema of the unqualified tbl* tables
+
+["TITAN SE20"]
+dialect = "oracle"
+dremio_source = "titan_se20"    # PLACEHOLDER
+default_schema = "TITAN"        # PLACEHOLDER: schema of the unqualified views
+
+["TITAN SE20 REF"]
+dialect = "oracle"
+dremio_source = "titan_se20_ref"  # PLACEHOLDER
+default_schema = "TITAN_REF"      # PLACEHOLDER

@@ -2,7 +2,8 @@
 
 - Logical SQL sources ("sales"."erp"."orders_v2") map to fixture files under <sources>/sales/erp/orders_v2.csv|parquet
 - QVD inputs ("__qvd__"."lib://QVD/Orders.qvd") map to QVD files, read with PyQvd
-- File inputs ("__file__"."lib://Data/x.csv") map to local files of the same name under <sources>/files/
+- File inputs ("__file__"."lib://Data/x.csv") map to local files of the same name under <sources>/files/; a sheet of a
+  spreadsheet ("__file__"."lib://Data/b.xlsx#Sheet1") maps to <sources>/files/b.xlsx#Sheet1.csv (or .parquet)
 The SQL is rewritten on its syntax tree (sqlglot) and transpiled to DuckDB; results are labelled venue 'local'.
 """
 from __future__ import annotations
@@ -54,7 +55,8 @@ class LocalVenue:
             rel = f.relative_to(root).with_suffix("")
             parts = list(rel.parts)
             if parts[0] == "files":
-                key = f"{FILE_DB}:{f.name.lower()}"
+                # files/x.csv stands for x.csv; files/<book>.xlsx#<sheet>.csv for one sheet of a spreadsheet
+                key = f"{FILE_DB}:{(f.stem if '#' in f.stem else f.name).lower()}"
             else:
                 key = "sql:" + ".".join(parts).lower()
             name = "src__" + _local(".".join(parts))

@@ -96,3 +96,45 @@ def test_ai_override_is_spliced_and_marked(tmp_path):
     assert check_table(t, "T").failed()[0].name == "rules_only"  # AI-assisted: non-blocking, flagged for review
     v = LocalVenue()
     assert v.run(f"SELECT * FROM ({t.table_sql('T')}) q ORDER BY 1", "x").rows == [(2,), (3,)]
+
+
+def test_qualify_renames_output_columns():
+    t = compose(build_app(read_script("t", {"s.qvs": "A: LOAD * INLINE [x, y\n1, 2];\nQUALIFY *;\n"
+                                                     "B: LOAD x, y RESIDENT A;\nUNQUALIFY *;\nDROP TABLE A;\n"})))
+    assert t.tables["B"].complete
+    res = LocalVenue().run(f"SELECT * FROM ({t.table_sql('B')}) AS q", "test")
+    assert res.columns == ["B.x", "B.y"] and res.rows == [(1, 2)]
+
+
+def test_date_parse_becomes_to_date():
+    assert sql_of("Date#(d, 'DD-MMM-YY')") == "TO_DATE(\"src\".\"d\", 'DD-MON-YY')"
+    got = rows("T: LOAD k, Date(Date#(d, 'DD-MMM-YY'), 'DD/MM/YYYY') AS dt INLINE [k, d\n1, 05-Feb-25];", "T")
+    assert [(k, str(dt)) for k, dt in got] == [(1, "2025-02-05")]
+    with pytest.raises(Untranslatable):
+        sql_of("Date#(d, 'D/M/YYYY')")
+
+
+def test_unresolved_variable_makes_table_and_readers_incomplete():
+    t = compose(build_app(read_script("t", {"s.qvs": "A: LOAD k, '$(vMissing)' AS m INLINE [k\n1];\n"
+                                                     "B: NOCONCATENATE LOAD k RESIDENT A;\n"})))
+    assert t.tables["A"].unresolved == ["vMissing"] and not t.tables["A"].complete
+    assert t.tables["B"].unresolved == ["vMissing"] and not t.tables["B"].complete
+
+
+def test_date_of_floor_is_the_day_of_a_timestamp():
+    assert sql_of("Date(Floor(ts), 'YYYY-MM-DD') >= '2025-04-01'", value=False) == (
+        "CAST(\"src\".\"ts\" AS DATE) >= CAST('2025-04-01' AS DATE)")
+    assert sql_of("Floor(x)") == 'FLOOR("src"."x")'  # numbers keep FLOOR
+
+
+def test_placeholder_file_inputs_make_table_and_readers_incomplete(tmp_path):
+    script = ("A: LOAD k, g FROM [lib://D/book.xlsx] (ooxml, embedded labels, table is Sheet1);\n"
+              "B: NOCONCATENATE LOAD k RESIDENT A;\n")
+    t = compose(build_app(read_script("t", {"s.qvs": script})))
+    assert t.tables["A"].files == ["lib://D/book.xlsx#Sheet1"] and not t.tables["A"].complete
+    assert t.tables["B"].files == ["lib://D/book.xlsx#Sheet1"] and not t.tables["B"].complete
+    (tmp_path / "files").mkdir()
+    (tmp_path / "files" / "book.xlsx#Sheet1.csv").write_text("k,g\n1,x\n")
+    v = LocalVenue()
+    v.add_source_dir(tmp_path)
+    assert v.run(t.table_sql("B") or "", "test").rows == [(1,)]

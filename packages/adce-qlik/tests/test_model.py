@@ -85,3 +85,51 @@ def test_parse_error_keeps_table_and_lowers_coverage():
     app = build("T: LOAD a,, b RESIDENT X;\n")
     assert "T" in app.tables and app.tables["T"].steps[0].ops[0].parse_error
     assert app.coverage.other == 1 and "parse_error" in codes(app)
+
+
+def test_label_inside_preceding_chain_names_the_table():
+    app = build("LIB CONNECT TO 'Db';\n"
+                "LOAD id AS cid, name;\n"
+                "[Company_vw]:\n"
+                "SQL SELECT id, name FROM COMPANY_VW;\n"
+                "LEFT JOIN ([Company_vw]) LOAD cid, region INLINE [cid, region\n1, N];\n"
+                "DROP TABLE [Company_vw];\n")
+    assert list(app.tables) == ["Company_vw"]
+    t = app.tables["Company_vw"]
+    assert not t.name_inferred and [s.action for s in t.steps] == [A.CREATE, A.JOIN]
+    assert "unknown_target" not in codes(app)
+
+
+def test_dropped_table_name_is_reused():
+    app = build("Files: LOAD a INLINE [a\n1];\n"
+                "Out: LOAD a AS b RESIDENT Files;\n"
+                "DROP TABLE Files;\n"
+                "Files: LOAD a, c INLINE [a, c\n2, 3];\n"
+                "Out2: NOCONCATENATE LOAD a AS d RESIDENT Files;\n"
+                "DROP TABLE Files;\n")
+    assert "duplicate_table_name" not in codes(app)
+    assert set(app.tables) == {"Files", "Out", "Files#2", "Out2"}
+    assert app.tables["Files"].dropped_at is not None and app.tables["Files#2"].dropped_at is not None
+    assert app.tables["Out2"].steps[0].ops[-1].source.ref == "Files#2"
+
+
+def test_qualify_names_fields_and_prevents_auto_concatenate():
+    app = build("A: LOAD x, y INLINE [x, y\n1, 2];\n"
+                "QUALIFY *;\n"
+                "UNQUALIFY y;\n"
+                "B: LOAD x, y RESIDENT A;\n"
+                "Unqualify*;\n"
+                "C: LOAD x, y RESIDENT A;\n")
+    assert app.tables["B"].fields == ["B.x", "y"]
+    assert [s.action for s in app.tables["A"].steps] == [A.CREATE, A.AUTO_CONCATENATE]  # C, unqualified
+
+
+def test_oracle_source_columns_are_upper_case_and_file_sheets_are_kept():
+    doc = read_script("t", {"s.qvs": "LIB CONNECT TO 'Ora';\n"
+                                     "T: SQL SELECT t.effective_from, x AS id, y \"Mixed\" FROM v t;\n"
+                                     "LEFT JOIN (T) LOAD a AS ID, b FROM ['lib://D/'x.xlsx]\n"
+                                     "(ooxml, table is [My Sheet]);\n"})
+    app = build_app(doc, connection_dialects={"Ora": "oracle"})
+    assert app.tables["T"].fields == ["EFFECTIVE_FROM", "ID", "Mixed", "b"]
+    assert ":'lib://D/'x.xlsx#My Sheet" in [s.key for s in app.sources]
+    assert "file_path_quoted" in codes(app)

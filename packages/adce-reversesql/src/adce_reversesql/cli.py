@@ -4,7 +4,8 @@
     adce translate <app_dir> [--table T]     Dremio SQL per table
     adce validate <app_dir>                  local validation (needs <app_dir>/sources and/or qvd/)
 
-An app directory holds *.qvs scripts, an optional reload.log (or *.log), qvd/*.qvd and sources/<path>.csv|parquet.
+An app directory holds *.qvs scripts, an optional reload.log (or *.log), qvd/*.qvd, sources/<path>.csv|parquet and
+an optional connections.toml (dialect and Dremio location of databases queried directly, see sources.py).
 """
 from __future__ import annotations
 
@@ -20,6 +21,11 @@ from adce_qlik.reload_log import ReloadLog
 from .compose import compose
 from .local import LocalVenue, read_qvd
 from .reconcile import Reconciler
+from .sources import Connection, load_connections
+
+
+def _connections(app_dir: Path) -> dict[str, Connection]:
+    return load_connections(app_dir / "connections.toml")
 
 
 def _load(app_dir: Path) -> tuple[ReloadLog | None, object]:
@@ -32,7 +38,8 @@ def _load(app_dir: Path) -> tuple[ReloadLog | None, object]:
     for q in sorted((app_dir / "qvd").glob("*.qvd")):
         qvd_cols[q.name] = [f.name for f in read_qvd_header(q).fields]
     doc = read_script(app_dir.name, scripts, log)
-    return log, build_app(doc, qvd_columns=qvd_cols)
+    dialects = {name: c.dialect for name, c in _connections(app_dir).items()}
+    return log, build_app(doc, qvd_columns=qvd_cols, connection_dialects=dialects)
 
 
 def cmd_parse(args: argparse.Namespace) -> int:
@@ -49,12 +56,16 @@ def cmd_parse(args: argparse.Namespace) -> int:
 
 def cmd_translate(args: argparse.Namespace) -> int:
     _, app = _load(Path(args.app_dir))
-    t = compose(app)  # type: ignore[arg-type]
+    t = compose(app, connections=_connections(Path(args.app_dir)))  # type: ignore[arg-type]
     for name, r in t.tables.items():
         if args.table and name != args.table:
             continue
         sql = t.table_sql(name)
         print(f"-- ===== {name} ({'complete' if r.complete else 'incomplete'})")
+        if r.files:
+            print(f"-- placeholder file inputs (here or in tables read): {', '.join(r.files)}")
+        if r.unresolved:
+            print(f"-- unresolved variables (here or in tables read): {', '.join(r.unresolved)}")
         for u in r.untranslated:
             print(f"-- not translated: statement {u.statement} ({u.span}): {u.reason} [{u.tier}]")
         if sql:
@@ -65,7 +76,7 @@ def cmd_translate(args: argparse.Namespace) -> int:
 def cmd_validate(args: argparse.Namespace) -> int:
     d = Path(args.app_dir)
     log, app = _load(d)
-    t = compose(app)  # type: ignore[arg-type]
+    t = compose(app, connections=_connections(d))  # type: ignore[arg-type]
     venue = LocalVenue()
     if (d / "sources").exists():
         venue.add_source_dir(d / "sources")

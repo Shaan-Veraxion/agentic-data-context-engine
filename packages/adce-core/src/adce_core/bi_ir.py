@@ -155,7 +155,9 @@ class LoadSource(BaseModel):
     kind: str  # sql | resident | file | qvd | inline | autogenerate | extension | preceding
     ref: str | None = None  # table name, file path, or SQL text
     connection: str | None = None
+    dialect: str | None = None  # sqlglot dialect of embedded SQL (None: Dremio)
     format: str | None = None
+    file_table: str | None = None  # file sources: the sheet or table inside the file ("table is Sheet1")
     tables: list[str] = Field(default_factory=list)  # tables referenced by embedded SQL
     columns: list[str] = Field(default_factory=list)  # known output columns of the source, if any
     inline_rows: list[list[str]] = Field(default_factory=list)
@@ -196,6 +198,7 @@ class TableStep(BaseModel):
     other_table: str | None = None  # KEEP: the table this load is kept against
     constructs: list[str] = Field(default_factory=list)  # e.g. crosstable, generic (tier T2/T3)
     context: list[str] = Field(default_factory=list)  # enclosing IF / FOR / SUB headers
+    qualified: dict[str, str] = Field(default_factory=dict)  # QUALIFY in force: field -> "Table.field"
 
 
 class QlikTable(BaseModel):

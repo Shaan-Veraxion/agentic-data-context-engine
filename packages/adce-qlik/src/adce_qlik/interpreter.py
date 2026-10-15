@@ -219,7 +219,7 @@ class _Runner:
                 value = _strip_set(rhs) if st.kind == K.SET else _eval_let(rhs)
                 if value is None and st.kind == K.LET:
                     try:
-                        value = as_text(evaluate_text(rhs))
+                        value = as_text(evaluate_text(rhs, self.env))
                     except NotEvaluable:
                         value = None
                 if value is None and name in self.env and self.env[name] is not None:

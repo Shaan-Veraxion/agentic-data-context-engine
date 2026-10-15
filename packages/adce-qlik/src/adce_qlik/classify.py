@@ -90,7 +90,12 @@ def classify(raw: RawStatement, index: int) -> Statement:
                 text = text[pm.end():].lstrip()
                 break
         else:
-            break
+            # Qlik also accepts the label after a prefix: "LEFT JOIN (T) [Label]: LOAD ..."
+            lm = LABEL.match(text) if prefixes and label is None else None
+            if lm is None:
+                break
+            label = lm.group("label").strip("[]\"")
+            text = text[lm.end():].lstrip()
     kind = K.OTHER
     for rx, k in HEADS:
         if rx.match(text):

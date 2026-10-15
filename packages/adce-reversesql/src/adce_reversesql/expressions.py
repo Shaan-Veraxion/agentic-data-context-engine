@@ -6,16 +6,20 @@ Qlik semantics that differ from plain SQL and are reproduced here:
 - relational and logical operators yield -1 (true) / 0 (false) when used as values
 - a non-boolean value used as a condition is true when it is non-zero
 - LIKE uses * and ? wildcards and is case-insensitive (ILIKE with % and _)
-- Date(), Time(), Timestamp(), Num(), Money(), Dual() only change formatting, so the value passes through unchanged
+- Date(), Time(), Timestamp(), Num(), Money(), Dual() only change formatting, so the value passes through unchanged;
+  Date(Floor(ts)) is the day of a timestamp (CAST AS DATE), compared as a date with ISO date strings
+- Date#(text, 'fmt') parses text with a literal date format: Dremio TO_DATE with the format codes converted
 - ApplyMap('Map', expr, default) is a left join to the mapping table (first match per key: MIN(value) per key,
   with key uniqueness checked at validation)
 Functions without a safe translation are reported as untranslatable (tier T2/T3) and go to the AI route or review.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from adce_core.bi_ir import Expr
+from adce_qlik.formats import UnsupportedFormat, to_dremio
 from sqlglot import exp
 from sqlglot.expressions.core import Expr as SqlExpr
 
@@ -60,6 +64,22 @@ _SIMPLE = {  # Qlik function -> (SQL function, number of args accepted)
 _AGG = {"sum", "min", "max", "avg", "count", "concat", "only", "mode", "median"}
 
 
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _is_date(x: SqlExpr) -> bool:
+    return isinstance(x, exp.Cast) and x.to.is_type(exp.DataType.Type.DATE)
+
+
+def _as_date_if_compared(a: SqlExpr, b: SqlExpr) -> tuple[SqlExpr, SqlExpr]:
+    """A date compared with an ISO date string ('2025-04-01'): compare as dates, not as text."""
+    def lit(x: SqlExpr, other: SqlExpr) -> SqlExpr:
+        if _is_date(other) and isinstance(x, exp.Literal) and x.is_string and _ISO_DATE.fullmatch(x.this):
+            return exp.Cast(this=x, to=exp.DataType.build("DATE"))
+        return x
+    return lit(a, b), lit(b, a)
+
+
 def is_boolean(e: Expr) -> bool:
     return (e.kind == "binop" and (e.name or "") in BOOLEAN_OPS) or (e.kind == "unop" and e.name == "NOT") \
         or (e.kind == "call" and (e.name or "").lower() in ("isnull", "isnum", "istext", "exists"))
@@ -96,7 +116,7 @@ class Translator:
         if e.kind == "unop" and e.name == "NOT":
             return exp.Not(this=exp.Paren(this=self._bool(e.args[0])))
         if e.kind == "binop" and e.name in ("=", "<>", "<", ">", "<=", ">="):
-            a, b = self._val(e.args[0]), self._val(e.args[1])
+            a, b = _as_date_if_compared(self._val(e.args[0]), self._val(e.args[1]))
             cls = {"=": exp.EQ, "<>": exp.NEQ, "<": exp.LT, ">": exp.GT, "<=": exp.LTE, ">=": exp.GTE}[e.name]
             return cls(this=a, expression=b)
         if e.kind == "binop" and e.name == "LIKE":
@@ -167,6 +187,11 @@ class Translator:
                 return exp.CurrentTimestamp()
             raise Untranslatable(f"{e.name}() depends on Qlik load order", "T2")
         if name in PASS_THROUGH and args:
+            inner = args[0]
+            if name in ("date", "dayname") and inner.kind == "call" and (inner.name or "").lower() == "floor" \
+                    and len(inner.args) == 1:
+                # Date(Floor(ts)): the day of a timestamp; a plain FLOOR does not apply to SQL timestamps
+                return exp.Cast(this=self._val(inner.args[0]), to=exp.DataType.build("DATE"))
             if name == "dual" and len(args) == 2:
                 return self._val(args[1])  # the numeric part is the value used in calculations
             return self._val(args[0])
@@ -195,6 +220,8 @@ class Translator:
             return exp.DateTrunc(this=self._val(args[0]), unit=exp.Literal.string("MONTH"))
         if name == "text" and len(args) == 1:
             return exp.Cast(this=self._val(args[0]), to=exp.DataType.build("VARCHAR"))
+        if name == "date#":
+            return self._date_parse(e)
         if name == "num#" or name == "evaluate":
             raise Untranslatable(f"{e.name}() needs format-aware parsing")
         if name == "null" and not args:
@@ -215,6 +242,17 @@ class Translator:
                 raise Untranslatable(f"{e.name}({e.modifier} ...)")
             return exp.func(fn, *[self._val(a) for a in args], dialect="dremio")
         raise Untranslatable(f"function {e.name}()", "T2")
+
+    def _date_parse(self, e: Expr) -> SqlExpr:
+        if len(e.args) != 2 or e.args[1].kind != "string":
+            raise Untranslatable("Date#() without a literal format (uses DateFormat)")
+        try:
+            fmt = to_dremio(str(e.args[1].value))
+        except UnsupportedFormat as err:
+            raise Untranslatable(f"Date#(): {err}") from err
+        self.ctx.notes.append("Date#(): Dremio TO_DATE fails on text that does not match the format "
+                              "(Qlik keeps such values as text)")
+        return exp.Anonymous(this="TO_DATE", expressions=[self._val(e.args[0]), exp.Literal.string(fmt)])
 
     def _applymap(self, e: Expr) -> SqlExpr:
         args = e.args

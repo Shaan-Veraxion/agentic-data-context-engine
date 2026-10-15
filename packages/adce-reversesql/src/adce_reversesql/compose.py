@@ -7,8 +7,10 @@ Each Qlik table is a sequence of versions. A step (load chain + its action) prod
 - KEEP: semi-join filters (left keep reduces the loaded table, right keep the other table, inner keep both)
 - MAPPING: kept as a two-column relation for ApplyMap
 RESIDENT reads the version current at that statement; DROP ends a table; STORE snapshots the version stored.
-Sources keep the names Qlik used: embedded SQL keeps its Dremio paths; QVD and file inputs are placeholders
-("__qvd__"."<path>", "__file__"."<path>") resolved through QVD chains or the catalog (phase PD), and mapped to
+Sources keep the names Qlik used: embedded SQL keeps its Dremio paths, or is converted from its own dialect and
+mapped to the Dremio source of its connection (sources.py); QVD and file inputs are placeholders
+("__qvd__"."<path>", "__file__"."<path>", or "__file__"."<path>#<sheet>" when the format names a sheet or
+table inside the file) resolved through QVD chains or the catalog (phase PD), and mapped to
 local data in the local venue.
 """
 from __future__ import annotations
@@ -19,11 +21,13 @@ from dataclasses import dataclass, field
 
 import sqlglot
 from adce_core.bi_ir import BIApp, LoadOp, QlikTable, TableAction, TableStep
+from adce_qlik.load_parser import file_placeholder
 from sqlglot import exp
 from sqlglot.errors import ParseError
 from sqlglot.expressions.core import Expr as SqlExpr
 
 from .expressions import ExprContext, Translator, Untranslatable, is_aggregate
+from .sources import Connection, to_dremio
 
 DIALECT = "dremio"
 QVD_DB = "__qvd__"
@@ -76,10 +80,12 @@ class TableResult:
     unknown_fields: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     inputs: list[str] = field(default_factory=list)  # placeholder inputs still to resolve (QVD, files)
+    unresolved: list[str] = field(default_factory=list)  # $(variables) left in the SQL, here or in tables it reads
+    files: list[str] = field(default_factory=list)  # placeholder file inputs, here or in tables it reads
 
     @property
     def complete(self) -> bool:
-        return self.final_cte is not None and not self.untranslated
+        return self.final_cte is not None and not self.untranslated and not self.unresolved and not self.files
 
 
 @dataclass
@@ -150,8 +156,10 @@ Override = Callable[[LoadOp, list[str] | None], str | None]
 
 
 class Composer:
-    def __init__(self, app: BIApp, overrides: dict[int, str] | None = None) -> None:
+    def __init__(self, app: BIApp, overrides: dict[int, str] | None = None,
+                 connections: dict[str, Connection] | None = None) -> None:
         self.app = app
+        self.connections = connections or {}  # Qlik connection -> its database (dialect, Dremio path)
         self.overrides = overrides or {}  # executed statement index -> SQL body reading from "src" (AI route)
         self.t = Translation()
         self.cur: dict[str, tuple[str, list[str] | None]] = {}  # Qlik table -> (cte, columns)
@@ -161,6 +169,8 @@ class Composer:
         self.alias_of: dict[str, str] = {}  # old table name -> current name (RENAME TABLE)
         self._cur_op: LoadOp | None = None  # statement being translated (for precise untranslated reports)
         self._in_cols: list[str] | None = None
+        self._read_unresolved: list[str] = []  # unresolved variables of the tables read by the current step
+        self._read_files: list[str] = []  # placeholder file inputs of the tables read by the current step
 
     # ------------------------------------------------------------------ helpers
     def _name(self, table: str, suffix: str = "") -> str:
@@ -225,8 +235,11 @@ class Composer:
             r.untranslated.append(Untranslated(target, stmts[0], spans[0], "depends on an untranslated step", "T1",
                                                step.ops[0].text))
             return
+        self._read_unresolved, self._read_files = [], []
         try:
             source_cte, chain_cte, chain_cols = self._chain(target, step.ops)
+            if step.qualified:
+                chain_cte, chain_cols = self._qualify(target, step, chain_cte, chain_cols, stmts, spans)
         except Untranslatable as e:
             self.broken.add(target)
             if step.action == TableAction.KEEP and step.other_table:
@@ -234,6 +247,9 @@ class Composer:
             self.cur.pop(target, None)
             return self._note_untranslated(r, step, str(e), e.tier)
 
+        own = [v for o in step.ops for v in re.findall(r"\$\(([^)]*)\)", o.text)]
+        r.unresolved = list(dict.fromkeys(r.unresolved + own + self._read_unresolved))
+        r.files = list(dict.fromkeys(r.files + self._read_files))
         result = chain_cte
         if step.action == TableAction.MAPPING:
             self.mappings[target] = chain_cte
@@ -272,10 +288,11 @@ class Composer:
         span = [self._span(op)]
         if s.kind == "sql":
             try:
-                body = sqlglot.parse_one(s.ref or "", read=DIALECT)
+                body = sqlglot.parse_one(s.ref or "", read=s.dialect or DIALECT)
             except ParseError as e:
-                raise Untranslatable(f"embedded SQL does not parse as Dremio SQL: {str(e).splitlines()[0]}",
-                                     "T1") from e
+                raise Untranslatable(f"embedded SQL does not parse as {s.dialect or DIALECT} SQL: "
+                                     f"{str(e).splitlines()[0]}", "T1") from e
+            body = to_dremio(body, s.dialect, self.connections.get(s.connection or ""))
             cols = list(s.columns) or None
             return self._add(Cte(self._name(table, "_sql"), body, cols, [op.statement], span, "source")), cols
         if s.kind == "resident":
@@ -284,6 +301,8 @@ class Composer:
                 raise Untranslatable(f"RESIDENT {ref} depends on an untranslated step", "T1")
             if ref not in self.cur:
                 raise Untranslatable(f"RESIDENT {ref}: table not loaded (or already dropped) at this point", "T1")
+            self._read_unresolved += self._result(ref).unresolved
+            self._read_files += self._result(ref).files
             return self.cur[ref]
         if s.kind == "inline":
             cols = list(s.columns)
@@ -303,10 +322,13 @@ class Composer:
             return self._add(Cte(self._name(table, "_inline"), body, cols, [op.statement], span, "source")), cols
         if s.kind in ("qvd", "file"):
             db = QVD_DB if s.kind == "qvd" else FILE_DB
-            tbl = exp.Table(this=exp.to_identifier(s.ref or "", quoted=True), db=exp.to_identifier(db, quoted=True))
+            ref = file_placeholder(s.ref or "", s.file_table)
+            tbl = exp.Table(this=exp.to_identifier(ref, quoted=True), db=exp.to_identifier(db, quoted=True))
             r = self._result(table)
-            if (s.ref or "") not in r.inputs:
-                r.inputs.append(s.ref or "")
+            if ref not in r.inputs:
+                r.inputs.append(ref)
+            if s.kind == "file" and ref not in r.files:
+                r.files.append(ref)
             cols = list(s.columns) or None
             body = exp.select(*([exp.column(c, quoted=True) for c in cols] if cols else ["*"])).from_(tbl)
             return self._add(Cte(self._name(table, f"_{s.kind}"), body, cols, [op.statement], span, "source")), cols
@@ -382,6 +404,16 @@ class Composer:
         return name, cols
 
     # ------------------------------------------------------------------ table actions
+    def _qualify(self, table: str, step: TableStep, in_cte: str, in_cols: list[str] | None, stmts: list[int],
+                 spans: list[str]) -> tuple[str, list[str]]:
+        """QUALIFY: the loaded fields are named "Table.field"."""
+        if in_cols is None:
+            raise Untranslatable("QUALIFY over a load with unknown columns", "T1")
+        cols = [step.qualified.get(c, c) for c in in_cols]
+        body = exp.select(*[exp.alias_(exp.column(c, quoted=True), q, quoted=True)
+                            for c, q in zip(in_cols, cols, strict=True)]).from_(in_cte)
+        return self._add(Cte(self._name(table, "_qualify"), body, cols, stmts, spans, "load")), cols
+
     def _concat(self, table: str, new_cte: str, new_cols: list[str] | None, stmts: list[int], spans: list[str]) -> str:
         cur_cte, cur_cols = self.cur[table]
         if cur_cols is None or new_cols is None:
@@ -460,5 +492,6 @@ class Composer:
         return loaded
 
 
-def compose(app: BIApp, overrides: dict[int, str] | None = None) -> Translation:
-    return Composer(app, overrides).compose()
+def compose(app: BIApp, overrides: dict[int, str] | None = None,
+            connections: dict[str, Connection] | None = None) -> Translation:
+    return Composer(app, overrides, connections).compose()

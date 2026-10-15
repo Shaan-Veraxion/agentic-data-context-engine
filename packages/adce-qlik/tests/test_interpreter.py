@@ -29,6 +29,16 @@ def test_evaluator():
         pass
 
 
+def test_date_functions_and_let_reading_variables():
+    assert evaluate_text("Date(Date#('04/01/2025', 'MM/DD/YYYY'), 'DD-MM-YYYY')") == "01-04-2025"
+    assert evaluate_text("Date#('15-Jan-25', 'DD-MMM-YY') + 1") == 45673  # Qlik day number
+    doc, _ = run({"s.qvs": "SET vStart = '04/01/2025';\n"
+                           "LET vFrom = Date(Date#(vStart, 'MM/DD/YYYY'), 'YYYY-MM-DD');\n"
+                           "LET vBad = Date#(vStart, 'M/D/YYYY');\n"})
+    assert doc.variables["vFrom"].value == "2025-04-01"
+    assert doc.variables["vBad"].value is None  # single-letter codes are refused, not guessed
+
+
 def test_include_is_spliced_with_its_own_spans():
     doc, app = run({"main.qvs": "SET vX = 1;\n$(Include=lib://Scripts/common.qvs);\nB: LOAD 2 AS b AUTOGENERATE 1;\n",
                     "common.qvs": "A: LOAD $(vX) AS a AUTOGENERATE 1;\n"})
