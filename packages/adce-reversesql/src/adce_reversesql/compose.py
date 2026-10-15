@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 import sqlglot
 from adce_core.bi_ir import BIApp, FieldOp, LoadOp, QlikTable, TableAction, TableStep
@@ -56,6 +57,9 @@ class Untranslated:
     tier: str
     text: str
     input_columns: list[str] | None = None
+    # other tables the statement names (mapping tables, earlier tables): name -> kind, columns and, for INLINE
+    # tables, their rows (script text); an AI translation may read them by name besides src
+    relations: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -178,6 +182,7 @@ class Composer:
         self._in_cols: list[str] | None = None
         self._generated: set[str] = set()  # CTEs of AUTOGENERATE row sources (RecNo() reads their row column)
         self.stored: dict[str, tuple[str, list[str] | None, int]] = {}  # QVD file name -> (cte, columns, statement)
+        self.inline: dict[str, list[list[str]]] = {}  # table loaded from INLINE data -> its rows (script text)
         self.variables = {k: v.value for k, v in app.variables.items() if v.value is not None}
 
     # ------------------------------------------------------------------ helpers
@@ -357,7 +362,23 @@ class Composer:
     def _note_untranslated(self, r: TableResult, step: TableStep, reason: str, tier: str) -> None:
         op = self._cur_op if self._cur_op is not None and self._cur_op in step.ops else step.ops[-1]
         r.untranslated.append(Untranslated(r.table, op.statement, self._span(op), reason, tier, op.text,
-                                           self._in_cols))
+                                           self._in_cols, self._relations(op.text, r.table)))
+
+    def _relations(self, text: str, own: str) -> dict[str, dict[str, Any]]:
+        """Tables loaded at this point that the statement names (in quotes, brackets or as a word), other than its
+        own: what an AI translation needs to reproduce lookups (MapSubString, ApplyMap, Lookup, Exists, ...)."""
+        out: dict[str, dict[str, Any]] = {}
+        # the statement's own input (RESIDENT x) and target prefixes (Concatenate (x), Left Join (x)) are not lookups
+        text = re.sub(r"(?i)\bresident\s+(\[[^\]]*\]|\"[^\"]*\"|\S+)|\b(concatenate|join|keep)\s*\([^)]*\)", " ",
+                      text)
+        for name, (_cte, cols) in self.cur.items():
+            if name == own or not re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text):
+                continue
+            info: dict[str, Any] = {"kind": "mapping" if name in self.mappings else "table", "columns": cols}
+            if name in self.inline:
+                info["inline_rows"] = self.inline[name][:50]
+            out[name] = info
+        return out
 
     # ------------------------------------------------------------------ load chains
     def _chain(self, table: str, ops: list[LoadOp]) -> tuple[str, str, list[str] | None]:
@@ -400,6 +421,7 @@ class Composer:
             if not cols:
                 raise Untranslatable("INLINE table without a header row", "T1")
             rows = [r + [""] * (len(cols) - len(r)) for r in s.inline_rows]
+            self.inline[table] = rows
             numeric = [all(_num(r[i]) is not None for r in rows) and bool(rows) for i in range(len(cols))]
             if not rows:
                 body: SqlExpr = exp.select(*[exp.alias_(exp.Null(), c, quoted=True) for c in cols]).where(
@@ -509,13 +531,18 @@ class Composer:
             body = sqlglot.parse_one(self.overrides[op.statement], read=DIALECT)
         except ParseError as e:
             raise Untranslatable(f"AI translation does not parse: {str(e).splitlines()[0]}", "T2") from e
-        for t in body.find_all(exp.Table):
+        for t in list(body.find_all(exp.Table)):
             if t.name.lower() == "src" and not t.db:
                 if not in_cte:
                     raise Untranslatable("override reads src, but the statement's own source is not translatable",
                                          "T2")
                 t.set("this", exp.to_identifier(in_cte))
                 t.set("alias", exp.TableAlias(this=exp.to_identifier("src")))
+            elif not t.db and t.name in self.cur and t.name != table:
+                # another table of the script at this point (a mapping or earlier table), read by its Qlik name
+                alias = t.alias or t.name
+                t.set("this", exp.to_identifier(self.cur[t.name][0]))
+                t.set("alias", exp.TableAlias(this=exp.to_identifier(alias, quoted=True)))
         cols = [e.alias_or_name for e in body.expressions] if isinstance(body, exp.Select) else None
         name = self._add(Cte(self._name(table), body, cols, [op.statement], [self._span(op)], "load", ai=True))
         return name, cols

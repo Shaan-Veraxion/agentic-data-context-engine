@@ -194,11 +194,37 @@ async function openCase(id, variant) {
   renderList();
   S.detail = await api("/api/case/" + encodeURI(id));
   const v = S.detail.variants || {};
-  S.sel = { agents: [...S.detail.chain], ai: variant?.ai || (v.ai || ["off"])[0], data: variant?.data || (v.data || ["full"])[0], memory: "fresh", tools: load("tools", false) };
+  S.sel = { agents: [...S.detail.chain], ai: variant?.ai || (v.ai || ["off"])[0], data: variant?.data || (v.data || ["full"])[0], memory: "fresh", tools: load("tools", false), model: load("model", "") };
   store("current", id);
   history.replaceState(null, "", "#case=" + encodeURIComponent(id));
   renderCase();
   if (variant) runCurrent();
+}
+// live runs: which gateway config (deploy/gateway/*.toml) answers; Claude configs go through the local bridge
+function modelPicker(id, value) {
+  const gs = S.meta.gateways || [];
+  return `<label title="Live runs only: the model gateway config. Claude configs use the Claude Code bridge on this machine">Model<select id="${id}"><option value="">from .env</option>${gs.map(g => `<option value="${esc(g.name)}" ${g.name === value ? "selected" : ""}>${esc(g.name)} · ${esc(g.model)}</option>`).join("")}</select></label><span id="${id}-status" class="muted"></span>`;
+}
+function wireModel(id, obj, aiOf) {
+  const el = $("#" + id), st = $("#" + id + "-status");
+  const show = () => {
+    const live = aiOf() === "live";
+    el.disabled = !live;
+    const g = (S.meta.gateways || []).find(x => x.name === el.value);
+    if (!live || !g || !g.local_url) { st.innerHTML = ""; return; }
+    st.innerHTML = g.running ? '<span class="badge pass">bridge running</span>'
+      : S.meta.bridge ? `<span class="badge warn">bridge not running</span> <button class="ghost" id="${id}-start">Start bridge</button>`
+      : '<span class="badge warn">bridge not running and not in this checkout (branch local/claude-code-bridge)</span>';
+    const b = $("#" + id + "-start");
+    if (b) b.onclick = async () => {
+      b.disabled = true; b.textContent = "starting…";
+      try { await api("/api/gateways/bridge", {}); } catch (e) { alert(e.message); }
+      S.meta.gateways = await api("/api/gateways"); show();
+    };
+  };
+  el.onchange = () => { obj.model = el.value; store("model", el.value); show(); };
+  show();
+  return show;
 }
 function renderCase() {
   const d = S.detail, m = $("#main");
@@ -220,6 +246,7 @@ function renderCase() {
       <label>AI<select id="ai">${S.meta.ai_modes.map(x => `<option ${x === sel.ai ? "selected" : ""}>${x}</option>`).join("")}</select></label>
       <label>Data uploaded<select id="data">${S.meta.data_variants.map(x => `<option ${x === sel.data ? "selected" : ""}>${x}</option>`).join("")}</select></label>
       <label>Memory<select id="mem"><option value="fresh">fresh</option><option value="session" ${sel.memory === "session" ? "selected" : ""}>session (shared)</option></select></label>
+      ${modelPicker("model", sel.model)}
       <label title="LLM steps may call tools before answering: check_sql, get_statements, kg-mcp lookups"><span><input type="checkbox" id="tools" ${sel.tools ? "checked" : ""}> LLM tools</span></label>
       <button class="primary" id="run">Run</button>
       <button class="ghost" id="runall">Run this case's variants</button>
@@ -231,7 +258,8 @@ function renderCase() {
   <div id="result"></div>
   <div class="card"><h2>Inputs</h2><div class="tabs" id="ftabs"></div><div id="fview"></div></div>`;
   $("#picker").appendChild(chainPicker(sel.agents));
-  $("#ai").onchange = e => sel.ai = e.target.value;
+  const showModel = wireModel("model", sel, () => sel.ai);
+  $("#ai").onchange = e => { sel.ai = e.target.value; showModel(); };
   $("#data").onchange = e => sel.data = e.target.value;
   $("#mem").onchange = e => sel.memory = e.target.value;
   $("#tools").onchange = e => { sel.tools = e.target.checked; store("tools", sel.tools); };
@@ -269,7 +297,7 @@ async function runCurrent() {
   const btn = $("#run"); if (btn) { btn.disabled = true; btn.textContent = "Running…"; }
   $("#result").innerHTML = '<div class="card"><div class="muted">Running ' + esc(S.current) + "…</div></div>";
   try {
-    S.result = await api("/api/run", { case: S.current, agents: S.sel.agents, ai: S.sel.ai, data: S.sel.data, memory: S.sel.memory, tools: S.sel.tools });
+    S.result = await api("/api/run", { case: S.current, agents: S.sel.agents, ai: S.sel.ai, data: S.sel.data, memory: S.sel.memory, tools: S.sel.tools, model: S.sel.model });
     renderResult(S.result, $("#result"));
     await refreshCases();
   } catch (e) { $("#result").innerHTML = `<div class="card note">${esc(e.message)}</div>`; }
@@ -303,7 +331,7 @@ function renderResult(r, el) {
   el.innerHTML = `
   <div class="card">
     <div class="row"><h2 style="margin:0">Result</h2><span class="badge ${r.status}">${r.status.toUpperCase()}</span>
-      <span class="muted">${r.passed} checks passed · ${r.failed} failed · ${r.seconds}s · ai=${esc(r.variant.ai)}${r.variant.tools ? "+tools" : ""} data=${esc(r.variant.data)}${calls.length ? " · " + calls.length + " model call(s)" : ""} · ${r.kg_calls || 0} kg-mcp calls</span></div>
+      <span class="muted">${r.passed} checks passed · ${r.failed} failed · ${r.seconds}s · ai=${esc(r.variant.ai)}${r.variant.tools ? "+tools" : ""}${r.variant.model ? " model=" + esc(r.variant.model) : ""} data=${esc(r.variant.data)}${calls.length ? " · " + calls.length + " model call(s)" : ""} · ${r.kg_calls || 0} kg-mcp calls</span></div>
     <div class="tabs" id="rtabs"></div><div id="rview"></div>
   </div>`;
   const tabs = [["checks", `Checks (${r.checks.length})`], ["agents", `Agents (${r.steps.length})`], ["rows", `Rows (${Object.keys(r.rows).length})`], ["sql", "SQL"]];
@@ -402,6 +430,7 @@ function renderPlayground() {
     <div><h4>Expected tables (optional oracle)</h4><div id="pexp"></div><button class="ghost" id="addexp">+ expected table</button></div></div>
     <h4>Agents</h4><div id="ppick"></div>
     <div class="controls" style="margin-top:10px"><label>AI<select id="pai">${S.meta.ai_modes.map(x => `<option ${x === pg.ai ? "selected" : ""}>${x}</option>`).join("")}</select></label>
+    ${modelPicker("pmodel", pg.model || load("model", ""))}
     <button class="primary" id="prun">Run</button></div></div>
     <div id="presult"></div>
     <div class="card" id="psave" style="display:none"><h2>Save as a case</h2><div class="controls">
@@ -421,11 +450,13 @@ function renderPlayground() {
   $("#ppick").appendChild(chainPicker(pg.agents, () => store("pg", pg)));
   $("#pscript").oninput = e => { pg.script = e.target.value; store("pg", pg); };
   $("#plog").oninput = e => { pg.reload_log = e.target.value; store("pg", pg); };
-  $("#pai").onchange = e => { pg.ai = e.target.value; store("pg", pg); };
+  pg.model ??= load("model", "");
+  const showPModel = wireModel("pmodel", pg, () => pg.ai);
+  $("#pai").onchange = e => { pg.ai = e.target.value; store("pg", pg); showPModel(); };
   $("#prun").onclick = async () => {
     $("#prun").disabled = true; $("#presult").innerHTML = '<div class="card muted">Running…</div>';
     try {
-      const r = await api("/api/playground", { script: pg.script, reload_log: pg.reload_log, sources: pg.sources.filter(s => s.path && s.csv), expected: pg.expected.filter(s => s.path && s.csv), agents: pg.agents, ai: pg.ai });
+      const r = await api("/api/playground", { script: pg.script, reload_log: pg.reload_log, sources: pg.sources.filter(s => s.path && s.csv), expected: pg.expected.filter(s => s.path && s.csv), agents: pg.agents, ai: pg.ai, model: pg.model || "" });
       S.pgid = r.playground_id; renderResult(r, $("#presult")); $("#psave").style.display = "";
     } catch (e) { $("#presult").innerHTML = `<div class="card note">${esc(e.message)}</div>`; }
     $("#prun").disabled = false;

@@ -162,8 +162,16 @@ class Outcome:
     tool_calls: int = 0  # tools the model called inside those calls
 
 
-def static_problems(sql: str, input_columns: list[str] | None) -> list[str]:
-    """Checks that need no data: Dremio syntax, reads only src, uses known columns."""
+RELATIONS_NOTE = ("Tables of the script loaded before this statement that it names. Your SELECT may read them by "
+                  "name (double-quoted, as written here) besides src, e.g. to reproduce MapSubString, ApplyMap, "
+                  "Lookup or Exists. A mapping table maps its first column to its second. inline_rows are the "
+                  "table's rows as written in the script.")
+
+
+def static_problems(sql: str, input_columns: list[str] | None,
+                    relations: dict[str, Any] | None = None) -> list[str]:
+    """Checks that need no data: Dremio syntax, reads only src (and the other tables the statement names), uses
+    known columns."""
     try:
         tree = sqlglot.parse_one(sql, read=DIALECT)
     except ParseError as e:
@@ -172,12 +180,21 @@ def static_problems(sql: str, input_columns: list[str] | None) -> list[str]:
         return ["the answer must be one SELECT"]
     problems = []
     ctes = {c.alias_or_name.lower() for c in tree.find_all(exp.CTE)}
+    allowed = {"src", *ctes, *(n.lower() for n in relations or {})}
     others = sorted({t.sql(dialect=DIALECT) for t in tree.find_all(exp.Table)
-                     if t.name.lower() != "src" and t.name.lower() not in ctes})
+                     if t.name.lower() not in allowed or t.db})
     if others:
-        problems.append(f"reads tables other than src: {', '.join(others)}")
+        named = f" or {', '.join(relations)}" if relations else ""
+        problems.append(f"reads tables other than src{named}: {', '.join(others)}")
+    known: set[str] | None = None
     if input_columns is not None:
         known = {c.lower() for c in input_columns}
+        for r in (relations or {}).values():
+            if r.get("columns") is None:
+                known = None
+                break
+            known |= {c.lower() for c in r["columns"]}
+    if input_columns is not None and known is not None:
         aliases = {a.alias.lower() for a in tree.find_all(exp.Alias)}
         unknown = sorted({c.name for c in tree.find_all(exp.Column)
                           if c.name and c.name.lower() not in known and c.name.lower() not in aliases
@@ -308,6 +325,8 @@ async def _one(app: BIApp, u: Untranslated, overrides: dict[int, str], gateway: 
                                | ({"written_by": "reviewer"} if e.status == "reviewer" else {})
                                for e in memory.similar(u.text)],
                   "previous_attempts": feedback}
+        if u.relations:  # only when the statement names other tables, so earlier prompts stay the same
+            inputs["other_relations"] = {"note": RELATIONS_NOTE, "tables": u.relations}
         kw: dict[str, Any] = {}
         if tools:
             inputs |= {"table_key": f"app:{app.app_id}/table:{u.table}", "app_key": f"app:{app.app_id}"}
@@ -449,7 +468,7 @@ async def repair_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory, va
 
 def _verify(app: BIApp, u: Untranslated, sql: str, overrides: dict[int, str],
             validator: Validator | None) -> tuple[bool, list[str], str | None]:
-    problems = static_problems(sql, u.input_columns)
+    problems = static_problems(sql, u.input_columns, u.relations)
     if problems:
         return False, problems, None
     t = compose(app, {**overrides, u.statement: sql})

@@ -42,7 +42,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         if args.all_variants:
             variants = [Variant(ai, d) for ai in AI_MODES[:2] for d in DATA_VARIANTS]
         elif args.ai or args.data:
-            variants = [Variant(args.ai or "off", args.data or "full", args.tools)]
+            variants = [Variant(args.ai or "off", args.data or "full", args.tools, args.model)]
         else:
             variants = default_variants(c)
         for v in variants:
@@ -88,7 +88,7 @@ async def _eval(args: argparse.Namespace, arms: list[str], cases: list[Any]) -> 
     for trial in range(1, args.trials + 1):
         for c in cases:
             for arm in arms:
-                row: dict[str, Any] = await run_trial(c, arm) | {"trial": trial}
+                row: dict[str, Any] = await run_trial(c, arm, args.model) | {"trial": trial}
                 rows.append(row)
                 path = write(rows, args.name) if path is None else path
                 path.write_text(json.dumps({"summary": summarise(rows), "trials": rows}, indent=1, default=str),
@@ -123,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--data", choices=DATA_VARIANTS)
     r.add_argument("--all-variants", action="store_true", help="every data variant, with AI off and replay")
     r.add_argument("--tools", action="store_true", help="LLM steps may call tools (with --ai replay or live)")
+    r.add_argument("--model", default="", help="with --ai live: a gateway config in deploy/gateway, e.g. "
+                   "claude-code (default: ADCE_GATEWAY_CONFIG)")
     r.add_argument("--json", help="write the results to this file")
     r.add_argument("-v", "--verbose", action="store_true")
     r.set_defaults(fn=cmd_run)
@@ -131,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--trials", type=int, default=1)
     e.add_argument("--cases", help="comma-separated case id prefixes (default: llm/ plus the LLM gold apps)")
     e.add_argument("--name", default="llm-tools")
+    e.add_argument("--model", default="", help="a gateway config in deploy/gateway (default: ADCE_GATEWAY_CONFIG)")
     e.set_defaults(fn=cmd_eval)
     s = sub.add_parser("serve")
     s.add_argument("--port", type=int, default=8765)

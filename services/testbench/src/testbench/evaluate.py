@@ -29,8 +29,8 @@ def eval_cases(prefixes: tuple[str, ...] = DEFAULT_CASES) -> list[Case]:
     return [c for c in all_cases() if not c.private and any(c.id.startswith(p) for p in prefixes)]
 
 
-async def run_trial(case: Case, arm: str) -> dict[str, Any]:
-    runner = Runner(case, Variant("live", "full", ARMS[arm]))
+async def run_trial(case: Case, arm: str, model: str = "") -> dict[str, Any]:
+    runner = Runner(case, Variant("live", "full", ARMS[arm], model))
     runner.recordings = Path(tempfile.mkdtemp(prefix="adce-eval-rec-"))  # nothing reused between trials
     r = await runner.run()
     calls = r.gateway.get("calls", [])

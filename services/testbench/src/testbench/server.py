@@ -8,6 +8,9 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import subprocess
+import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -30,7 +33,7 @@ from .cases import (
     save_case,
     write_csv,
 )
-from .runner import Variant, agent_catalog, resolve_chain, run_case
+from .runner import Variant, agent_catalog, gateway_choices, resolve_chain, run_case
 
 STATIC = Path(__file__).parent / "static"
 STATE = ROOT / ".adce" / "bench"
@@ -44,7 +47,8 @@ _session_kg = MemoryKG()  # shared knowledge across runs when memory = "session"
 def _last_path(case_id: str, variant: Variant, chain: list[int] | None = None) -> Path:
     """The last result per case and variant; a run with a custom agent chain is kept apart from the default."""
     tag = "" if not chain else "__chain-" + "-".join(map(str, chain))
-    return LAST / f"{re.sub(r'[^0-9A-Za-z_.-]+', '_', case_id)}__{variant.ai}__{variant.data}{tag}.json"
+    ai = f"{variant.ai}-{variant.model}" if variant.model and variant.ai == "live" else variant.ai
+    return LAST / f"{re.sub(r'[^0-9A-Za-z_.-]+', '_', case_id)}__{ai}__{variant.data}{tag}.json"
 
 
 def _last(case_id: str) -> list[dict[str, Any]]:
@@ -70,7 +74,34 @@ def index() -> FileResponse:
 @app.get("/api/meta")
 def meta() -> dict[str, Any]:
     return {"agents": agent_catalog(), "ai_modes": AI_MODES, "data_variants": DATA_VARIANTS,
-            "private_cases": PRIVATE.is_dir()}
+            "private_cases": PRIVATE.is_dir(), "gateways": gateway_choices(), "bridge": BRIDGE.is_file()}
+
+
+BRIDGE = ROOT / "tools" / "claude-code-bridge" / "bridge.py"  # local evaluation tool (Claude Code login)
+_bridge: subprocess.Popen[bytes] | None = None
+
+
+@app.get("/api/gateways")
+def gateways() -> list[dict[str, Any]]:
+    return gateway_choices()
+
+
+@app.post("/api/gateways/bridge")
+def start_bridge() -> dict[str, Any]:
+    """Start the Claude Code bridge on its port, if it is in this checkout and not already running."""
+    global _bridge
+    if not BRIDGE.is_file():
+        raise HTTPException(404, "the Claude Code bridge is not in this checkout (tools/claude-code-bridge)")
+    if any(g["running"] for g in gateway_choices() if g["local_url"]):
+        return {"started": False, "running": True}
+    if _bridge is None or _bridge.poll() is not None:
+        _bridge = subprocess.Popen([sys.executable, str(BRIDGE), "--port", "8790"], cwd=ROOT,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(30):
+        time.sleep(0.5)
+        if any(g["running"] for g in gateway_choices() if g["local_url"]):
+            return {"started": True, "running": True}
+    return {"started": True, "running": False}
 
 
 @app.get("/api/cases")
@@ -127,12 +158,13 @@ class RunRequest(BaseModel):
     data: str = "full"
     memory: str = "fresh"  # fresh | session
     tools: bool = False  # LLM steps may call tools
+    model: str = ""  # live: gateway config name (deploy/gateway); "" = ADCE_GATEWAY_CONFIG
 
 
 async def _run(c: Case, req: RunRequest) -> dict[str, Any]:
     if req.ai not in AI_MODES or req.data not in DATA_VARIANTS:
         raise HTTPException(400, "unknown variant")
-    variant = Variant(req.ai, req.data, req.tools)
+    variant = Variant(req.ai, req.data, req.tools, req.model if req.ai == "live" else "")
     kg = _session_kg if req.memory == "session" else None
     r = await run_case(c, variant, req.agents or None, kg)
     custom = sorted(req.agents) if req.agents and sorted(req.agents) != sorted(c.chain) else None
@@ -187,6 +219,7 @@ class PlaygroundRequest(BaseModel):
     ai: str = "off"
     memory: str = "fresh"
     tools: bool = False
+    model: str = ""
     title: str = "playground"
 
 
@@ -227,7 +260,7 @@ async def playground(req: PlaygroundRequest) -> dict[str, Any]:
     _write_playground(req, d)
     c = load_case(d / "case.yaml", PLAYGROUND)
     out = await _run(c, RunRequest(case=c.id, agents=req.agents, ai=req.ai, data="full", memory=req.memory,
-                                   tools=req.tools))
+                                   tools=req.tools, model=req.model))
     return out | {"playground_id": pid}
 
 

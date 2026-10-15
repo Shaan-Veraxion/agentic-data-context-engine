@@ -84,9 +84,11 @@ class Variant:
     ai: str = "off"  # off | replay | live
     data: str = "full"
     tools: bool = False  # LLM steps may call tools (check_sql, get_statements, kg-mcp lookups)
+    model: str = ""  # live: a gateway config in deploy/gateway (e.g. claude-code); "" = ADCE_GATEWAY_CONFIG
 
     def label(self) -> str:
-        return f"ai={self.ai}{'+tools' if self.tools else ''} data={self.data}"
+        model = f" model={self.model}" if self.model and self.ai == "live" else ""
+        return f"ai={self.ai}{'+tools' if self.tools else ''}{model} data={self.data}"
 
 
 @dataclass
@@ -119,9 +121,39 @@ class RunResult:
                 "passed": sum(c.ok for c in self.checks), "failed": sum(not c.ok for c in self.checks)}
 
 
-def make_gateway(ai: str, recordings: Path | None = None) -> Any | None:
+GATEWAYS = ROOT / "deploy" / "gateway"
+
+
+def gateway_choices() -> list[dict[str, Any]]:
+    """The gateway configs a live run can use (deploy/gateway/*.toml): the model of each tier, and for configs that
+    call a local endpoint (the Claude Code bridge) whether it answers."""
+    import tomllib
+    import urllib.request
+
+    out = []
+    for p in sorted(GATEWAYS.glob("*.toml")):
+        try:
+            cfg = tomllib.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        local = [v["base_url"] for v in cfg.get("providers", {}).values()
+                 if str(v.get("base_url", "")).startswith(("http://127.0.0.1", "http://localhost"))]
+        row: dict[str, Any] = {"name": p.stem, "model": cfg.get("models", {}).get("standard", ""),
+                               "local_url": local[0] if local else None, "running": None}
+        if local:
+            try:
+                with urllib.request.urlopen(local[0].removesuffix("/v1") + "/health", timeout=1) as r:
+                    row["running"] = r.status == 200
+            except OSError:
+                row["running"] = False
+        out.append(row)
+    return out
+
+
+def make_gateway(ai: str, recordings: Path | None = None, model: str = "") -> Any | None:
     """off: no model (rules only). replay: recorded answers in eval/recordings, no key, no network.
-    live: the configured provider (deploy/compose/.env), answers recorded in .adce/recordings and reused."""
+    live: the configured provider (deploy/compose/.env, or `model`: a config in deploy/gateway), answers recorded
+    in .adce/recordings and reused."""
     if ai == "off":
         return None
     from adce_gateway.config import default_config, load_config
@@ -135,7 +167,13 @@ def make_gateway(ai: str, recordings: Path | None = None) -> Any | None:
 
     _env_file(str(ROOT / "deploy" / "compose" / ".env"))
     s = Settings()
-    config = load_config(s.gateway_config) if s.gateway_config else default_config(s.vertex_region)
+    if model:
+        path = GATEWAYS / f"{model}.toml"
+        if not path.is_file():
+            raise ValueError(f"no gateway config {model} in {GATEWAYS}")
+        config = load_config(path)
+    else:
+        config = load_config(s.gateway_config) if s.gateway_config else default_config(s.vertex_region)
     return ModelGateway("record", Recordings(recordings or ROOT / ".adce" / "recordings"), config=config)
 
 
@@ -177,7 +215,7 @@ class Runner:
         chain = resolve_chain(self.selected)
         res = RunResult(case=self.case.id, variant=self.variant, chain=[n for n, _ in chain])
         app_id = self.case.id.replace("/", "_")
-        gateway = make_gateway(self.variant.ai, self.recordings)
+        gateway = make_gateway(self.variant.ai, self.recordings, self.variant.model)
         calls: list[dict[str, Any]] = []
         if gateway is not None:
             _log_calls(gateway, calls)
