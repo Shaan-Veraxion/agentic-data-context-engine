@@ -80,3 +80,38 @@ def test_formats_show_no_data():
     names = ["acme corp", "bolt inc", "zed llc"]
     assert _shape("acme corp", literal_words(names)) == "a a"  # varying words never shown
     assert literal_words(["P20", "P20"]) == frozenset()  # too few distinct values: nothing literal
+
+
+class Asked:
+    """A gateway that records what it was asked and declines every statement."""
+
+    def __init__(self) -> None:
+        self.inputs: list[dict] = []
+
+    async def call(self, route, inputs, output, **kw):  # type: ignore[no-untyped-def]
+        from types import SimpleNamespace
+
+        self.inputs.append(inputs)
+        return SimpleNamespace(output=output(sql="", translatable=False, notes="declined"), tool_calls=[])
+
+
+def test_reviewer_decisions_steer_the_loop(tmp_path):
+    app, validator, gw, _ = _setup("longtail_local", ROOT / "eval" / "recordings")
+    memory = TranslationMemory()
+    _, learned = asyncio.run(translate_with_ai(app, gw, memory, validator=validator))
+    spans = {o.table: o.span for o in learned}
+
+    # a reviewer rejected Sales's SQL after the answer was learned: not reused, the model is asked again with the
+    # rejected SQL and the reason as a failed attempt (Running reads Sales, so it waits for it)
+    asked = Asked()
+    _, outcomes = asyncio.run(translate_with_ai(app, asked, memory, validator=validator,
+                                                rejected={"Sales": {"reason": "net of returns", "at": "9999"}}))
+    assert [(o.table, o.status) for o in outcomes] == [("Sales", "declined")]
+    [prev] = asked.inputs[0]["previous_attempts"]
+    assert "a reviewer rejected the SQL of table Sales: net of returns" in prev["problems"]
+
+    # statements a reviewer accepted as gaps are not sent to the model
+    asked = Asked()
+    _, outcomes = asyncio.run(translate_with_ai(app, asked, TranslationMemory(), validator=validator,
+                                                accepted_gaps=set(spans.values())))
+    assert {o.status for o in outcomes} == {"gap_accepted"} and asked.inputs == []

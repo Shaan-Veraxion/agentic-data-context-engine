@@ -1,0 +1,43 @@
+{{- if .Values.events.enabled }}
+# Event-driven re-runs (ADR-6): follows the knowledge outbox and re-runs the applications a reviewer decision or a
+# disproved answer affects (services/orchestrator/.../events.py). One replica: the outbox position is one row.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-orchestrator-events
+  labels: {{- include "adce.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/component: orchestrator-events, app.kubernetes.io/instance: {{ .Release.Name }} }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/component: orchestrator-events, app.kubernetes.io/instance: {{ .Release.Name }} }
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: events
+          image: {{ include "adce.image" (dict "root" . "kind" "python") }}
+          command: {{- toYaml .Values.events.command | nindent 12 }}
+          {{- include "adce.env" . | nindent 10 }}
+          {{- with .Values.events.env }}
+          env:
+            {{- range $k, $v := . }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          resources: {{- toYaml .Values.events.resources | nindent 12 }}
+          {{- if .Values.gateway.config }}
+          volumeMounts:
+            - { name: gateway-config, mountPath: /etc/adce, readOnly: true }
+          {{- end }}
+      {{- if .Values.gateway.config }}
+      volumes:
+        - name: gateway-config
+          configMap: { name: {{ .Release.Name }}-gateway }
+      {{- end }}
+{{- end }}

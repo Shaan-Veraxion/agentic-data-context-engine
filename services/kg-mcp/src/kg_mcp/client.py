@@ -23,7 +23,8 @@ from adce_core.ports import KGPort, PolicyError, check_policy
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-READ_TOOLS = ("get_entity", "get_facts", "search_context", "get_context_pack", "find_similar_facts")
+READ_TOOLS = ("get_entity", "get_facts", "search_context", "get_context_pack", "find_similar_facts",
+              "get_feedback_history")
 
 
 @dataclass
@@ -133,6 +134,14 @@ class McpKG:
 
     async def context(self, key: str, limit: int = 50) -> dict[str, Any]:
         return await self._call("get_context_pack", {"key": key, "limit": limit})
+
+    async def feedback_history(self, *, kinds: list[str] | None = None, app_id: str | None = None,
+                               text: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
+        return await self._call("get_feedback_history", {"kinds": kinds, "app_id": app_id, "text": text,
+                                                         "limit": limit}) or []
+
+    async def events(self, after: int = 0, limit: int = 500) -> list[dict[str, Any]]:
+        return (await self._call("subscribe_events", {"after": after, "limit": limit}))["events"]
 
     # ------------------------------------------------------------------ model tools
     async def tools(self, allow: tuple[str, ...] = READ_TOOLS, max_chars: int = 6000) -> list[McpTool]:

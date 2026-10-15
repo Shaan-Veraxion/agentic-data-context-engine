@@ -3,7 +3,7 @@ name = "adce-orchestrator"
 version = "0.1.0"
 description = "Orchestrator: LangGraph qlik_pipeline with the Postgres checkpointer"
 requires-python = ">=3.12"
-dependencies = ["adce-core", "adce-kg", "adce-agents-ingestion", "adce-agents-bi-adapters", "adce-agents-reversesql", "langgraph>=1.2,<2", "langgraph-checkpoint-postgres>=3.1"]
+dependencies = ["adce-core", "adce-kg", "adce-agents-ingestion", "adce-agents-bi-adapters", "adce-agents-reversesql", "adce-kg-mcp", "langgraph>=1.2,<2", "langgraph-checkpoint-postgres>=3.1"]
 
 [tool.uv.sources]
 adce-core = { workspace = true }
@@ -15,6 +15,7 @@ adce-agents-bi-adapters = { workspace = true }
 adce-agents-reversesql = { workspace = true }
 adce-reversesql = { workspace = true }
 adce-orchestrator = { workspace = true }
+adce-kg-mcp = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

@@ -19,6 +19,8 @@ import argparse
 import asyncio
 import datetime as dt
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from adce_core.ports import KGPort
@@ -40,7 +42,7 @@ async def uploads_by_app(kg: KGPort) -> dict[str, list[dict[str, Any]]]:
 
 async def rerun_all(deps: Deps, *, apps: list[str] | None = None,
                     run_prefix: str = "scheduled") -> list[dict[str, Any]]:
-    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M")
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S")
     out = []
     for app_id, files in sorted((await uploads_by_app(deps.kg)).items()):
         if apps and app_id not in apps:
@@ -51,6 +53,18 @@ async def rerun_all(deps: Deps, *, apps: list[str] | None = None,
         except Exception as e:  # noqa: BLE001 - one application failing does not stop the others
             out.append({"app_id": app_id, "status": "error", "error": f"{type(e).__name__}: {e}"})
     return out
+
+
+@asynccontextmanager
+async def agents_kg(settings: Any, kg: KGPort) -> AsyncIterator[Any]:
+    """The knowledge port agents get in re-runs: kg-mcp when the deployment uses it (ADR-2), else `kg`."""
+    if settings.kg_transport != "mcp":
+        yield kg
+        return
+    from kg_mcp.client import McpKG
+
+    async with McpKG.connect(settings.kg_mcp_url) as mcp:
+        yield mcp
 
 
 async def memory_report(kg: KGPort) -> list[dict[str, Any]]:
@@ -93,9 +107,10 @@ async def _main(argv: list[str] | None = None) -> int:
         if args.command == "report":
             print(json.dumps(await memory_report(kg), indent=1))
             return 0
-        deps = Deps(kg=kg, artifacts=artifacts_from_settings(s), gateway=gateway_from_settings(s),
-                    llm_tools=s.llm_tools)
-        print(json.dumps(await rerun_all(deps, apps=args.app), indent=1))
+        async with agents_kg(s, kg) as akg:
+            deps = Deps(kg=akg, artifacts=artifacts_from_settings(s), gateway=gateway_from_settings(s),
+                        llm_tools=s.llm_tools)
+            print(json.dumps(await rerun_all(deps, apps=args.app), indent=1))
         return 0
     finally:
         close = getattr(kg, "close", None)

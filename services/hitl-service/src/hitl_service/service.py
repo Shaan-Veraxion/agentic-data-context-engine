@@ -1,7 +1,8 @@
 """Review items (Ask / Queue / Gate / Seed) built from recorded knowledge, and decisions turned into facts.
 
 Review is data, never a blocking call: the pipeline keeps going and a decision re-runs only what it affects.
-Decisions are written through KGPort, so they are append-only confirmed facts that supersede what they decide on:
+Decisions are written through KGPort, so they are append-only confirmed facts that supersede what they decide on
+(adce_core.feedback pairs them up for learning; each one is an outbox event the orchestrator re-runs on):
 - Gate  approve_sql          approve / reject       -> decide(report_sql) confirmed / rejected
 - Queue untranslated         provide_sql / accept_gap -> translation_override (reviewer SQL) or bi_gap_accepted
 - Ask   unresolved_variable  answer                 -> variable_value (seed for the next run)
@@ -249,7 +250,9 @@ class ReviewService:
                 raise DecisionError("provide_sql needs a SELECT reading from the relation named src")
             return await self._confirmed(Fact(
                 kind="translation_override", subject=item.subject, trust=Trust.INFERRED, agent="hitl-service",
-                value={"statement": item.detail.get("statement"), "span": item.detail.get("span"), "sql": sql},
+                value={"statement": item.detail.get("statement"), "span": item.detail.get("span"), "sql": sql,
+                       # the statement itself, so the same statement in other applications can reuse this SQL
+                       "text": item.detail.get("text"), "input_columns": item.detail.get("input_columns")},
                 evidence=ev), reviewer)
         if item.kind == "untranslated":
             return await self._confirmed(Fact(kind="bi_gap_accepted", subject=item.subject, trust=Trust.INFERRED,

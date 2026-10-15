@@ -85,6 +85,13 @@ learning:
   env: { ADCE_KG_TRANSPORT: mcp, ADCE_KG_MCP_URL: "http://adce-kg-mcp:8701/mcp" }
   resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { memory: 2Gi } }
 
+# event-driven re-runs: reviewer decisions and disproved answers re-run the applications they affect (ADR-6)
+events:
+  enabled: true
+  command: ["python", "-m", "orchestrator.events", "run", "--interval", "15"]
+  env: { ADCE_KG_TRANSPORT: mcp, ADCE_KG_MCP_URL: "http://adce-kg-mcp:8701/mcp" }
+  resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { memory: 2Gi } }
+
 migrations:
   enabled: true
   command: ["alembic", "-c", "migrations/alembic.ini", "upgrade", "head"]

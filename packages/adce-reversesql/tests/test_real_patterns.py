@@ -81,3 +81,10 @@ def test_file_metadata_functions_go_to_review():
 def test_format_conversion(fmt: str, expected: str):
     from adce_reversesql.formats import qlik_to_dremio
     assert qlik_to_dremio(fmt) == expected
+
+
+def test_date_parse_with_non_english_month_names_is_not_translated_as_english():
+    t = translate("SET MonthNames='janv;févr;mars;avr;mai;juin;juil;août;sept;oct;nov;déc';\n"
+                  "R: LOAD Date#(S, 'DD MMM YYYY') AS D INLINE [S\n03 févr 2025];\n")
+    [u] = t.tables["R"].untranslated
+    assert u.tier == "T2" and "MonthNames" in u.reason

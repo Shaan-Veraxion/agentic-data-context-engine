@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 from adce_core.artifacts import LocalArtifactStore
-from adce_core.facts import Evidence, Fact, Trust
+from adce_core.facts import Evidence, Fact, FactStatus, Trust
 from adce_core.ports import MemoryKG, PolicyError
 from kg_mcp.client import McpKG
 
@@ -55,3 +55,20 @@ async def test_pipeline_through_mcp_matches_in_process(tmp_path):
         assert kg.calls >= 5  # reads and (batched) writes went through MCP
     assert out["levels"] == {"Orders": "V4", "CustomerTotals": "V4"}
     assert len(await inner.facts(kind="report_sql")) == 2
+
+
+async def test_feedback_history_and_events_over_mcp():
+    mem = MemoryKG()
+    proposal = Fact(kind="report_sql", subject="app:a/table:T", value={"level": "V2", "sql_sha256": "x"},
+                    trust=Trust.INFERRED, evidence=[Evidence(kind="query_result", ref="r")], agent="reconciler")
+    fid = await mem.propose_fact(proposal)
+    await mem.decide(fid, FactStatus.REJECTED, "ana", {"reason": "Amount must exclude returns"})
+    async with McpKG.serving(mem) as kg:
+        [rec] = await kg.feedback_history(app_id="a")
+        assert rec["decision"] == "rejected" and rec["reason"] == "Amount must exclude returns"
+        assert rec["proposed_by"] == "reconciler" and rec["proposal"]["level"] == "V2"
+        tools = {t.name for t in await kg.tools()}
+        assert "get_feedback_history" in tools and "subscribe_events" not in tools  # events are the orchestrator's
+        events = await kg.events()
+        assert [e["topic"] for e in events] == ["fact.proposed", "fact.rejected"]
+        assert await kg.events(after=2) == []

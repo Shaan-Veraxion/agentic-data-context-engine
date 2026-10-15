@@ -14,6 +14,12 @@ For each statement the rules leave untranslated (root causes only; knock-on fail
 After each round the script is composed again with the accepted overrides: statements that only failed because an
 earlier step failed are retried in the next round.
 
+Reviewer decisions are learned from too (ADR-5, adce_core.feedback): SQL a reviewer wrote for a statement is a
+memory entry (status reviewer) reused for the same statement in any application and shown as an example for similar
+ones; a statement a reviewer accepted as a gap is not sent to the model again; and when a reviewer rejected a
+table's SQL, answers learned before the rejection are not reused for that table: the model is asked again with the
+rejected SQL and the reviewer's reason as a failed attempt.
+
 repair_with_ai does the same for tables the rules translated but the data contradicts (agent 26's diagnosis): the
 diagnose_mismatch route sees each statement's SQL and the failed comparisons and proposes a replacement for one
 statement, accepted only when every comparison then passes. An accepted correction is remembered with
@@ -67,6 +73,7 @@ class MemoryEntry:
     uses: int = 0
     replaces_rule: bool = False  # a validated correction of what the rules produce for this statement
     proven: bool = False  # passed on two or more apps' data and never failed (knowledge service: memory_check)
+    learned_at: str = ""  # ISO time the knowledge service recorded it (compared with reviewer rejections)
 
 
 def memory_key(statement: str, input_columns: list[str] | None) -> str:
@@ -118,6 +125,10 @@ class TranslationMemory:
                 return e
         return None
 
+    def drop(self, entry: MemoryEntry) -> None:
+        """Stop using an entry in this run without disproving it (a reviewer rejected what it produced here)."""
+        self.entries = [e for e in self.entries if e is not entry]
+
     def forget(self, entry: MemoryEntry) -> None:
         self.entries = [e for e in self.entries if e is not entry]
         self.disproved.append(entry)
@@ -143,7 +154,7 @@ class Outcome:
     statement: int
     span: str
     reason: str
-    status: str  # memory | ai_validated | ai_checked | declined | failed | skipped
+    status: str  # memory | ai_validated | ai_checked | declined | failed | skipped | gap_accepted | no_model
     sql: str | None = None
     attempts: list[dict[str, Any]] = field(default_factory=list)
     notes: str = ""
@@ -191,15 +202,19 @@ async def translate_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory,
                             overrides: dict[int, str] | None = None, validator: Validator | None = None,
                             max_attempts: int = 4, max_rounds: int = 5, task: str = "ai_loop",
                             on_outcome: Callable[[Outcome], None] | None = None, tools: bool = False,
-                            kg_tools: list[Any] | None = None) -> tuple[dict[int, str], list[Outcome]]:
+                            kg_tools: list[Any] | None = None, accepted_gaps: set[str] | None = None,
+                            rejected: dict[str, dict[str, str]] | None = None) -> tuple[dict[int, str], list[Outcome]]:
+    """accepted_gaps: spans a reviewer accepted as untranslated; rejected: table -> {reason, at} of a reviewer's
+    rejection of the table's SQL."""
     overrides = dict(overrides or {})
+    rejected = rejected or {}
     settings = _settings(app)
     outcomes: list[Outcome] = []
     for table in app.tables.values():  # corrections of rule output learned earlier, applied before the rules
         for step in table.steps:
             for op in step.ops:
                 fix = memory.rule_fix(op.text)
-                if fix is None or op.statement in overrides:
+                if fix is None or op.statement in overrides or _rejected_since(fix, rejected.get(table.name)):
                     continue
                 # a correction proven on another app's data is re-checked on this app's data before it is used
                 status = "memory_fix_unverified"
@@ -231,8 +246,17 @@ async def translate_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory,
         stop = False
         for u in todo:
             tried.add(u.statement)
+            if u.span in (accepted_gaps or ()):
+                o = Outcome(u.table, u.statement, u.span, u.reason, "gap_accepted",
+                            notes="a reviewer accepted this statement as untranslated")
+                outcomes.append(o)
+                if on_outcome:
+                    on_outcome(o)
+                continue
             o = await _one(app, u, overrides, gateway, memory, settings, validator, max_attempts, task,
-                           tools, kg_tools)
+                           tools, kg_tools, rejected.get(u.table))
+            if o.status == "no_model" and not o.attempts:
+                continue  # nothing learned for it and no model to ask: stays untranslated, nothing to report
             outcomes.append(o)
             if on_outcome:
                 on_outcome(o)
@@ -248,9 +272,19 @@ async def translate_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory,
 
 async def _one(app: BIApp, u: Untranslated, overrides: dict[int, str], gateway: Any, memory: TranslationMemory,
                settings: dict[str, Any], validator: Validator | None, max_attempts: int, task: str,
-               tools: bool = False, kg_tools: list[Any] | None = None) -> Outcome:
+               tools: bool = False, kg_tools: list[Any] | None = None,
+               rejection: dict[str, str] | None = None) -> Outcome:
     o = Outcome(u.table, u.statement, u.span, u.reason, "failed")
+    feedback: list[dict[str, Any]] = []
     hit = memory.exact(u.text, u.input_columns)
+    if hit is not None and _rejected_since(hit, rejection):
+        assert rejection is not None
+        # a reviewer rejected this table's SQL after the answer was learned: ask again, with the reason
+        memory.drop(hit)
+        feedback.append({"sql": hit.sql, "problems": [f"a reviewer rejected the SQL of table {u.table}: "
+                                                      f"{rejection.get('reason') or 'no reason given'}"]})
+        o.attempts.append({"source": "memory", "sql": hit.sql, "rejected_by_reviewer": True})
+        hit = None
     if hit is not None:
         ok, problems, level = _verify(app, u, hit.sql, overrides, validator)
         if level is not None or not ok:
@@ -262,13 +296,16 @@ async def _one(app: BIApp, u: Untranslated, overrides: dict[int, str], gateway: 
             return o
         memory.forget(hit)  # disproved by this app's evidence: never reuse it
         o.attempts.append({"source": "memory", "sql": hit.sql, "problems": problems})
+    if gateway is None:  # AI off: only the memory answers
+        o.status = "no_model"
+        return o
     from adce_gateway.gateway import BudgetExceeded, GatewayRefusal, OutputInvalid, ProviderError, ReplayMiss
 
-    feedback: list[dict[str, Any]] = []
     for _attempt in range(max_attempts):
         inputs = {"statement": u.text, "why_rules_failed": u.reason, "input_relation": "src",
                   "input_columns": u.input_columns, "settings": settings,
                   "examples": [{"statement": e.statement, "input_columns": e.input_columns, "sql": e.sql}
+                               | ({"written_by": "reviewer"} if e.status == "reviewer" else {})
                                for e in memory.similar(u.text)],
                   "previous_attempts": feedback}
         kw: dict[str, Any] = {}
@@ -305,6 +342,12 @@ async def _one(app: BIApp, u: Untranslated, overrides: dict[int, str], gateway: 
             return o
         feedback.append({"sql": out.sql, "problems": problems})
     return o
+
+
+def _rejected_since(entry: MemoryEntry, rejection: dict[str, str] | None) -> bool:
+    """A reviewer rejected the table's SQL after this answer was learned (or its learning time is unknown)."""
+    return rejection is not None and entry.status != "reviewer" and \
+        (not entry.learned_at or entry.learned_at <= rejection.get("at", ""))
 
 
 def _settings(app: BIApp) -> dict[str, Any]:

@@ -30,7 +30,8 @@ async def test_tools_are_listed(server):
         names = {t.name for t in await c.list_tools()}
     assert names == {"register_entity", "propose_fact", "get_entity", "get_facts", "search_context",
                      "propose_facts", "register_entities",
-                     "get_context_pack", "find_similar_facts"}  # no decide: decisions come only from hitl-service
+                     "get_context_pack", "find_similar_facts", "get_feedback_history",
+                     "subscribe_events"}  # no decide: decisions come only from hitl-service
 
 
 async def test_register_propose_read_search(server):

@@ -61,6 +61,12 @@ class KGPort(Protocol):
     async def search(self, text: str, *, limit: int = 10) -> list[Fact]: ...
 
 
+class EventLog(Protocol):
+    """The outbox (ADR-6): every write's event, in order. Consumers keep their own position (seq)."""
+
+    async def events(self, after: int = 0, limit: int = 500) -> list[dict[str, Any]]: ...
+
+
 class MemoryKG:
     """Append-only fact log in memory, with the same policy rules as the knowledge service."""
 
@@ -68,9 +74,15 @@ class MemoryKG:
         self._log: list[Fact] = []
         self._by_id: dict[str, Fact] = {}
         self._entities: dict[str, Entity] = {}
+        self._outbox: list[dict[str, Any]] = []  # same events as the Postgres outbox: {seq, topic, payload}
+
+    def _emit(self, topic: str, payload: dict[str, Any]) -> None:
+        self._outbox.append({"seq": len(self._outbox) + 1, "topic": topic, "payload": payload})
 
     async def register_entity(self, entity: Entity) -> str:
-        self._entities.setdefault(entity.key, entity)
+        if entity.key not in self._entities:
+            self._entities[entity.key] = entity
+            self._emit("entity.registered", {"entity": entity.model_dump(mode="json")})
         return entity.key
 
     async def entity(self, key: str) -> Entity | None:
@@ -82,13 +94,17 @@ class MemoryKG:
             return fact.id
         self._log.append(fact)
         self._by_id[fact.id] = fact
+        self._emit("fact.proposed", {"fact": fact.model_dump(mode="json"), "fact_id": fact.id})
         return fact.id
 
     async def decide(self, fact_id: str, status: FactStatus, reviewer: str,
                      correction: dict[str, Any] | None = None) -> str:
         new = decision_fact(self._by_id[fact_id], status, reviewer, correction)
-        self._log.append(new)
-        self._by_id[new.id] = new
+        if new.id not in self._by_id:
+            self._log.append(new)
+            self._by_id[new.id] = new
+            self._emit("fact.confirmed" if status == FactStatus.CONFIRMED else f"fact.{status.value}",
+                       {"fact": new.model_dump(mode="json"), "fact_id": new.id})
         return new.id
 
     async def facts(self, *, kind: str | None = None, subject: str | None = None,
@@ -103,6 +119,9 @@ class MemoryKG:
         t = text.lower()
         hits = [f for f in await self.facts() if t in f.text.lower()]
         return hits[:limit]
+
+    async def events(self, after: int = 0, limit: int = 500) -> list[dict[str, Any]]:
+        return self._outbox[after:after + limit]
 
     @property
     def log(self) -> list[Fact]:

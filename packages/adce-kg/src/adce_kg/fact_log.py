@@ -116,6 +116,12 @@ class PostgresFactLog:
             with self.pool.connection() as con:
                 con.execute("UPDATE outbox SET projected_at = now() WHERE seq = ANY(%s)", (seqs,))
 
+    def events_after(self, after: int, limit: int = 500) -> list[dict[str, Any]]:
+        """Events after a consumer's position, in order (consumers other than the graph projection)."""
+        with self.pool.connection() as con:
+            return con.execute("SELECT seq, topic, payload FROM outbox WHERE seq > %s ORDER BY seq LIMIT %s",
+                               (after, limit)).fetchall()
+
     def all_events(self) -> list[dict[str, Any]]:
         """Every event in order, for rebuilding the projection from scratch."""
         with self.pool.connection() as con:

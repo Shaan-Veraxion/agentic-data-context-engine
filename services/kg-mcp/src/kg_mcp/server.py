@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
+from adce_core import feedback
 from adce_core.facts import Entity, Evidence, Fact, Trust
 from adce_core.ports import KGPort, PolicyError
 from fastmcp import Context, FastMCP
@@ -148,6 +149,24 @@ def create_server(kg_factory: Callable[[], Awaitable[KGPort]]) -> FastMCP:
         ent = await kg.entity(key)
         return {"entity": ent.model_dump() if ent else None,
                 "facts": [_fact_out(f) for f in await kg.facts(subject=key)], "neighbourhood": []}
+
+    @mcp.tool
+    async def get_feedback_history(ctx: Context, text: str | None = None, kinds: list[str] | None = None,
+                                   app_id: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
+        """What reviewers decided before: each (proposal, decision, edit, reason), most similar to `text` first.
+        kinds: report_sql (SQL approved/rejected), translation_override (SQL a reviewer wrote for a statement),
+        bi_gap_accepted, variable_value, resolves_to, bi_issue_acknowledged. app_id limits to one application."""
+        return await feedback.feedback_history(kg_of(ctx), kinds=kinds, app_id=app_id, text=text, limit=limit)
+
+    @mcp.tool
+    async def subscribe_events(ctx: Context, after: int = 0, limit: int = 500,
+                               topics: list[str] | None = None) -> dict[str, Any]:
+        """Knowledge events after position `after` (fact.proposed, fact.confirmed, fact.rejected,
+        entity.registered), in order, for the orchestrator. Poll with the returned `last`."""
+        log = getattr(kg_of(ctx), "events", None)
+        rows = await log(after, limit) if log is not None else []
+        last = rows[-1]["seq"] if rows else after
+        return {"events": [r for r in rows if not topics or r["topic"] in topics], "last": last}
 
     return mcp
 

@@ -85,6 +85,10 @@ class KnowledgeService:
         return {"entity": ent.model_dump() if ent else None, "facts": [f.model_dump(mode="json") for f in own],
                 "neighbourhood": neigh}
 
+    async def events(self, after: int = 0, limit: int = 500) -> list[dict[str, Any]]:
+        """The outbox after `after` (ADR-6): what the orchestrator's event consumer reads."""
+        return await asyncio.to_thread(self.log.events_after, after, limit)
+
     # ------------------------------------------------------------------ projection
     async def _after_write(self) -> None:
         if self.project_inline and self.graph is not None:

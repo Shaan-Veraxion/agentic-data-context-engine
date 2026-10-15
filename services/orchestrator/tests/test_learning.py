@@ -10,6 +10,7 @@ from adce_core.artifacts import LocalArtifactStore
 from adce_core.ports import MemoryKG
 from adce_gateway.config import load_config
 from adce_gateway.gateway import ModelGateway, Recordings
+from orchestrator.events import affected
 from orchestrator.learning import memory_report, rerun_all, uploads_by_app
 from orchestrator.pipeline import Deps, run_pipeline
 from pyqvd import QvdTable
@@ -64,6 +65,10 @@ async def test_a_learned_correction_is_proven_then_disproved_by_new_data(tmp_pat
     assert third.get("levels") == {"Products": "V4"}  # the rules are right here; the learned correction is not used
     [row] = await memory_report(kg)
     assert row["state"] == "disproved" and row["failed_on"] == ["integer_prices"]
+    # as an event: the applications that relied on the answer run again, and stop using it
+    assert await affected(kg, await kg.events()) == {
+        "rulefix_local": ["a learned answer it used was disproved"],
+        "rulefix_copy": ["a learned answer it used was disproved"]}
 
     # the scheduled re-run finds every app from its uploads; the disproved correction is no longer applied
     assert set(await uploads_by_app(kg)) == {"rulefix_local", "rulefix_copy", "integer_prices"}
