@@ -473,6 +473,8 @@ async def repair_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory, va
         outcomes.append(o)
         if on_outcome:
             on_outcome(o)
+        if o.status == "skipped":  # the provider is not answering: leave the other tables for the next run
+            break
     return overrides, outcomes
 
 

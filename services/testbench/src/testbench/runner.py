@@ -127,9 +127,13 @@ GATEWAYS = ROOT / "deploy" / "gateway"
 def gateway_choices() -> list[dict[str, Any]]:
     """The gateway configs a live run can use (deploy/gateway/*.toml): the model of each tier, and for configs that
     call a local endpoint (the Claude Code bridge) whether it answers."""
+    import os
     import tomllib
     import urllib.request
 
+    from adce_reversesql.cli import _env_file
+
+    _env_file(str(ROOT / "deploy" / "compose" / ".env"))  # keys the configs name (never returned)
     out = []
     for p in sorted(GATEWAYS.glob("*.toml")):
         try:
@@ -140,7 +144,11 @@ def gateway_choices() -> list[dict[str, Any]]:
                  if str(v.get("base_url", "")).startswith(("http://127.0.0.1", "http://localhost"))]
         row: dict[str, Any] = {"name": p.stem, "model": cfg.get("models", {}).get("standard", ""),
                                "local_url": local[0] if local else None, "running": None,
-                               "bridge": bool(local) and ":8790" in local[0]}  # the Claude Code bridge's port
+                               "bridge": bool(local) and ":8790" in local[0],  # the Claude Code bridge's port
+                               # environment variables the config needs that are not set (keys, project ids)
+                               "missing": sorted({v[k] for v in cfg.get("providers", {}).values()
+                                                  for k in ("api_key_env", "project_env", "base_url_env")
+                                                  if v.get(k) and not os.environ.get(v[k])})}
         if local:
             try:
                 with urllib.request.urlopen(local[0].removesuffix("/v1") + "/health", timeout=1) as r:

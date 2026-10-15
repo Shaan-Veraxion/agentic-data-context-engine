@@ -203,10 +203,13 @@ async function openCase(id, variant) {
 // live runs: which gateway config (deploy/gateway/*.toml) answers; Claude configs go through the local bridge
 function modelPicker(id, value) {
   const gs = S.meta.gateways || [];
-  return `<label title="Live runs only: the model gateway config. Claude configs use the Claude Code bridge on this machine">Model<select id="${id}"><option value="">from .env</option>${gs.map(g => `<option value="${esc(g.name)}" ${g.name === value ? "selected" : ""}>${esc(g.name)} · ${esc(g.model)}</option>`).join("")}</select></label><span id="${id}-status" class="muted"></span>`;
+  const usable = g => !(g.missing || []).length;
+  if (!gs.some(g => g.name === value && usable(g))) value = (gs.find(g => g.name === "claude-code") || {}).name || "";
+  return `<label title="Live runs only: the model gateway config. claude-code / claude-code-sonnet use your Claude Code login through the local bridge">Model<select id="${id}"><option value="">from .env</option>${gs.map(g => `<option value="${esc(g.name)}" ${g.name === value ? "selected" : ""} ${usable(g) ? "" : "disabled"}>${esc(g.name)} · ${esc(g.model)}${usable(g) ? "" : " (needs " + esc(g.missing.join(", ")) + ")"}</option>`).join("")}</select></label><span id="${id}-status" class="muted"></span>`;
 }
 function wireModel(id, obj, aiOf) {
   const el = $("#" + id), st = $("#" + id + "-status");
+  obj.model = el.value;
   const show = () => {
     const live = aiOf() === "live";
     el.disabled = !live;
