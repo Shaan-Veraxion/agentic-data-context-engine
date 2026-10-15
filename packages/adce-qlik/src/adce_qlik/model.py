@@ -179,7 +179,7 @@ class _Builder:
             tree = sqlglot.parse_one(sql, read=dialect)
             src.tables = list(dict.fromkeys(_table_path(t) for t in tree.find_all(exp.Table)))
             if isinstance(tree, exp.Select):
-                cols = [e.alias_or_name for e in tree.expressions]
+                cols = [_output_name(e, dialect) for e in tree.expressions]
                 src.columns = [] if any(isinstance(e, exp.Star) or c == "*" for e, c in zip(tree.expressions, cols,
                                                                                              strict=True)) else cols
         except ParseError as e:
@@ -423,6 +423,25 @@ def _crosstable_fields(fields: list[str], args: list[str]) -> list[str]:
 
 def _union(a: list[str], b: list[str]) -> list[str]:
     return a + [x for x in b if x not in a]
+
+
+# databases that fold unquoted identifiers: Qlik receives the column names as the database reports them
+_FOLD_UPPER = {"oracle", "snowflake", "db2", "exasol"}
+_FOLD_LOWER = {"postgres", "redshift"}
+
+
+def _output_name(e: exp.Expr, dialect: str | None) -> str:
+    """The name a SELECT expression's column gets in the result set: an unquoted alias or column name is folded
+    the way the database folds identifiers (Oracle: upper case), a quoted one is kept."""
+    name = e.alias_or_name
+    ident = e.args.get("alias") if isinstance(e, exp.Alias) else e.this if isinstance(e, exp.Column) else None
+    if not isinstance(ident, exp.Identifier) or ident.quoted:
+        return name
+    if dialect in _FOLD_UPPER:
+        return name.upper()
+    if dialect in _FOLD_LOWER:
+        return name.lower()
+    return name
 
 
 def build_app(doc: ScriptDocument, *, sql_dialect: str | None = None,

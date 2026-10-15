@@ -563,3 +563,85 @@ def memory_stats(checks: list[Any]) -> dict[str, dict[str, Any]]:
         st["checks"] += 1
         (st["passed_apps"] if v.get("passed") else st["failed_apps"]).add(v.get("app_id"))
     return out
+
+
+def gap_subjects(app: BIApp, t: Translation, outcomes: list[Outcome]) -> list[dict[str, Any]]:
+    """What stays for a person after rules and model: loops modelled once (loop_not_unrolled), and root statements
+    left untranslated at T3 or that the model declined or failed. Statements inside a loop's block (from its head
+    to the next loop head, at most LOOP_LINES lines) are explained with the loop."""
+    by_stmt = {o.statement: o for o in outcomes}
+    loops, singles = [], []
+    for i in app.issues:
+        if i.code == "loop_not_unrolled" and i.span is not None:
+            loops.append({"kind": "loop", "file": i.span.file, "line": i.span.start_line, "statement": i.statement,
+                          "reason": i.message, "statements": [], "table": None})
+    loops.sort(key=lambda x: (x["file"], x["line"]))
+    for r in t.tables.values():
+        for u in r.untranslated:
+            if CASCADE.search(u.reason):
+                continue
+            o = by_stmt.get(u.statement)
+            if u.tier != "T3" and not (o and o.status in ("declined", "failed")):
+                continue
+            file, _, lines = u.span.rpartition(":")
+            start = int(lines.split("-")[0]) if lines.split("-")[0].isdigit() else 0
+            item = {"statement": u.statement, "table": u.table, "reason": u.reason, "text": u.text[:2000],
+                    "model_notes": o.notes if o else ""}
+            home = None
+            for k, lp in enumerate(loops):
+                end = loops[k + 1]["line"] if k + 1 < len(loops) and loops[k + 1]["file"] == lp["file"] else 10**9
+                if lp["file"] == file and lp["line"] <= start < min(end, lp["line"] + LOOP_LINES):
+                    home = lp
+            if home is not None:
+                home["statements"].append(item)
+            else:
+                singles.append({"kind": "statement", "file": file, "line": start, **item, "statements": [item]})
+    return loops + singles
+
+
+LOOP_LINES = 80
+
+
+def _block(scripts: dict[str, str], file: str, line: int, until: int | None) -> str:
+    lines = scripts.get(file, "").splitlines()
+    end = min(len(lines), (until - 1) if until else line + LOOP_LINES, line + LOOP_LINES)
+    text = "\n".join(f"{n}: {lines[n - 1]}" for n in range(max(1, line - 3), end + 1) if n - 1 < len(lines))
+    return text[:6000]
+
+
+async def explain_gaps(app: BIApp, t: Translation, gateway: Any, scripts: dict[str, str],
+                       outcomes: list[Outcome], *, task: str = "explain_gap",
+                       answers: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """The explain_gap route for each gap_subjects item: what the block does, how to do it in Dremio, the questions
+    for the data owner and a SQL template. Script text and variable values only, never rows. `answers`: the data
+    owner's answers to earlier questions, by gap (file:line), so the next analysis can be concrete."""
+    from adce_gateway.gateway import BudgetExceeded, GatewayRefusal, OutputInvalid, ProviderError, ReplayMiss
+
+    from .runtime import GapAnalysis
+
+    subjects = gap_subjects(app, t, outcomes)
+    heads = sorted((s["file"], s["line"]) for s in subjects)
+    out = []
+    for s in subjects:
+        nxt = next((ln for f, ln in heads if f == s["file"] and ln > s["line"]), None)
+        block = _block(scripts, s["file"], s["line"], nxt)
+        names = sorted(set(re.findall(r"\$\((\w[\w.]*)\)", block)) | set(re.findall(r"(?i)\blet\s+(\w+)", block)))
+        variables = {n: (app.variables[n].value if n in app.variables else None) for n in names[:30]}
+        inputs = {"script_block": block, "pattern_hint": s["reason"],
+                  "statements": [{k: v for k, v in x.items() if k != "text"} for x in s["statements"]],
+                  "variables": variables,
+                  "tables_in_script": sorted(app.tables)[:60]}
+        given = (answers or {}).get(f"{s['file']}:{s['line']}")
+        if given:  # only when the owner answered, so earlier prompts stay the same
+            inputs["owner_answers"] = given
+        try:
+            res = await gateway.call("explain_gap", inputs, GapAnalysis, task=task)
+        except (OutputInvalid, ReplayMiss, GatewayRefusal, ProviderError, BudgetExceeded) as e:
+            out.append({"kind": s["kind"], "span": f"{s['file']}:{s['line']}", "error": f"{type(e).__name__}: {e}"})
+            continue
+        a = res.output
+        assert isinstance(a, GapAnalysis)
+        out.append({"kind": s["kind"], "span": f"{s['file']}:{s['line']}", "statement": s["statement"],
+                    "tables": sorted({x["table"] for x in s["statements"] if x.get("table")}),
+                    "reason": s["reason"], **a.model_dump(), "model": getattr(res, "model", "")})
+    return out

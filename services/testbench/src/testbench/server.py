@@ -92,14 +92,14 @@ def start_bridge() -> dict[str, Any]:
     global _bridge
     if not BRIDGE.is_file():
         raise HTTPException(404, "the Claude Code bridge is not in this checkout (tools/claude-code-bridge)")
-    if any(g["running"] for g in gateway_choices() if g["local_url"]):
+    if any(g["running"] for g in gateway_choices() if g["bridge"]):
         return {"started": False, "running": True}
     if _bridge is None or _bridge.poll() is not None:
         _bridge = subprocess.Popen([sys.executable, str(BRIDGE), "--port", "8790"], cwd=ROOT,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(30):
         time.sleep(0.5)
-        if any(g["running"] for g in gateway_choices() if g["local_url"]):
+        if any(g["running"] for g in gateway_choices() if g["bridge"]):
             return {"started": True, "running": True}
     return {"started": True, "running": False}
 

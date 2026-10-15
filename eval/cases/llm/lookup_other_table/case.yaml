@@ -1,0 +1,38 @@
+id: llm/lookup_other_table
+title: Lookup() reads a field of another table loaded earlier
+covers:
+- llm
+- lookup
+- script_context
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+levels:
+  Orders: V4
+expect: {}
+oracle_note: Lookup gives the first match in load order; no match gives NULL (order 12)
+when:
+- if:
+    ai: 'off'
+  levels:
+    Orders: V0
+  expect:
+    check:
+      failing:
+        Orders:
+        - translated
+        - composed
+    rows: false

@@ -10,6 +10,7 @@ after its saved position, works out which applications each event affects, and r
 | fact.confirmed translation_override     | that application, and every other one with the same statement   |
 |                                         | still untranslated (the reviewer's SQL is reused there)          |
 | fact.confirmed variable_value           | that application (the variable's value changes the script)       |
+| fact.confirmed gap_answer               | that application (the gap is analysed again with the answers)    |
 | fact.confirmed resolves_to              | every application reading that source                            |
 | fact.rejected report_sql                | that application (the model is asked again, with the reason)     |
 | fact.proposed translation_memory        | the applications that relied on the answer (learned or passed    |
@@ -105,6 +106,8 @@ async def affected(kg: KGPort, events: list[dict[str, Any]]) -> dict[str, list[s
                     add(other, "reviewer SQL for the same statement")
         elif topic == "fact.confirmed" and kind == "variable_value":
             add(_app(subject), "variable value")
+        elif topic == "fact.confirmed" and kind == "gap_answer":
+            add(_app(subject), "owner answered questions about a gap")
         elif topic == "fact.confirmed" and kind == "resolves_to":
             for f in await kg.facts(kind="reads_source"):
                 if f.object == subject:

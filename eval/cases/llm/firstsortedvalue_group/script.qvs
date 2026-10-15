@@ -1,0 +1,9 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+Firsts:
+LOAD Cust, FirstSortedValue(Prod, Day) AS FirstProd,
+     FirstSortedValue(Prod, -Day) AS LastProd, Count(Prod) AS Buys
+GROUP BY Cust;
+SQL SELECT Cust, Prod, Day FROM "shop"."raw"."buys";
+
+STORE Firsts INTO [lib://QVD/Firsts.qvd] (qvd);

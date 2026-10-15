@@ -1,0 +1,41 @@
+id: llm/running_total_by_group
+title: 'Running total per customer: Previous, Peek and RangeSum over ORDER BY'
+covers:
+- llm
+- previous
+- peek
+- rangesum
+- order_by
+- resident
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+levels:
+  Run: V4
+expect: {}
+oracle_note: the total restarts at each customer; Peek('RunAmt') is the previous output row's total
+when:
+- if:
+    ai: 'off'
+  levels:
+    Run: V0
+  expect:
+    check:
+      failing:
+        Run:
+        - translated
+        - composed
+    rows: false

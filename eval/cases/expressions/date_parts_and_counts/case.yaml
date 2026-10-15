@@ -1,0 +1,31 @@
+id: expressions/date_parts_and_counts
+title: SubStringCount, MakeDate, AddMonths (month end), Week (ISO)
+covers:
+- substringcount
+- makedate
+- addmonths
+- week
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+  - no_qvd
+  - no_log
+  - script_only
+levels:
+  Parts: V4
+expect: {}
+oracle_note: AddMonths keeps the day, or the month's last day (31 Jan + 1 = 29 Feb 2024); Week is the ISO week with Qlik's
+  default settings (30 Dec 2024 is week 1)

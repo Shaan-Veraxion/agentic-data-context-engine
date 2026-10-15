@@ -1,0 +1,13 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+Sales:
+LOAD Cust, Day, Amt;
+SQL SELECT Cust, Day, Amt FROM "shop"."raw"."sales";
+
+Run:
+NOCONCATENATE LOAD Cust, Day, Amt,
+     If(Cust = Previous(Cust), RangeSum(Peek('RunAmt'), Amt), Amt) AS RunAmt
+RESIDENT Sales ORDER BY Cust, Day;
+
+DROP TABLE Sales;
+STORE Run INTO [lib://QVD/Run.qvd] (qvd);

@@ -11,7 +11,7 @@ import re
 from sqlglot import exp
 from sqlglot.expressions.core import Expr as SqlExpr
 
-DREMIO_FUNCS = {"TO_DATE", "TO_TIMESTAMP", "TO_CHAR", "TIMESTAMPDIFF", "TO_HEX"}
+DREMIO_FUNCS = {"TO_DATE", "TO_TIMESTAMP", "TO_CHAR", "TIMESTAMPDIFF", "TIMESTAMPADD", "TO_HEX"}
 
 # Qlik tokens, longest first. "mm" is minutes only after an hour token, otherwise months (as Qlik reads it).
 _QLIK = [("YYYY", "YYYY"), ("yyyy", "YYYY"), ("YY", "YY"), ("yy", "YY"), ("MMMM", "MONTH"), ("MMM", "MON"),
@@ -85,6 +85,10 @@ def to_duckdb(node: SqlExpr) -> SqlExpr:
     args = node.expressions
     if str(node.this).upper() == "TIMESTAMPDIFF" and len(args) == 3:
         return exp.Anonymous(this="DATE_DIFF", expressions=[exp.Literal.string(args[0].name.lower()), args[1], args[2]])
+    if str(node.this).upper() == "TIMESTAMPADD" and len(args) == 3:  # (unit, n, date): DuckDB adds an interval
+        unit = args[0].name.lower()
+        months = exp.Anonymous(this=f"TO_{unit.upper()}S", expressions=[args[1]])
+        return exp.Cast(this=exp.Add(this=args[2], expression=months), to=exp.DataType.build("DATE"))
     if str(node.this).upper() == "TO_HEX":
         return exp.Anonymous(this="HEX", expressions=list(args))
     if len(args) != 2 or not isinstance(args[1], exp.Literal):

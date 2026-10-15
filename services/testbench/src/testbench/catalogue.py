@@ -224,6 +224,37 @@ def specs() -> list[Spec]:
         fetched=[3],
         oracle_note="Date# reads the number's text 20240115 with the format; Text() keeps only the formatted text"))
 
+    import calendar
+    import datetime as dt
+
+    def add_months(d: dt.date, n: int) -> dt.date:  # Qlik AddMonths mode 0: the month's last day when shorter
+        y, m = divmod(d.month - 1 + n, 12)
+        y, m = d.year + y, m + 1
+        return dt.date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
+
+    parts = [(1, "2024-01-31", "a/b/c", 2024, 2, 9), (2, "2025-03-15", "root", 2025, 12, 31),
+             (3, "2024-12-30", "x//y", 2023, 1, 1)]
+    iso = "YYYY-MM-DD"
+    out.append(Spec(
+        "expressions/date_parts_and_counts", "SubStringCount, MakeDate, AddMonths (month end), Week (ISO)",
+        ["substringcount", "makedate", "addmonths", "week"],
+        HEAD + "Parts:\nLOAD Id, SubStringCount(Path, '/') AS Depth,\n"
+        f"     Text(Date(MakeDate(Y, M, Dd), '{iso}')) AS Made,\n"
+        f"     Text(Date(AddMonths(Date#(Day, '{iso}'), 1), '{iso}')) AS NextMonth,\n"
+        f"     Text(Date(AddMonths(Date#(Day, '{iso}'), -1), '{iso}')) AS PrevMonth,\n"
+        f"     Week(Date#(Day, '{iso}')) AS Wk;\n"
+        'SQL SELECT Id, Day, Path, Y, M, Dd FROM "shop"."raw"."parts";\n\n' + _store("Parts"),
+        sources={"shop/raw/parts": Table(["Id", "Day", "Path", "Y", "M", "Dd"], parts)},
+        outputs={"Parts": Table(["Id", "Depth", "Made", "NextMonth", "PrevMonth", "Wk"], [
+            (i, path.count("/"), dt.date(y, m, dd).isoformat(),
+             add_months(dt.date.fromisoformat(day), 1).isoformat(),
+             add_months(dt.date.fromisoformat(day), -1).isoformat(),
+             dt.date.fromisoformat(day).isocalendar()[1])
+            for i, day, path, y, m, dd in parts])},
+        fetched=[3],
+        oracle_note="AddMonths keeps the day, or the month's last day (31 Jan + 1 = 29 Feb 2024); Week is the ISO "
+                    "week with Qlik's default settings (30 Dec 2024 is week 1)"))
+
     # ---------------------------------------------------------------- resident, aggregation, distinct
     totals: dict[str, list[Any]] = {}
     for _, c, q, p in ORDERS.rows:
@@ -534,6 +565,55 @@ def llm_specs() -> list[Spec]:
         outputs={"D": Table(["Id", "Mo", "Yr"],
                             [(i, names.index(d.split()[1]) + 1, int(d.split()[2])) for i, d in days])},
         fetched=[3], variants=off))
+    sales = [("bolt", 3, 5), ("acme", 2, 10), ("acme", 1, 7), ("bolt", 1, 4), ("acme", 3, 1), ("zed", 1, 9)]
+    run_rows, prev, acc = [], None, 0
+    for c, d, a in sorted(sales):
+        acc = acc + a if c == prev else a
+        run_rows.append((c, d, a, acc))
+        prev = c
+    out.append(Spec(
+        "llm/running_total_by_group", "Running total per customer: Previous, Peek and RangeSum over ORDER BY",
+        ["llm", "previous", "peek", "rangesum", "order_by", "resident"],
+        HEAD + "Sales:\nLOAD Cust, Day, Amt;\n" + 'SQL SELECT Cust, Day, Amt FROM "shop"."raw"."sales";\n\n'
+        "Run:\nNOCONCATENATE LOAD Cust, Day, Amt,\n"
+        "     If(Cust = Previous(Cust), RangeSum(Peek('RunAmt'), Amt), Amt) AS RunAmt\n"
+        "RESIDENT Sales ORDER BY Cust, Day;\n\nDROP TABLE Sales;\n" + _store("Run"),
+        sources={"shop/raw/sales": Table(["Cust", "Day", "Amt"], sales)},
+        outputs={"Run": Table(["Cust", "Day", "Amt", "RunAmt"], run_rows)},
+        fetched=[6, 6], variants=off,
+        oracle_note="the total restarts at each customer; Peek('RunAmt') is the previous output row's total"))
+
+    buys = [("acme", "nut", 3), ("acme", "bolt", 9), ("acme", "gear", 5), ("bolt", "cog", 2), ("zed", "pin", 4),
+            ("zed", "nut", 1)]
+    by_cust: dict[str, list[tuple[str, int]]] = {}
+    for c, p, d in buys:
+        by_cust.setdefault(c, []).append((p, d))
+    out.append(Spec(
+        "llm/firstsortedvalue_group", "FirstSortedValue per group: the first and the latest product per customer",
+        ["llm", "firstsortedvalue", "group_by"],
+        HEAD + "Firsts:\nLOAD Cust, FirstSortedValue(Prod, Day) AS FirstProd,\n"
+        "     FirstSortedValue(Prod, -Day) AS LastProd, Count(Prod) AS Buys\nGROUP BY Cust;\n"
+        'SQL SELECT Cust, Prod, Day FROM "shop"."raw"."buys";\n\n' + _store("Firsts"),
+        sources={"shop/raw/buys": Table(["Cust", "Prod", "Day"], buys)},
+        outputs={"Firsts": Table(["Cust", "FirstProd", "LastProd", "Buys"],
+                                 [(c, min(v, key=lambda x: x[1])[0], max(v, key=lambda x: x[1])[0], len(v))
+                                  for c, v in sorted(by_cust.items())])},
+        fetched=[6], variants=off,
+        oracle_note="sort weight -Day takes the highest Day; no ties in this data (a tie gives NULL in Qlik)"))
+
+    custs = [(1, "Alice"), (2, "Bob")]
+    orders = [(10, 1), (11, 2), (12, 3), (13, 1)]
+    names_by_id = dict(custs)
+    out.append(Spec(
+        "llm/lookup_other_table", "Lookup() reads a field of another table loaded earlier",
+        ["llm", "lookup", "script_context"],
+        "Cust:\nLOAD * INLINE [\nCId, CName\n1, Alice\n2, Bob\n];\n\n" + HEAD +
+        "Orders:\nLOAD OrderId, CustId, Lookup('CName', 'CId', CustId, 'Cust') AS Name;\n"
+        'SQL SELECT OrderId, CustId FROM "shop"."raw"."orders";\n\n' + _store("Orders"),
+        sources={"shop/raw/orders": Table(["OrderId", "CustId"], orders)},
+        outputs={"Orders": Table(["OrderId", "CustId", "Name"], [(o, c, names_by_id.get(c)) for o, c in orders])},
+        fetched=[2, 4], variants=off,
+        oracle_note="Lookup gives the first match in load order; no match gives NULL (order 12)"))
     for sp in yield_specs:  # with AI off the rules leave the table untranslated: nothing to run or compare
         table = next(iter(sp.outputs))
         sp.when = [{"if": {"ai": "off"}, "levels": {table: "V0"},

@@ -1,0 +1,11 @@
+LIB CONNECT TO 'Dremio_Shop';
+
+Parts:
+LOAD Id, SubStringCount(Path, '/') AS Depth,
+     Text(Date(MakeDate(Y, M, Dd), 'YYYY-MM-DD')) AS Made,
+     Text(Date(AddMonths(Date#(Day, 'YYYY-MM-DD'), 1), 'YYYY-MM-DD')) AS NextMonth,
+     Text(Date(AddMonths(Date#(Day, 'YYYY-MM-DD'), -1), 'YYYY-MM-DD')) AS PrevMonth,
+     Week(Date#(Day, 'YYYY-MM-DD')) AS Wk;
+SQL SELECT Id, Day, Path, Y, M, Dd FROM "shop"."raw"."parts";
+
+STORE Parts INTO [lib://QVD/Parts.qvd] (qvd);

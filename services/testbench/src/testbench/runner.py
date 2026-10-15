@@ -139,7 +139,8 @@ def gateway_choices() -> list[dict[str, Any]]:
         local = [v["base_url"] for v in cfg.get("providers", {}).values()
                  if str(v.get("base_url", "")).startswith(("http://127.0.0.1", "http://localhost"))]
         row: dict[str, Any] = {"name": p.stem, "model": cfg.get("models", {}).get("standard", ""),
-                               "local_url": local[0] if local else None, "running": None}
+                               "local_url": local[0] if local else None, "running": None,
+                               "bridge": bool(local) and ":8790" in local[0]}  # the Claude Code bridge's port
         if local:
             try:
                 with urllib.request.urlopen(local[0].removesuffix("/v1") + "/health", timeout=1) as r:

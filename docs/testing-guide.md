@@ -43,7 +43,16 @@ Options on the Run tab:
 - **Data**: what was uploaded. `full` (everything), `no_qvd`, `no_log`, `script_only` (script and source data),
   `script_bare` (script only). The highest level a case can prove drops with less data; the bench adjusts the
   expected levels for you.
+- **Model** (live only): which gateway config answers, any file in `deploy/gateway/`: `groq-free`, `claude-code`
+  (Claude Haiku), `claude-code-sonnet` (Claude Sonnet), `vertex-claude`, `anthropic-api`, ... "from .env" uses
+  `ADCE_GATEWAY_CONFIG`. The Claude Code configs go through the local bridge: the bench shows whether it is
+  running and has a **Start bridge** button (when the bridge is in your checkout, see section 6).
 - **LLM tools**: lets the model call tools (check its SQL, read other statements, kg-mcp lookups) before it answers.
+
+After a run, the result tabs are: Checks, Agents (each agent's metrics, outputs and facts), Rows (actual vs
+expected), SQL, Model calls (every prompt input, turn, tool call, answer and token count) and, when something is
+left for a person, **Gaps for a person**: what each untranslated block does, how to do it in Dremio, the questions
+for the data owner and a SQL template with placeholders.
 
 ## 3. Agents from the command line
 
@@ -118,7 +127,16 @@ data get a diagnosis (agent 26's step). Every answer is checked and validated on
 uv run adce-bench run llm/ --ai replay -v               # recorded answers: no key needed
 uv run adce-bench run llm/ --ai live -v                 # the configured provider
 uv run adce-bench run llm/ --ai live --tools -v         # the model may call tools first
+uv run adce-bench run llm/ --ai live --model claude-code -v   # a specific gateway config from deploy/gateway
 ```
+
+What the model gets for a statement: its text, why the rules failed, the input columns, the script's settings,
+similar accepted examples (from validation or reviewers), and the other tables the statement names (mapping
+tables and earlier tables, with their rows when they are INLINE in the script). It may read those tables by name.
+
+What stays for a person (file loops, reload-time metadata, statements the model declined) goes to the
+`explain_gap` route: the review queue gets an Ask item with the model's questions; your answers go back into the
+next analysis, which then proposes concrete SQL.
 
 On the Run tab, open a model call to see the prompt inputs (statement, input columns: never rows), each turn, the
 tools it called, its answer, the checks it faced and the tokens used.
@@ -141,8 +159,8 @@ provider could not answer (quota) are marked invalid and not counted as wrong.
 ```
 git switch local/claude-code-bridge
 uv run python tools/claude-code-bridge/bridge.py --port 8790             # keep this running
-ADCE_GATEWAY_CONFIG=deploy/gateway/claude-code.toml uv run adce-bench eval --trials 2 --name claude-haiku
-ADCE_GATEWAY_CONFIG=deploy/gateway/claude-code-sonnet.toml uv run adce-bench eval --trials 2 --name claude-sonnet
+uv run adce-bench eval --trials 2 --model claude-code --name claude-haiku
+uv run adce-bench eval --trials 2 --model claude-code-sonnet --name claude-sonnet
 ```
 
 The same `ADCE_GATEWAY_CONFIG=...` works with `adce-bench run ... --ai live` and `adce-bench serve` (live mode on
@@ -179,12 +197,14 @@ curl -X POST -H 'content-type: application/json' -d '{"decision": "approve"}' \
 
 Review decisions: `approve` / `reject` (with `{"payload": {"reason": "..."}}`) for SQL; `provide_sql` (with
 `{"payload": {"sql": "SELECT ... FROM src"}}`) or `accept_gap` for untranslated statements; `answer` for
-variables; `map` (with `{"payload": {"dataset": "space.folder.table"}}`) for sources.
+variables; `map` (with `{"payload": {"dataset": "space.folder.table"}}`) for sources; `answer` (with
+`{"payload": {"answers": {"<question>": "<answer>", ...}}}`) or `accept_gap` for gaps.
 
 What happens after a decision (orchestrator.events):
 - reviewer SQL → that app re-runs, and so does every app with the same statement untranslated (they reuse it);
 - a rejection → the app re-runs, and the model is asked again with your reason;
-- a variable answer or a source mapping → the apps it affects re-run.
+- a variable answer or a source mapping → the apps it affects re-run;
+- answers to a gap's questions → the app re-runs and the gap is analysed again with them.
 
 Learning over time:
 

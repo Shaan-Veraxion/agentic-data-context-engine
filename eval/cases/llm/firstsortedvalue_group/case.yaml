@@ -1,0 +1,38 @@
+id: llm/firstsortedvalue_group
+title: 'FirstSortedValue per group: the first and the latest product per customer'
+covers:
+- llm
+- firstsortedvalue
+- group_by
+status: active
+oracle: hand
+generated: catalogue
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+- 20
+variants:
+  ai:
+  - 'off'
+  data:
+  - full
+levels:
+  Firsts: V4
+expect: {}
+oracle_note: sort weight -Day takes the highest Day; no ties in this data (a tie gives NULL in Qlik)
+when:
+- if:
+    ai: 'off'
+  levels:
+    Firsts: V0
+  expect:
+    check:
+      failing:
+        Firsts:
+        - translated
+        - composed
+    rows: false

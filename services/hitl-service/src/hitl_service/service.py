@@ -7,6 +7,9 @@ Decisions are written through KGPort, so they are append-only confirmed facts th
 - Queue untranslated         provide_sql / accept_gap -> translation_override (reviewer SQL) or bi_gap_accepted
 - Ask   unresolved_variable  answer                 -> variable_value (seed for the next run)
 - Seed  map_source           map                    -> resolves_to (logical source -> Dremio dataset, for phase PD)
+- Ask   gap                  answer / accept_gap    -> gap_answer (the owner's answers to the model's questions about a
+                                                        part of the script no rule or model could translate; the next
+                                                        run's analysis uses them) or bi_gap_accepted
 - Queue other issues         acknowledge            -> bi_issue_acknowledged
 """
 from __future__ import annotations
@@ -32,6 +35,7 @@ DECISIONS: dict[str, set[str]] = {
     "untranslated": {"provide_sql", "accept_gap"},
     "unresolved_variable": {"answer"},
     "map_source": {"map"},
+    "gap": {"answer", "accept_gap"},
 }
 LEVEL_UNCERTAINTY = {"none": 1.0, "V0": 0.9, "V1": 0.7, "V2": 0.5, "V3": 0.25, "V4": 0.1, "V5": 0.05}
 
@@ -191,6 +195,14 @@ class ReviewService:
                 fact_id=f.id, title=f"Approve SQL for {f.subject.split(':')[-1]} ({level}, {f.value.get('venue')})",
                 detail=f.value, options=sorted(DECISIONS["approve_sql"]), impact=4,
                 uncertainty=LEVEL_UNCERTAINTY.get(level, 0.5)))
+        for f in await self._facts_for_app(app_id, "gap_analysis"):
+            v = f.value
+            items.append(ReviewItem(
+                id=_id(app_id, "gap", f.subject, str(v.get("questions"))), app_id=app_id, mode="ask", kind="gap",
+                subject=f.subject, fact_id=f.id,
+                title=f"{v.get('pattern') or 'untranslated block'} ({v.get('span')}): {v.get('summary', '')[:120]}",
+                detail=v, options=sorted(DECISIONS["gap"]), impact=5,
+                uncertainty={"low": 1.0, "medium": 0.8, "high": 0.6}.get(v.get("confidence", ""), 0.8)))
         for src in await self._pending_sources(app_id):
             items.append(ReviewItem(
                 id=_id(app_id, "map", src), app_id=app_id, mode="seed", kind="map_source", subject=src,
@@ -266,6 +278,18 @@ class ReviewService:
                                               trust=Trust.INFERRED, agent="hitl-service",
                                               value={"value": str(payload["value"]), "origin": "reviewer"},
                                               evidence=ev), reviewer)
+        if item.kind == "gap" and decision == "answer":
+            answers = payload.get("answers")
+            if not answers:
+                raise DecisionError("answer needs `answers`: the answers to the questions (a list or a mapping)")
+            return await self._confirmed(Fact(kind="gap_answer", subject=item.subject, trust=Trust.INFERRED,
+                                              agent="hitl-service",
+                                              value={"questions": item.detail.get("questions", []),
+                                                     "answers": answers}, evidence=ev), reviewer)
+        if item.kind == "gap":
+            return await self._confirmed(Fact(kind="bi_gap_accepted", subject=item.subject, trust=Trust.INFERRED,
+                                              agent="hitl-service", value=dict(item.detail) | payload, evidence=ev),
+                                         reviewer)
         if item.kind == "map_source":
             dataset = (payload.get("dataset") or "").strip()
             if not dataset:

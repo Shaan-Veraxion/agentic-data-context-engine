@@ -212,7 +212,8 @@ function wireModel(id, obj, aiOf) {
     el.disabled = !live;
     const g = (S.meta.gateways || []).find(x => x.name === el.value);
     if (!live || !g || !g.local_url) { st.innerHTML = ""; return; }
-    st.innerHTML = g.running ? '<span class="badge pass">bridge running</span>'
+    st.innerHTML = !g.bridge ? (g.running ? '<span class="badge pass">local endpoint answering</span>' : `<span class="badge warn">nothing answers at ${esc(g.local_url)}</span>`)
+      : g.running ? '<span class="badge pass">bridge running</span>'
       : S.meta.bridge ? `<span class="badge warn">bridge not running</span> <button class="ghost" id="${id}-start">Start bridge</button>`
       : '<span class="badge warn">bridge not running and not in this checkout (branch local/claude-code-bridge)</span>';
     const b = $("#" + id + "-start");
@@ -336,6 +337,8 @@ function renderResult(r, el) {
   </div>`;
   const tabs = [["checks", `Checks (${r.checks.length})`], ["agents", `Agents (${r.steps.length})`], ["rows", `Rows (${Object.keys(r.rows).length})`], ["sql", "SQL"]];
   if (calls.length) tabs.push(["calls", `Model calls (${calls.length})`]);
+  const gaps = r.steps.flatMap(s => (s.facts || []).filter(f => f.kind === "gap_analysis").map(f => f.value));
+  if (gaps.length) tabs.push(["gaps", `Gaps for a person (${gaps.length})`]);
   let cur = load("rtab", "checks"); if (!tabs.find(t => t[0] === cur)) cur = "checks";
   const draw = () => {
     $("#rtabs", el).innerHTML = tabs.map(([k, l]) => `<button class="${k === cur ? "on" : ""}" data-k="${k}">${l}</button>`).join("");
@@ -345,6 +348,7 @@ function renderResult(r, el) {
     if (cur === "agents") v.innerHTML = r.steps.map(stepView).join("");
     if (cur === "rows") v.innerHTML = Object.entries(r.rows).map(([t, x]) => rowsView(t, x)).join("") || '<div class="muted">No table SQL was run (the chain needs agent 28, and data other than script_bare).</div>';
     if (cur === "sql") v.innerHTML = sqlView(r);
+    if (cur === "gaps") v.innerHTML = '<div class="muted" style="margin-bottom:8px">What no rule or model could translate, explained by the model (explain_gap) with the questions for the data owner. They appear in the review queue as Ask items.</div>' + gaps.map(g => `<details open><summary><b>${esc(g.pattern || g.kind)}</b><span class="muted">${esc(g.span)} · ${esc((g.tables || []).join(", "))}</span><span class="badge ${g.confidence === "high" ? "pass" : g.confidence === "low" ? "warn" : "info"}">confidence ${esc(g.confidence)}</span></summary><div class="body"><p>${esc(g.summary)}</p><h4>In Dremio</h4><p>${esc(g.dremio_approach)}</p>${(g.questions || []).length ? `<h4>Questions for the data owner</h4><ol>${g.questions.map(q => `<li>${esc(q)}</li>`).join("")}</ol>` : ""}${g.proposed_sql ? `<h4>Proposed SQL (placeholders in &lt;&gt;)</h4><pre class="wrap">${esc(g.proposed_sql)}</pre>` : ""}</div></details>`).join("");
     if (cur === "calls") v.innerHTML = calls.map((c, i) => `<details><summary><b>#${i + 1} ${esc(c.route)}</b>${c.error ? `<span class="badge fail">${esc(c.error)}</span>` : `<span class="badge info">${esc(c.source)}</span><span class="muted">${esc(c.model)} · ${c.turns || 1} turn(s) · ${c.input_tokens ?? "?"}→${c.output_tokens ?? "?"} tokens · ${c.latency_ms} ms</span>`}</summary><div class="body">${(c.tools || []).length ? `<h4>Tools the model called</h4>${table(["tool", "arguments", "result chars", "error"], c.tools.map(t => [t.tool, t.arguments, t.result_chars, t.error]))}` : ""}${c.output ? `<h4>Answer</h4><pre class="wrap">${esc(JSON.stringify(c.output, null, 2))}</pre>` : ""}</div></details>`).join("");
   };
   draw();

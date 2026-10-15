@@ -17,6 +17,7 @@ from adce_core.facts import Evidence, Fact, FactStatus, Trust
 from adce_reversesql.ai_loop import (
     MemoryEntry,
     TranslationMemory,
+    explain_gaps,
     memory_key,
     memory_stats,
     repair_with_ai,
@@ -31,8 +32,8 @@ from .bi_extractor import table_key
 class ScriptTranslator(BaseAgent):
     spec = AgentSpec(number=28, name="bi_script_translator", version="0.1.0", kind=AgentKind.HYBRID,
                      triggers=["bi_ir.ready"], emits=["bi_transform.ready"],
-                     writes=["bi_transform", "translation_memory", "memory_check"],
-                     routes=["translate_statement", "diagnose_mismatch"])
+                     writes=["bi_transform", "translation_memory", "memory_check", "gap_analysis"],
+                     routes=["translate_statement", "diagnose_mismatch", "explain_gap"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         result = AgentResult()
@@ -82,11 +83,31 @@ class ScriptTranslator(BaseAgent):
         await self._record_checks(ctx, result, memory)
         if overrides:
             t = compose(loaded.app, overrides)
+        analyses: list[dict[str, Any]] = []
+        if ctx.gateway is not None:
+            # what stays for a person: the model explains each gap and asks the data owner what it needs
+            scripts = {f["name"]: ctx.artifacts.get(f["key"]).decode("utf-8-sig")
+                       for f in job.get("files", []) if f["class"] == "script"}
+            answers = {f.subject: f.value for f in await ctx.kg.facts(kind="gap_answer")
+                       if f.trust == Trust.CONFIRMED and f.subject.startswith(f"app:{ctx.app_id}/")}
+            analyses = await explain_gaps(loaded.app, t, ctx.gateway, scripts, outcomes, task=f"{ctx.run_id}:gaps",
+                                      answers={k.removeprefix(f"app:{ctx.app_id}/gap:"): v
+                                               for k, v in answers.items()})
+            for g in analyses:
+                if "error" in g:
+                    continue
+                file, _, line = g["span"].rpartition(":")
+                await self.propose(ctx, Fact(
+                    kind="gap_analysis", subject=f"app:{ctx.app_id}/gap:{g['span']}", trust=Trust.INFERRED,
+                    confidence={"low": 0.3, "medium": 0.6, "high": 0.8}.get(g["confidence"], 0.5),
+                    value={k: v for k, v in g.items() if k != "model"},
+                    evidence=[Evidence(kind="script_span", ref=f"{ctx.app_id}/{file}:{line}")]), result)
         key = put_json(ctx.artifacts, content_key(f"apps/{ctx.app_id}/translation",
                                                   repr(sorted(overrides.items())).encode() + job["bi_ir_key"].encode(),
                                                   ".json"),
                        {"bi_ir_key": job["bi_ir_key"], "overrides": {str(k): v for k, v in overrides.items()},
-                        "ai_notes": {str(k): v for k, v in ai_notes.items()}, "ai_outcomes": ai_outcomes})
+                        "ai_notes": {str(k): v for k, v in ai_notes.items()}, "ai_outcomes": ai_outcomes,
+                        "gaps": analyses})
         result.artifacts.append(key)
         for name, r in t.tables.items():
             if r.mapping and not r.steps:
@@ -108,6 +129,7 @@ class ScriptTranslator(BaseAgent):
         failed = sum(len(r.untranslated) for r in t.tables.values())
         result.outputs.update({"translation_key": key})
         result.metrics.update({"steps": total, "untranslated": failed, "ai_overrides": len(overrides),
+                               "gap_analyses": sum("error" not in g for g in analyses),
                                "translated_ratio": round((total - failed) / total, 4) if total else 1.0})
         result.events.append("bi_transform.ready")
         return result

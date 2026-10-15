@@ -5,6 +5,7 @@ recomputes the same SQL deterministically.
 """
 from __future__ import annotations
 
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -12,7 +13,7 @@ from typing import Any
 
 from adce_core.artifacts import ArtifactStore, get_json
 from adce_core.bi_ir import BIApp
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from .compose import Translation, compose
 from .local import LocalVenue
@@ -33,6 +34,37 @@ class MismatchFix(BaseModel):
     sql: str
     cause: str
     explanation: str = ""
+
+
+_FIELD_TAGS = r"</?(summary|pattern|dremio_approach|questions|proposed_sql|confidence)>"
+
+
+class GapAnalysis(BaseModel):
+    """Structured output of the model-gateway route explain_gap: what a part of the script that stays
+    untranslated does, how to reproduce it in Dremio, and what a person must answer to finish it."""
+
+    summary: str
+    pattern: str = ""
+    dremio_approach: str
+    questions: list[str] = []
+    proposed_sql: str = ""
+    confidence: str = "medium"  # low | medium | high
+
+    @field_validator("summary", "pattern", "dremio_approach", "proposed_sql", mode="before")
+    @classmethod
+    def _clean(cls, v: Any) -> Any:  # some models wrap fields in stray whitespace or tags
+        return re.sub(_FIELD_TAGS, "", v).strip() if isinstance(v, str) else v
+
+    @field_validator("questions", mode="before")
+    @classmethod
+    def _clean_questions(cls, v: Any) -> Any:
+        return [re.sub(_FIELD_TAGS, "", str(q)).strip() for q in v if str(q).strip()] if isinstance(v, list) else v
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _level(cls, v: Any) -> str:
+        m = re.search(r"low|medium|high", str(v).lower())
+        return m.group(0) if m else "medium"
 
 
 @dataclass

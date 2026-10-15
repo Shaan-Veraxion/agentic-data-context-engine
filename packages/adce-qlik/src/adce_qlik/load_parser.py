@@ -126,7 +126,7 @@ class _Builder:
         if t == "inline":
             body, fmt = node.children[1], node.children[2]
             raw = unquote_name(str(body.children[0]))
-            rows = [[c.strip() for c in line.split(",")] for line in raw.strip().splitlines() if line.strip()]
+            rows = _inline_rows(raw)
             return LoadSource(kind="inline", ref=None, format=self._fmt(fmt),
                               columns=rows[0] if rows else [], inline_rows=rows[1:])
         if t == "autogenerate":
@@ -174,3 +174,21 @@ def parse_expression(text: str) -> Expr:
     except LarkError as e:
         raise LoadParseError(str(e).splitlines()[0]) from e
     return _Builder(t).expr(cast(Tree, tree).children[0])
+
+
+def _inline_rows(raw: str) -> list[list[str]]:
+    """INLINE data as Qlik reads it: comma-separated, cells may be quoted ("a, b" keeps its comma; the quotes, double
+    or single, and brackets around a header name are removed)."""
+    import csv
+
+    lines = [line for line in raw.strip().splitlines() if line.strip()]
+    out = []
+    for cells in csv.reader(lines, skipinitialspace=True):
+        row = []
+        for c in cells:
+            c = c.strip()
+            if len(c) >= 2 and (c[0], c[-1]) in (("'", "'"), ('"', '"'), ("[", "]")):
+                c = c[1:-1]
+            row.append(c)
+        out.append(row)
+    return out

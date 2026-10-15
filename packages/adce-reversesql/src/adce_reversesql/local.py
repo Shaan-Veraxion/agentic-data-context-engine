@@ -100,6 +100,13 @@ class LocalVenue:
             return exp.Table(this=exp.to_identifier(local), alias=node.args.get("alias"))
 
         out = tree.transform(rewrite)
+        # a replaced node's children are not visited in the same pass (e.g. TIMESTAMPADD inside TO_CHAR): repeat
+        # until nothing changes (every rewrite is idempotent)
+        for _ in range(5):
+            again = out.transform(rewrite)
+            if again == out:
+                break
+            out = again
         if missing:
             raise LookupError(f"no local data for: {', '.join(sorted(set(missing)))}")
         return out.sql(dialect="duckdb")

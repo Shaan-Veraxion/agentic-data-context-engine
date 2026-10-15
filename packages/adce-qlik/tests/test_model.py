@@ -86,3 +86,18 @@ def test_parse_error_keeps_table_and_lowers_coverage():
     app = build("T: LOAD a,, b RESIDENT X;\n")
     assert "T" in app.tables and app.tables["T"].steps[0].ops[0].parse_error
     assert app.coverage.other == 1 and "parse_error" in codes(app)
+
+
+def test_unquoted_sql_names_follow_the_database_case_rules():
+    # Oracle reports unquoted names in upper case: the script then reads ENTITY, not Entity
+    app = build_app(read_script("t", {"s.qvs": "LIB CONNECT TO 'ORA';\nT:\nLOAD *;\nSQL SELECT GC.CODE, "
+                                                "GC.DESCRIPTION as Entity, \"Mixed\" AS \"Keep\" FROM GC;\n"}),
+                    connection_dialects={"ORA": "oracle"})
+    [step] = app.tables["T"].steps
+    assert step.ops[-1].source.columns == ["CODE", "ENTITY", "Keep"]
+
+
+def test_inline_cells_may_be_quoted():
+    app = build_app(read_script("t", {"s.qvs": 'T:\nLOAD * INLINE [\n"Q 1 (L1)", Name\n0, "a, b"\n\'x\', y\n];\n'}))
+    src = app.tables["T"].steps[0].ops[-1].source
+    assert src.columns == ["Q 1 (L1)", "Name"] and src.inline_rows == [["0", "a, b"], ["x", "y"]]

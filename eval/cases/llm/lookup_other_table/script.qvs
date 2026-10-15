@@ -1,0 +1,14 @@
+Cust:
+LOAD * INLINE [
+CId, CName
+1, Alice
+2, Bob
+];
+
+LIB CONNECT TO 'Dremio_Shop';
+
+Orders:
+LOAD OrderId, CustId, Lookup('CName', 'CId', CustId, 'Cust') AS Name;
+SQL SELECT OrderId, CustId FROM "shop"."raw"."orders";
+
+STORE Orders INTO [lib://QVD/Orders.qvd] (qvd);

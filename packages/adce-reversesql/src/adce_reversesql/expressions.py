@@ -319,6 +319,31 @@ class Translator:
             sep = self._val(args[1]) if len(args) == 2 else exp.Literal.string("")
             # built through the Dremio parser so it renders as LISTAGG in Dremio and DuckDB
             return exp.func("LISTAGG", self._val(args[0]), sep, dialect="dremio")
+        if name == "substringcount" and len(args) == 2:
+            v, sub = self._val(args[0]), self._val(args[1])
+            gone = exp.Sub(this=exp.Length(this=v), expression=exp.Length(this=exp.func(
+                "REPLACE", v, sub, exp.Literal.string(""), dialect="dremio")))
+            n = exp.Div(this=exp.Paren(this=gone), expression=exp.Nullif(this=exp.Length(this=sub),
+                                                                       expression=exp.Literal.number(0)))
+            return exp.Cast(this=exp.Floor(this=n), to=exp.DataType.build("BIGINT"))
+        if name == "makedate" and 1 <= len(args) <= 3:
+            def part(a: SqlExpr, width: int) -> SqlExpr:
+                return exp.func("LPAD", exp.Cast(this=a, to=exp.DataType.build("VARCHAR")),
+                                exp.Literal.number(width), exp.Literal.string("0"), dialect="dremio")
+            parts = [self._val(a) for a in args] + [exp.Literal.number(1)] * (3 - len(args))
+            text = exp.DPipe(this=exp.DPipe(this=exp.DPipe(this=part(parts[0], 4), expression=exp.Literal.string("-")),
+                                            expression=part(parts[1], 2)),
+                             expression=exp.DPipe(this=exp.Literal.string("-"), expression=part(parts[2], 2)))
+            return dremio_call("TO_DATE", text, exp.Literal.string("YYYY-MM-DD"))
+        if name == "addmonths" and len(args) == 2:  # mode 0: same day, the month's last day when it is shorter
+            return dremio_call("TIMESTAMPADD", exp.var("MONTH"), self._val(args[1]), self._val(args[0]))
+        if name == "week" and len(args) == 1:
+            # ISO weeks: Qlik's default (FirstWeekDay 0, BrokenWeeks 0, ReferenceDay 4); other settings differ
+            v = self.ctx.variables
+            if (v.get("FirstWeekDay", "0"), v.get("BrokenWeeks", "0"), v.get("ReferenceDay", "4")) != ("0", "0", "4"):
+                raise Untranslatable("Week() with the script's own week settings (FirstWeekDay, BrokenWeeks, "
+                                     "ReferenceDay)", "T2")
+            return exp.Extract(this=exp.var("WEEK"), expression=self._val(args[0]))
         if name in _SIMPLE:
             fn, n = _SIMPLE[name]
             if n is not None and len(args) != n:
