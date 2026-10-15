@@ -115,3 +115,18 @@ def test_reviewer_decisions_steer_the_loop(tmp_path):
     _, outcomes = asyncio.run(translate_with_ai(app, asked, TranslationMemory(), validator=validator,
                                                 accepted_gaps=set(spans.values())))
     assert {o.status for o in outcomes} == {"gap_accepted"} and asked.inputs == []
+
+
+def test_an_input_the_privacy_guard_refuses_is_withheld_not_a_crash(tmp_path):
+    from adce_gateway.privacy import PrivacyViolation
+
+    class Guarded:
+        async def call(self, route, inputs, output, **kw):  # type: ignore[no-untyped-def]
+            raise PrivacyViolation("$.statements: 4 uniform records look like rows")
+
+    app, validator, _, _ = _setup("rulefix_local", ROOT / "eval" / "recordings")
+    _, fixes = asyncio.run(repair_with_ai(app, Guarded(), TranslationMemory(), validator))
+    assert [f.status for f in fixes] == ["withheld"]
+    app, validator, _, _ = _setup("longtail_local", ROOT / "eval" / "recordings")
+    _, outcomes = asyncio.run(translate_with_ai(app, Guarded(), TranslationMemory(), validator=validator))
+    assert {o.status for o in outcomes} == {"withheld"}

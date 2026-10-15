@@ -234,3 +234,13 @@ def test_rate_limiter_waits_for_room():
     lim2._events.extend([[0.0, 600.0], [20.0, 300.0]])
     assert lim2.wait_time(200) == pytest.approx(30.0)  # 600 + 300 + 200 > 1000: wait until the 600 expires
     assert lim2.wait_time(100) == 0.0
+
+
+def test_privacy_allows_a_tables_script_statements_but_not_rows():
+    stmts = [{"statement": i, "input_columns": ["Id", "Amt"], "sql": "SELECT * FROM src", "text": "LOAD *"}
+             for i in range(8)]
+    privacy.check({"table": "T", "statements": stmts})  # diagnose_mismatch: code, not data
+    with pytest.raises(privacy.PrivacyViolation):
+        privacy.check({"x": [{"statement": "approved", "amount": i} for i in range(8)]})  # a column named statement
+    with pytest.raises(privacy.PrivacyViolation):
+        privacy.check({"x": [{"id": i, "amount": i * 2} for i in range(8)]})

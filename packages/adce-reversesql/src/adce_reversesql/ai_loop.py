@@ -154,7 +154,7 @@ class Outcome:
     statement: int
     span: str
     reason: str
-    status: str  # memory | ai_validated | ai_checked | declined | failed | skipped | gap_accepted | no_model
+    status: str  # memory | ai_validated | ai_checked | declined | failed | skipped | gap_accepted | no_model | withheld
     sql: str | None = None
     attempts: list[dict[str, Any]] = field(default_factory=list)
     notes: str = ""
@@ -317,6 +317,7 @@ async def _one(app: BIApp, u: Untranslated, overrides: dict[int, str], gateway: 
         o.status = "no_model"
         return o
     from adce_gateway.gateway import BudgetExceeded, GatewayRefusal, OutputInvalid, ProviderError, ReplayMiss
+    from adce_gateway.privacy import PrivacyViolation
 
     for _attempt in range(max_attempts):
         inputs = {"statement": u.text, "why_rules_failed": u.reason, "input_relation": "src",
@@ -336,6 +337,10 @@ async def _one(app: BIApp, u: Untranslated, overrides: dict[int, str], gateway: 
         except OutputInvalid as e:  # the model's output broke the schema: one attempt used, try again
             o.attempts.append({"error": f"OutputInvalid: {e}"})
             continue
+        except PrivacyViolation as e:  # the input looked like data rows: never sent; stays for review
+            o.attempts.append({"error": f"PrivacyViolation: {e}"})
+            o.status = "withheld"
+            return o
         except (ReplayMiss, GatewayRefusal, ProviderError, BudgetExceeded) as e:
             o.attempts.append({"error": f"{type(e).__name__}: {e}"})
             # provider unavailable (rate or daily limit, outage), no recording, or budget: not the model's failure
@@ -400,6 +405,7 @@ async def repair_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory, va
                          kg_tools: list[Any] | None = None) -> tuple[dict[int, str], list[Outcome]]:
     """Agent 26's diagnosis: fix tables whose SQL runs but contradicts the evidence."""
     from adce_gateway.gateway import BudgetExceeded, GatewayRefusal, OutputInvalid, ProviderError, ReplayMiss
+    from adce_gateway.privacy import PrivacyViolation
 
     overrides = dict(overrides or {})
     outcomes: list[Outcome] = []
@@ -430,6 +436,10 @@ async def repair_with_ai(app: BIApp, gateway: Any, memory: TranslationMemory, va
             except OutputInvalid as e:
                 o.attempts.append({"error": f"OutputInvalid: {e}"})
                 continue
+            except PrivacyViolation as e:  # the input looked like data rows: never sent
+                o.attempts.append({"error": f"PrivacyViolation: {e}"})
+                o.status = "withheld"
+                break
             except (ReplayMiss, GatewayRefusal, ProviderError, BudgetExceeded) as e:
                 o.attempts.append({"error": f"{type(e).__name__}: {e}"})
                 o.status = "failed" if isinstance(e, GatewayRefusal) else "skipped"
@@ -616,6 +626,7 @@ async def explain_gaps(app: BIApp, t: Translation, gateway: Any, scripts: dict[s
     for the data owner and a SQL template. Script text and variable values only, never rows. `answers`: the data
     owner's answers to earlier questions, by gap (file:line), so the next analysis can be concrete."""
     from adce_gateway.gateway import BudgetExceeded, GatewayRefusal, OutputInvalid, ProviderError, ReplayMiss
+    from adce_gateway.privacy import PrivacyViolation
 
     from .runtime import GapAnalysis
 
@@ -636,7 +647,7 @@ async def explain_gaps(app: BIApp, t: Translation, gateway: Any, scripts: dict[s
             inputs["owner_answers"] = given
         try:
             res = await gateway.call("explain_gap", inputs, GapAnalysis, task=task)
-        except (OutputInvalid, ReplayMiss, GatewayRefusal, ProviderError, BudgetExceeded) as e:
+        except (OutputInvalid, ReplayMiss, GatewayRefusal, ProviderError, BudgetExceeded, PrivacyViolation) as e:
             out.append({"kind": s["kind"], "span": f"{s['file']}:{s['line']}", "error": f"{type(e).__name__}: {e}"})
             continue
         a = res.output

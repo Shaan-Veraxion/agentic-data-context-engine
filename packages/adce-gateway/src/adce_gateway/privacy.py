@@ -35,7 +35,13 @@ def check(payload: Any, path: str = "$") -> None:
 def _uniform(records: list[Any]) -> bool:
     if all(isinstance(r, dict) for r in records):
         keys = {frozenset(r) for r in records}
-        return len(keys) == 1 and not {"field", "name", "kind"} & set(next(iter(keys)))  # schema lists are fine
+        if len(keys) != 1:
+            return False
+        if {"field", "name", "kind"} & set(next(iter(keys))):
+            return False  # schema lists are fine
+        # a table's script statements (number, SQL, text, input column names) describe code, not data
+        return not all(isinstance(r.get("statement"), int) and not isinstance(r.get("statement"), bool)
+                       for r in records)
     return all(isinstance(r, (list, tuple)) and len(r) == len(records[0]) for r in records)
 
 
