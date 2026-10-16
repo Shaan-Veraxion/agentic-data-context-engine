@@ -54,6 +54,14 @@ expected), SQL, Model calls (every prompt input, turn, tool call, answer and tok
 left for a person, **Gaps for a person**: what each untranslated block does, how to do it in Dremio, the questions
 for the data owner and a SQL template with placeholders.
 
+**Dremio sources** (on the SQL tab): the generated SQL names each source as the script does: database tables
+as written (`tblinvoicehead`), files as `"__file__"."<path>"`, QVDs the script does not create as
+`"__qvd__"."<file>"`, inputs a library routine generates (e.g. `Qvc.Calendar(...)`) as `"__generated__"."<call>"`.
+These cannot run in Dremio until each one is mapped to a Dremio dataset. Each SQL file starts with a comment
+listing what is still unmapped. Fill in the dataset for each source on the panel and **Save and run again**: the
+mappings are kept in the case's `case.yaml` (`dremio_sources`) and the SQL then reads those datasets. In the full
+stack the same answers come from the review queue (`map` decisions).
+
 ## 3. Agents from the command line
 
 The agents of the Qlik path, by number (as in docs/architecture.md):

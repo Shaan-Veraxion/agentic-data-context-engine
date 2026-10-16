@@ -268,6 +268,8 @@ class Runner:
                "inputs": [{"name": f["name"], "sha256": f.get("sha256"), "class": f["class"]} for f in files]}
         if n == 22:
             job["exports"] = s.get("exports", [])
+        if self.case.dremio_sources:
+            job["source_map"] = self.case.dremio_sources
         return job
 
     async def _step(self, n: int, auto: bool, ctx: AgentContext) -> dict[str, Any]:

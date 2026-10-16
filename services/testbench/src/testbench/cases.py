@@ -46,6 +46,8 @@ class Case:
     when: list[dict[str, Any]] = field(default_factory=list)  # [{if: {ai: off}, expect: {...}, levels: {...}}]
     app: str | None = None
     private: bool = False
+    # the Dremio dataset of each source the script names (subject -> dataset), as a reviewer's map decisions
+    dremio_sources: dict[str, str] = field(default_factory=dict)
 
     @property
     def suite(self) -> str:
@@ -109,7 +111,8 @@ class Case:
         return {"id": self.id, "suite": self.suite, "title": self.title, "covers": self.covers,
                 "status": self.status, "gap": self.gap, "oracle": self.oracle, "oracle_note": self.oracle_note,
                 "chain": self.chain, "variants": self.variants, "levels": self.levels, "expect": self.expect,
-                "when": self.when, "app": self.app, "private": self.private}
+                "when": self.when, "app": self.app, "private": self.private,
+                "dremio_sources": self.dremio_sources}
 
 
 def cap_level(level: str, data: str, stored: bool) -> str:
@@ -177,7 +180,8 @@ def load_case(path: Path, root: Path = CASES, private: bool = False) -> Case:
                 status=meta.get("status", "active"), gap=meta.get("gap", ""), oracle=meta.get("oracle", "hand"),
                 oracle_note=meta.get("oracle_note", ""), chain=meta.get("chain", [1, 27, 28, 24, 25, 26, 20]),
                 variants=variants, levels=meta.get("levels", {}),
-                expect=meta.get("expect", {}), when=meta.get("when", []), app=meta.get("app"), private=private)
+                expect=meta.get("expect", {}), when=meta.get("when", []), app=meta.get("app"), private=private,
+                dremio_sources=meta.get("dremio_sources") or {})
 
 
 def all_cases() -> list[Case]:

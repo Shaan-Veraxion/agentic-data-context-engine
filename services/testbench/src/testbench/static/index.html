@@ -275,6 +275,7 @@ function renderCase() {
   if (S.result) renderResult(S.result, $("#result"));
 }
 function renderCaseRuns() {
+  if (!S.detail || !$("#caseruns")) return;  // another view is showing (e.g. after saving from the Playground)
   const last = S.detail.last || [];
   $("#caseruns").innerHTML = last.length ? `<h4>Last runs</h4><div class="row">${last.map(l => `<span class="badge ${l.status}" style="cursor:pointer" data-ai="${l.variant.ai}" data-data="${l.variant.data}" title="click to run again">${esc(l.variant.ai)} · ${esc(l.variant.data)}${l.chain ? " · agents " + l.chain.join(",") : ""} · ${l.status}</span>`).join("")}</div>` : "";
   for (const el of document.querySelectorAll("#caseruns .badge")) el.onclick = () => { S.sel.ai = el.dataset.ai; S.sel.data = el.dataset.data; renderCase(); runCurrent(); };
@@ -380,10 +381,28 @@ function rowsView(t, x) {
     <div class="grid2"><div><h4>Expected (oracle)</h4>${table(x.columns, x.expected, r => miss.has(norm(r)) ? "miss" : "")}</div>
     <div><h4>SQL result (local venue)</h4>${x.actual ? table(idx.every(i => i >= 0) ? x.columns : ac, actual, r => extra.has(norm(r)) ? "extra" : "") : ""}</div></div></div>`;
 }
+// the Dremio dataset of each source the SQL names: saved per case (case.yaml dremio_sources), like a reviewer's map
+function sourcesPanel(r) {
+  const needs = [...new Set(r.steps.flatMap(s => (s.outputs && s.outputs.needs_dremio_dataset) || []))];
+  const mapped = (S.view === "case" && S.detail && S.detail.dremio_sources) || {};
+  const rows = [...new Set([...needs, ...Object.keys(mapped)])];
+  if (!rows.length) return "";
+  const canSave = S.view === "case" && S.detail && S.detail.id === r.case;
+  return `<div class="card"><h2>Dremio sources</h2><div class="muted" style="margin-bottom:8px">The SQL reads each source as the script names it. Give the Dremio dataset of each one (e.g. <code>space.folder.table</code>, or <code>"My Source".dbo.tblX</code>); the generated SQL then reads it. Files with variables in their path (<code>$(vLoadfile)</code>) usually map to one folder dataset. In a deployment the same answers come from the review queue (map source).</div>
+    ${table(["source (as the SQL comment lists it)", "Dremio dataset"], rows.map(k => [k, `<input data-src="${esc(k)}" value="${esc(mapped[k] || "")}" placeholder="space.folder.table" size="48" ${canSave ? "" : "disabled"}>`]))}
+    ${canSave ? '<button class="primary" onclick="saveSources()">Save and run again</button>' : '<div class="muted">Save the playground run as a case to map its sources.</div>'}</div>`;
+}
+async function saveSources() {
+  const mappings = Object.fromEntries([...document.querySelectorAll("input[data-src]")].map(el => [el.dataset.src, el.value]));
+  try {
+    const r = await api("/api/cases/sources", { case: S.current, mappings });
+    S.detail.dremio_sources = r.dremio_sources; runCurrent();
+  } catch (e) { alert(e.message); }
+}
 function sqlView(r) {
-  const out = [];
+  const out = [sourcesPanel(r)];
   for (const s of r.steps) for (const a of s.artifacts || []) if (a.key.endsWith(".sql") && a.text) out.push(`<details><summary><b>${esc(a.key.split("/").slice(-1)[0])}</b><span class="muted">${esc(a.key)}</span></summary><div class="body"><pre>${esc(a.text)}</pre></div></details>`);
-  return out.join("") || '<div class="muted">No SQL artifacts in this chain (add agent 24, synthesize, or 20, publish).</div>';
+  return out.filter(Boolean).join("") || '<div class="muted">No SQL artifacts in this chain (add agent 24, synthesize, or 20, publish).</div>';
 }
 
 // ---------------------------------------------------------------- matrix

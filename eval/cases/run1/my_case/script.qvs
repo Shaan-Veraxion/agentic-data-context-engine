@@ -1,0 +1,956 @@
+///$tab Main - Initiate
+
+SET ThousandSep=',';
+
+SET DecimalSep='.';
+
+SET MoneyThousandSep=',';
+
+SET MoneyDecimalSep='.';
+
+SET MoneyFormat='$#,##0.00;-$#,##0.00';
+
+SET TimeFormat='hh:mm:ss';
+
+SET DateFormat='DD/MM/YYYY';
+
+SET TimestampFormat='DD/MM/YYYY hh:mm:ss[.fff]';
+
+SET FirstWeekDay=0;
+
+SET BrokenWeeks=0;
+
+SET ReferenceDay=4;
+
+SET FirstMonthOfYear=1;
+
+SET CollationLocale='en-GB';
+
+SET CreateSearchIndexOnReload=1;
+
+SET MonthNames='Jan;Feb;Mar;Apr;May;Jun;Jul;Aug;Sept;Oct;Nov;Dec';
+
+SET LongMonthNames='January;February;March;April;May;June;July;August;September;October;November;December';
+
+SET DayNames='Mon;Tue;Wed;Thu;Fri;Sat;Sun';
+
+SET LongDayNames='Monday;Tuesday;Wednesday;Thursday;Friday;Saturday;Sunday';
+
+SET NumericalAbbreviation='3:k;6:M;9:G;12:T;15:P;18:E;21:Z;24:Y;-3:m;-6:μ;-9:n;-12:p;-15:f;-18:a;-21:z;-24:y';
+ 
+ 
+/*=========================================================
+
+  Atlas environment — switch between SE04 (dev) and Prod here.
+
+  All SQL queries reference '$(vAtlasEnvironment)'.Business.<table>
+
+=========================================================*/
+
+SET vAtlasEnvironment = '"Atlas SE04"';
+
+// LET vAtlasEnvironment = 'Atlas Prod';  // uncomment for production?
+ 
+ 
+SET vDataConnection = 'Dremio_Dev';
+ 
+ 
+// DB Connection to Atlas - stolen from GSE extract config
+
+// SET v.DremioDB = 'Dremio_Dev';			// All Atlas data to be consumed from Dremio
+
+// SET v.DremioSpace = '"Atlas SE04"';		// Set environment within above Dremio DB (SE04, SE22, etc)
+ 
+$(must_include=lib://QSData-Production\Script\Qvc.qvs);
+ 
+//     "TRADE_UPDATED_DATE",
+
+//     "VAT_TYPE"
+
+// FROM "Atlas SE04.Business".ASSIGNMENTS;
+ 
+ 
+///$tab Complete Calendars
+
+/*=========================================================
+
+  TRADE calendar — drives BLDate-based date dimension.
+
+  Adjust start date as needed.
+
+  NOT SURE IF THIS CALENDAR IS NEEDED FOR TRADE TABLE
+
+=========================================================*/
+
+// CALL Qvc.Calendar (date('2024-10-01','YYYY-MM-dd'), today(), 'TRADE', 'tr.');
+ 
+ 
+// INNER JOIN (TRADE)
+
+// LOAD
+
+//     tr.Date,
+
+//     tr.Date             AS BLDateCompleted,
+
+//     NUM(tr.Date)        AS BLDateNum            // JOIN TRADES
+
+// RESIDENT TRADE;
+ 
+ 
+CALL Qvc.Calendar (date('2024-10-01','YYYY-MM-dd'), today(), 'STORAGE', 'st.');
+ 
+ 
+INNER JOIN (STORAGE)
+
+LOAD
+
+    st.Date,
+
+    st.Date             AS ScheduleDateCompleted,
+
+    NUM(st.Date)        AS ScheduleDate         // JOIN
+
+RESIDENT STORAGE;
+
+///$tab TRADE
+
+/*=========================================================
+
+  Trades from Atlas ASSIGNMENTS.
+ 
+  Key field changes vs Pluto:
+
+    ParcelID        -> AssignmentRef   (Atlas unique assignment identifier)
+
+    VoyageID        -> MovementRef     (Atlas movement/voyage reference)
+
+    TradeDirection  -> AssignmentDirection (P = Purchase, S = Sale)
+
+    TradeType       -> AssignmentDirection (same field — Atlas does not
+
+                       separate ProductSource from TradeType)
+
+    LoadPortName    -> QuotaLocation   (Atlas delivery location)
+
+    Incoterm        -> QuotaIncoterm
+
+    BLAmountBB/CM/MT-> QuantityBBL / QuantityCubicMeters / QuantityMT
+
+    QtyEstimatedorActual -> QuantityStatus
+
+    EstDate         -> BLDate          (Atlas only carries BL_DATE)
+
+    Book/EnteredBy  -> not available in Atlas reporting layer
+ 
+  Counterparty filter:
+
+    Pluto cpid IN (77320, 75445) — Rhone Energies Sarl + Fos-sur-Mer SAS
+
+    TODO: replace placeholders with confirmed Atlas COUNTERPARTY values
+
+      AND a.COUNTERPARTY IN ('<RhoneEnergiesSarl>', '<RhoneEnergiesFosSurMer>')
+ 
+  Source: LIB CONNECT TO '$(vDataConnection)'
+
+=========================================================*/
+ 
+LIB CONNECT TO '$(vDataConnection)';
+ 
+NOCONCATENATE
+
+TRADE_RAW:
+
+LOAD
+
+    AssignmentDirection,
+
+    CounterParty,
+
+    Trader,
+
+    Operator,
+
+    Desk,
+
+    DealRef,
+
+    DealDescription,
+
+    TradeID,
+
+    AssignmentDirection                                                     AS TradeDirection,  // P = Purchase, S = Sale
+
+    MovementRef,
+
+//     MovementStatus,
+
+    QuotaLocation,
+
+    QuotaIncoterm,
+
+    Vessel,
+
+    BLDate,
+
+    BLDate                                                                  AS BLDateCompleted,
+
+    BLDateStatus,
+
+    QuotaProduct,
+
+    QuotaGrade,
+
+    QuantityStatus,
+
+    AssignmentRef,	
+
+    AssignmentId,  
+
+    TradeDate,
+
+    TransferDate,
+
+    NUM(QuantityBBL)                                                        AS QuantityBBL,
+
+    NUM(QuantityCubicMeters)                                                AS QuantityCubicMeters,
+
+    NUM(QuantityMT)                                                         AS QuantityMT,
+
+    NUM(QuantityBBL, '#.###,000', ',', '.')                                 AS QuantityBBLFormatted,
+
+    NUM(QuantityCubicMeters, '#.###,000', ',', '.')                         AS QuantityCubicMetersFormatted,
+
+    NUM(QuantityMT, '#.###,000', ',', '.')                                  AS QuantityMTFormatted,
+
+    NUM(FLOOR(DATE(BLDate)))                                                AS BLDateNum,       // JOIN DATES
+
+    AssignmentRef & '-' & TradeID                                           AS Key              // JOIN STORAGE
+
+;
+ 
+SQL
+
+SELECT DISTINCT
+
+    a.ASSIGNMENT_DIRECTION                          AS AssignmentDirection,
+
+    a.COUNTERPARTY                                  AS CounterParty,
+
+    a.TRADER                                        AS Trader,
+
+    og.OPERATOR                                     AS Operator,
+
+    d.DESK                                          AS Desk,
+
+    CAST(a.DEAL_REF AS VARCHAR)                     AS DealRef,
+
+    d.DEAL_DESCRIPTION                              AS DealDescription,
+
+    a.TRADE_ID                                      AS TradeID,
+
+    CAST(a.MOVEMENT_REF AS VARCHAR)                 AS MovementRef,
+
+//     a.MOVEMENT_STATUS			                 	AS MovementStatus,
+
+    a.QUOTA_LOCATION                                AS QuotaLocation,
+
+    a.QUOTA_INCOTERM                                AS QuotaIncoterm,
+
+    a.VESSEL_NAME                                   AS Vessel,
+
+    a.BL_DATE                                       AS BLDate,
+
+    a.BL_DATE_STATUS								AS BLDateStatus,
+
+    a.QUOTA_PRODUCT                                 AS QuotaProduct,
+
+    a.QUOTA_GRADE                                   AS QuotaGrade,
+
+    a.QUANTITY_STATUS                               AS QuantityStatus,
+
+    a.ASSIGNMENT_REF                                AS AssignmentRef,
+
+    a.ASSIGNMENT_ID									AS AssignmentId,
+
+    a.TRADE_DATE                                    AS TradeDate,
+
+    a.TRANSFER_DATE                                 AS TransferDate,
+
+    a.QUANTITY_BBLS                                 AS QuantityBBL,
+
+    a.QUANTITY_CUBIC_METERS                         AS QuantityCubicMeters,
+
+    a.QUANTITY_MT                                   AS QuantityMT
+
+FROM $(vAtlasEnvironment).Business.ASSIGNMENTS a
+
+LEFT JOIN $(vAtlasEnvironment).Business.OG_OPERATORS og
+
+    ON og.ASSIGNMENT_ID = a.ASSIGNMENT_ID
+
+LEFT JOIN $(vAtlasEnvironment).Business.DEALS d
+
+    ON d.DEAL_REF = a.DEAL_REF
+
+WHERE
+
+    a.ASSIGNMENT_STATE_STR = 'active'
+
+    AND a.IS_LATEST = 1
+
+;
+ 
+	// TODO: uncomment and replace with confirmed Atlas COUNTERPARTY string values
+
+	// AND a.COUNTERPARTY IN ('<Rhone Energies Sarl>', '<Rhone Energies Fos-sur-Mer SAS>')
+
+
+NOCONCATENATE
+
+TRADE:
+
+LOAD
+
+//     Key,
+
+    BLDateCompleted,
+
+    QuantityBBLFormatted,
+
+    QuantityCubicMetersFormatted,
+
+    QuantityMTFormatted,
+
+    AssignmentDirection,
+
+    CounterParty,
+
+    Trader,
+
+    Operator,
+
+    Desk,
+
+    DealRef,
+
+    DealDescription,
+
+    TradeID 																AS Trade,
+
+    TradeDirection,
+
+    MovementRef,
+
+//     MovementStatus,
+
+    QuotaLocation,
+
+    QuotaIncoterm,
+
+    Vessel,
+
+    BLDate,
+
+    BLDateStatus,
+
+    QuotaProduct,
+
+    QuotaGrade,
+
+    QuantityMT                                                              AS TradesQuantityMT,    // header-level quantity for display
+
+    QuantityStatus,
+
+    AssignmentId,// JOIN PRICING - NEXT SECTION
+
+    AssignmentRef,// JOIN STORAGE
+
+    TradeDate,
+
+    TransferDate,
+
+    NUM(BLDateNum)                                                          AS BLDateNum,
+
+    NUM(QuantityBBL)                                                        AS QuantityBBL,
+
+    NUM(QuantityCubicMeters)                                                AS QuantityCubicMeters,
+
+    NUM(QuantityMT)                                                         AS QuantityMT
+
+RESIDENT TRADE_RAW;
+ 
+ 
+DROP TABLE TRADE_RAW;
+
+///$tab Pricing
+
+// ============ PRICING (Atlas) ============
+
+LIB CONNECT TO '$(vDataConnection)';
+ 
+NOCONCATENATE
+
+PRICING:
+
+LOAD
+
+    AssignmentId,// JOIN TRADE
+
+//     TradeID,
+
+//     AssignmentRef & '-' & TradeID                       AS Key,             
+
+    Price,
+
+    PriceCcy & ' per ' & PriceUOM                       AS PriceBasis,      // e.g. "USD per MT"
+
+    Capitalize(PriceType)                               AS PriceType,       // Atlas stores lowercase (formulated/fixed/index/EFP)
+
+    PriceDescription,
+
+	PriceValue,
+
+    PriceFormula                                                            // COMBINED_FORMULA, useful when Price is null
+
+;
+
+SQL
+
+SELECT DISTINCT
+
+//     a.ASSIGNMENT_REF                                    AS AssignmentRef,
+
+//     a.TRADE_ID                                          AS TradeID,
+
+    a.ASSIGNMENT_ID									AS AssignmentId,
+
+    -- FIXED_VALUE is populated for fixed/EFP trades, for FORMULATED trades it is
+
+    -- typically null in Atlas (the calculated price is resolved in Jupiter)
+
+    pc.FIXED_VALUE                                      AS Price,
+
+    COALESCE(pc.FIXED_CCY, fc.PRICE_CCY)              	AS PriceCcy,
+
+    COALESCE(pc.FIXED_UOM, fc.PRICE_UOM)          		AS PriceUOM,
+
+    fc.PRICE_VALUE										AS PriceValue,
+
+    pc.PRICING_TYPE                                     AS PriceType,
+
+    fc.FORMULA_COMPONENT_DESCRIPTION                    AS PriceDescription,-- "Mid MTBE FOB Rotterdam Barges (Platts) ..."
+
+    CAST(pc.COMBINED_FORMULA AS VARCHAR(255))           AS PriceFormula
+
+FROM 
+
+$(vAtlasEnvironment).Business.ASSIGNMENTS a LEFT JOIN 
+
+$(vAtlasEnvironment).Business.PRICING_TERMS pc
+
+   ON pc.ASSIGNMENT_ID = a.ASSIGNMENT_ID
+
+LEFT JOIN $(vAtlasEnvironment).Business.FORMULA_COMPONENTS fc
+
+    ON fc.PRICE_COMPONENT_ID = pc.PRICE_COMPONENT_ID
+
+   AND fc.COMPONENT_ORDER = 1                           -- primary component only, avoids fan-out
+
+WHERE
+
+    a.ASSIGNMENT_STATE_STR = 'active'
+
+    AND a.IS_LATEST = 1
+
+;
+ 
+ 
+ 
+///$tab STORAGE
+
+/*=========================================================
+
+  Storage balances from Atlas STORAGE_BALANCES.
+ 
+  Key field changes vs Pluto:
+
+    Terminal (sfName)   -> StorageName    (Atlas STORAGE_NAME)
+
+    TankName            -> TankCode       (Atlas TANK_CODE)
+
+    ScheduleDatetime    -> ChangeDay      (Atlas CHANGE_DAY — daily snapshot)
+
+    StockBalance (BBL)  -> BalanceBBL
+
+    ParcelID / TradeID  -> AssignmentRef / TradeID (via ASSIGNMENTS join)
+
+    Quantity (movement) -> EstimatedChangeBBL (Atlas ESTIMATED_CHANGE_BBLS)
+
+    Record / type flags -> not directly available in STORAGE_BALANCES;
+
+                           StorageName used as fallback descriptor
+ 
+  Facility filter:
+
+    Pluto: sfid IN (1450, 1451, 1452, 1464, 1476)
+
+    TODO: replace with confirmed Atlas STORAGE_NAME values for Fos-sur-Mer
+
+    Example: AND sb.STORAGE_NAME LIKE '%Fos-sur-Mer%'
+ 
+  Source: LIB CONNECT TO '$(vDataConnection)'
+
+=========================================================*/
+ 
+LIB CONNECT TO '$(vDataConnection)';
+ 
+OUTER JOIN (STORAGE)
+
+LOAD
+
+    StorageName,
+
+    TankCode,
+
+    ChangeDay                                                               AS ScheduleDatetime,
+
+    Date(Floor(ChangeDay), 'YYYY-MM-DD')                                   AS ScheduleDate,
+
+//     AssignmentRef & '-' & TradeID                                           AS Key,             // JOIN TRADES
+
+    BalanceVolume                                                              AS StockBalanceVolume,
+
+    BalanceUOM,
+
+    ChangeVolume,
+
+    ChangeUOM,
+
+    StorageProduct,
+
+    StorageGrade,
+
+    AssignmentRef,
+
+    TradeID,
+
+    MovementRef																	AS st.MovementRef,
+
+    MovementStatus																AS st.MovementStatus,
+
+//     IF(EstimatedChangeBBL < 0, 1, 0)                                       AS FlagNegativeQty,
+
+    Date(Floor(ChangeDay), 'YYYY-MM-DD') & '-' & StorageName & '-' & TankCode AS BalanceKey    // JOIN DATES
+
+;
+ 
+SQL
+
+SELECT DISTINCT
+
+    sb.LOCATION                                 	AS StorageName,
+
+    sb.TANK_CODE                                    AS TankCode,
+
+    sb.CHANGE_UOM                                   AS ChangeUOM,
+
+    sb.CHANGE_VOLUME                                AS ChangeVolume,
+
+    sb.BALANCE_UOM                                 	AS BalanceUOM,
+
+    sb.BALANCE_VOLUME                         		AS BalanceVolume,
+
+    sb.PRODUCT                                      AS StorageProduct,
+
+    sb.GRADE                                        AS StorageGrade,
+
+    sb.ASSIGNMENT_REF                               AS AssignmentRef,
+
+    a.TRADE_ID                                      AS TradeID,
+
+    sb.CHANGE_DAY									AS ChangeDay,
+
+    CAST(a.MOVEMENT_REF AS VARCHAR)                 AS MovementRef,
+
+    a.MOVEMENT_STATUS								AS MovementStatus
+
+FROM $(vAtlasEnvironment).Business.STORAGE_BALANCES sb
+
+LEFT JOIN $(vAtlasEnvironment).Business.ASSIGNMENTS a
+
+    ON a.ASSIGNMENT_REF = sb.ASSIGNMENT_REF
+
+    AND a.IS_LATEST = 1
+
+WHERE
+
+    sb.CHANGE_DAY >= '2024-10-01'
+
+    // TODO: filter to Rhone Fos-sur-Mer storage facilities
+
+    // Pluto equivalent: sfid IN (1450, 1451, 1452, 1464, 1476)
+
+    // Example: AND sb.STORAGE_NAME LIKE '%Fos-sur-Mer%'
+
+;
+ 
+ 
+///$tab Record field Completion
+
+/*=========================================================
+
+  Derives a display descriptor for each storage row.
+
+  In Pluto this was derived from ScheduleItemTypeInit (VTI/VTO/AGA/ALO).
+
+  Atlas STORAGE_BALANCES has no movement type flag — Vessel name
+
+  is joined from TRADE as a fallback descriptor, same logic as original.
+
+  TODO: if Atlas exposes a movement type on STORAGE_BALANCES, use it here.
+
+=========================================================*/
+
+STORAGE_FIXRECORD_TEMP:
+
+NOCONCATENATE
+
+LOAD * RESIDENT STORAGE;
+
+// ////////////////////////////
+
+// exit script;
+
+// ////////////////////////////
+ 
+OUTER JOIN (STORAGE_FIXRECORD_TEMP)
+
+LOAD
+
+    AssignmentRef,
+
+    Vessel                                          AS VesselRecord
+
+RESIDENT TRADE;
+ 
+ 
+OUTER JOIN (STORAGE_FIXRECORD_TEMP)
+
+LOAD
+
+    *,
+
+    VesselRecord                                    AS Record
+
+RESIDENT STORAGE_FIXRECORD_TEMP;
+ 
+ 
+DROP TABLE STORAGE;
+
+DROP FIELD VesselRecord;
+ 
+ 
+STORAGE:
+
+NOCONCATENATE
+
+LOAD *
+
+RESIDENT STORAGE_FIXRECORD_TEMP
+
+WHERE NOT ISNULL(Record);
+ 
+ 
+DROP TABLE STORAGE_FIXRECORD_TEMP;
+ 
+///$tab Last Daily Balance
+
+/*=========================================================
+
+  Derives last daily stock balance per tank per day.
+
+  ChangeDay (daily) replaces Pluto ScheduleDatetime (intraday).
+
+=========================================================*/
+
+NOCONCATENATE
+
+LastBalance:
+
+LOAD
+
+    MAX(ScheduleDatetime)                                                               AS LastDailyScheduleDateTime,
+
+    ScheduleDate                                                                        AS BalanceDate,
+
+    TankCode                                                                            AS BalanceTankCode,
+
+    StorageName                                                                         AS BalanceStorageName,
+
+    Date(Floor(ScheduleDate), 'YYYY-MM-DD') & '-' & StorageName & '-' & TankCode       AS BalanceKey
+
+RESIDENT STORAGE
+
+GROUP BY StorageName, TankCode, ScheduleDate;
+ 
+ 
+LEFT JOIN (LastBalance)
+
+LOAD
+
+    BalanceKey,
+
+    ScheduleDatetime                                AS LastDailyScheduleDateTime,
+
+    StockBalanceVolume                                 AS LastBalanceVolume
+
+RESIDENT STORAGE;
+ 
+ 
+INNER JOIN (LastBalance)
+
+LOAD
+
+    BalanceKey,
+
+    BalanceDate,
+
+    LastBalanceVolume
+
+RESIDENT LastBalance
+
+WHERE NOT ISNULL(LastBalanceVolume);
+ 
+ 
+ 
+///$tab temp buy sell mappings for validation
+
+LIB CONNECT TO 'Dremio_Test';
+
+qualify *;
+
+LOAD "PURCHASE_ASSIGNMENT_REF",
+
+    "ALLOCATION_REF",
+
+    "RULE_REF",
+
+    "SALE_ASSIGNMENT_REF",
+
+    "SEGREGATION_CODE",
+
+    "ALLOCATED_QUANTITY_BBLS",
+
+    "ALLOCATED_QUANTITY_CUBIC_METERS",
+
+    "ALLOCATED_QUANTITY_MT",
+
+    "ALLOCATED_QUANTITY_GAL",
+
+    "ALLOCATED_QUANTITY_MMBTU",
+
+    "ALLOCATED_QUANTITY_PRIMARY",
+
+    "ALLOCATED_QUANTITY_PRIMARY_UOM",
+
+    "ALLOCATED_QUANTITY_NUMBER_OF_LOTS",
+
+    "ALLOCATION_BALANCE_UOM",
+
+    "GAIN_LOSS_STR",
+
+    "IS_ALLOCATED",
+
+    "ALLOCATION_STATUS";
+
+SQL SELECT "PURCHASE_ASSIGNMENT_REF",
+
+    "ALLOCATION_REF",
+
+    "RULE_REF",
+
+    "SALE_ASSIGNMENT_REF",
+
+    "SEGREGATION_CODE",
+
+    "ALLOCATED_QUANTITY_BBLS",
+
+    "ALLOCATED_QUANTITY_CUBIC_METERS",
+
+    "ALLOCATED_QUANTITY_MT",
+
+    "ALLOCATED_QUANTITY_GAL",
+
+    "ALLOCATED_QUANTITY_MMBTU",
+
+    "ALLOCATED_QUANTITY_PRIMARY",
+
+    "ALLOCATED_QUANTITY_PRIMARY_UOM",
+
+    "ALLOCATED_QUANTITY_NUMBER_OF_LOTS",
+
+    "ALLOCATION_BALANCE_UOM",
+
+    "GAIN_LOSS_STR",
+
+    "IS_ALLOCATED",
+
+    "ALLOCATION_STATUS"
+
+FROM "Atlas SE26.Business"."BUY_SELL_MAPPINGS";
+ 
+unqualify *;
+
+///$tab Exit
+
+EXIT SCRIPT;
+ 
+///$tab Section
+
+LIB CONNECT TO 'Dremio_Dev';
+ 
+LOAD "ASSIGNMENT_REF",
+
+    "ASSIGNMENT_ID",
+
+    "PRICING_TERM_ID",
+
+    "PRICING_UOM",
+
+    "PRICING_CCY",
+
+    "DEEMED_CONVERSION_VALUE",
+
+    "DEEMED_CONVERSION_TO_UOM",
+
+    "DEEMED_CONVERSION_FROM_UOM",
+
+    "IS_EFP_PRICING",
+
+    "IS_PRICING_OPTIONALITY",
+
+    "IS_CONDITIONAL_PRICING",
+
+    "IS_QUANTITY_OPTIONALITY",
+
+    "IS_TRIGGER_PRICING",
+
+    "PRICING_TYPE",
+
+    "PRICE_PRECISION",
+
+    "EFP_TYPE",
+
+    "EFP_SETTLE_DATE",
+
+    "EFP_PRICE",
+
+    "PRICE_COMPONENT_ID",
+
+    "PRICE_COMPONENT_REF",
+
+    "PRICING_OPTION",
+
+    "CONDITION_TYPE",
+
+    "RANGED_LOWER_BOUND",
+
+    "IS_RANGED_LOWER_BOUND_STRICT",
+
+    "RANGED_UPPER_BOUND",
+
+    "IS_RANGED_UPPER_BOUND_STRICT",
+
+    "CALCULATION_TYPE",
+
+    "FIXED_VALUE",
+
+    "FIXED_UOM",
+
+    "FIXED_CCY",
+
+    "COMBINED_FORMULA",
+
+    "IS_COMBINED_COMMON_SCHEDULE",
+
+    "IS_NEGATE",
+
+    "RANGED_PRIMARY_VALUE",
+
+    "INTENT_RULE_ID";
+
+SQL SELECT "ASSIGNMENT_REF",
+
+    "ASSIGNMENT_ID",
+
+    "PRICING_TERM_ID",
+
+    "PRICING_UOM",
+
+    "PRICING_CCY",
+
+    "DEEMED_CONVERSION_VALUE",
+
+    "DEEMED_CONVERSION_TO_UOM",
+
+    "DEEMED_CONVERSION_FROM_UOM",
+
+    "IS_EFP_PRICING",
+
+    "IS_PRICING_OPTIONALITY",
+
+    "IS_CONDITIONAL_PRICING",
+
+    "IS_QUANTITY_OPTIONALITY",
+
+    "IS_TRIGGER_PRICING",
+
+    "PRICING_TYPE",
+
+    "PRICE_PRECISION",
+
+    "EFP_TYPE",
+
+    "EFP_SETTLE_DATE",
+
+    "EFP_PRICE",
+
+    "PRICE_COMPONENT_ID",
+
+    "PRICE_COMPONENT_REF",
+
+    "PRICING_OPTION",
+
+    "CONDITION_TYPE",
+
+    "RANGED_LOWER_BOUND",
+
+    "IS_RANGED_LOWER_BOUND_STRICT",
+
+    "RANGED_UPPER_BOUND",
+
+    "IS_RANGED_UPPER_BOUND_STRICT",
+
+    "CALCULATION_TYPE",
+
+    "FIXED_VALUE",
+
+    "FIXED_UOM",
+
+    "FIXED_CCY",
+
+    "COMBINED_FORMULA",
+
+    "IS_COMBINED_COMMON_SCHEDULE",
+
+    "IS_NEGATE",
+
+    "RANGED_PRIMARY_VALUE",
+
+    "INTENT_RULE_ID"
+
+FROM "Atlas SE04.Business"."PRICING_TERMS";
+ 
+ 
+ 

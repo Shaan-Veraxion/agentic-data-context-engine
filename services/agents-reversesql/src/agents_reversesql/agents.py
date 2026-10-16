@@ -20,6 +20,7 @@ from adce_reversesql.charts import translate_charts
 from adce_reversesql.check import check_table
 from adce_reversesql.figures import check_exports
 from adce_reversesql.reconcile import Level, Reconciler
+from adce_reversesql.resolve import apply_mappings, known_mappings
 from adce_reversesql.runtime import load_translation, local_evidence
 
 
@@ -48,10 +49,18 @@ class Synthesizer(BaseAgent):
         result = AgentResult()
         loaded = load_translation(ctx.artifacts, job["bi_ir_key"], job.get("translation_key"))
         sql_keys = {}
+        mappings = await known_mappings(ctx.kg, job.get("source_map"))
+        pending: dict[str, list[str]] = {}
+        mapped_all: set[str] = set()
         for name in output_tables(loaded):
             sql = loaded.translation.table_sql(name)
             if sql is None:
                 continue
+            # the Dremio names of the sources (reviewer map decisions; until then the SQL says what is missing)
+            res = apply_mappings(sql, mappings)
+            sql = res.sql
+            pending[name] = res.unmapped + [f"sql:{u}" for u in res.unqualified]
+            mapped_all |= set(res.mapped)
             key = ctx.artifacts.put(f"apps/{ctx.app_id}/runs/{ctx.run_id}/sql/{name}.sql", sql.encode(),
                                     "application/sql")
             sql_keys[name] = key
@@ -59,7 +68,8 @@ class Synthesizer(BaseAgent):
             await self.propose(ctx, Fact(
                 kind="sql_candidate", subject=table_key(ctx.app_id, name), trust=Trust.INFERRED,
                 value={"sql_sha256": hashlib.sha256(sql.encode()).hexdigest(), "final_cte": r.final_cte,
-                       "dialect": "dremio"},
+                       "dialect": "dremio", "unmapped": res.unmapped, "unqualified": res.unqualified,
+                       "mapped": res.mapped},
                 evidence=[Evidence(kind="artifact", ref=key)]), result)
         chart_keys = {}
         for c in translate_charts(loaded.app, loaded.translation):
@@ -68,14 +78,18 @@ class Synthesizer(BaseAgent):
                                      "untranslated": c.untranslated}
             evidence = [Evidence(kind="app_object", ref=f"{ctx.app_id}/visual:{c.visual_id}")]
             if c.sql:
+                chart = apply_mappings(c.sql, mappings).sql
                 key = ctx.artifacts.put(f"apps/{ctx.app_id}/runs/{ctx.run_id}/sql/charts/{c.visual_id}.sql",
-                                        c.sql.encode(), "application/sql")
+                                        chart.encode(), "application/sql")
                 chart_keys[c.visual_id] = key
-                value["sql_sha256"] = hashlib.sha256(c.sql.encode()).hexdigest()
+                value["sql_sha256"] = hashlib.sha256(chart.encode()).hexdigest()
                 evidence.append(Evidence(kind="artifact", ref=key))
             await self.propose(ctx, Fact(kind="chart_sql", subject=subject, value=value, trust=Trust.INFERRED,
                                          evidence=evidence), result)
-        result.outputs.update({"sql_keys": sql_keys, "chart_keys": chart_keys})
+        result.outputs.update({"sql_keys": sql_keys, "chart_keys": chart_keys,
+                               "needs_dremio_dataset": sorted({s for v in pending.values() for s in v})})
+        result.metrics.update({"sources_mapped": len(mapped_all),
+                               "sources_unmapped": len({s for v in pending.values() for s in v})})
         result.events.append("sql.candidates")
         return result
 
@@ -217,15 +231,18 @@ class Publisher(BaseAgent):
         validation = json.loads(ctx.artifacts.get(job["validation_key"])) if job.get("validation_key") else []
         figures = json.loads(ctx.artifacts.get(job["figures_key"])) if job.get("figures_key") else []
         files: dict[str, str] = {}
+        mappings = await known_mappings(ctx.kg, job.get("source_map"))
         for name in output_tables(loaded):
             sql = loaded.translation.table_sql(name)
             if sql:
+                sql = apply_mappings(sql, mappings).sql
                 files[f"sql/{name}.sql"] = ctx.artifacts.put(f"{base}/sql/{name}.sql", sql.encode(), "application/sql")
         charts = translate_charts(loaded.app, loaded.translation)
         for c in charts:
             if c.sql:
-                files[f"sql/charts/{c.visual_id}.sql"] = ctx.artifacts.put(f"{base}/sql/charts/{c.visual_id}.sql",
-                                                                           c.sql.encode(), "application/sql")
+                files[f"sql/charts/{c.visual_id}.sql"] = ctx.artifacts.put(
+                    f"{base}/sql/charts/{c.visual_id}.sql", apply_mappings(c.sql, mappings).sql.encode(),
+                    "application/sql")
         files["lineage.json"] = put_json(ctx.artifacts, f"{base}/lineage.json", lineage(ctx.app_id, loaded))
         files["validation.md"] = ctx.artifacts.put(f"{base}/validation.md",
                                                    _validation_md(validation, figures).encode(), "text/markdown")

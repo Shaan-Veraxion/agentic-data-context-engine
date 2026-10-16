@@ -206,7 +206,8 @@ class ReviewService:
         for src in await self._pending_sources(app_id):
             items.append(ReviewItem(
                 id=_id(app_id, "map", src), app_id=app_id, mode="seed", kind="map_source", subject=src,
-                title=f"Which Dremio dataset is {src.split(':', 2)[-1]}?", options=["map"], impact=3,
+                title=f"Which Dremio dataset is {src.split(':', 2)[-1] if src.startswith('source:') else src}?",
+                options=["map"], impact=3,
                 uncertainty=0.6, detail={"source": src, "note": "used when Dremio is connected (phase PD)"}))
         new = 0
         for it in items:
@@ -218,8 +219,13 @@ class ReviewService:
         return [f for f in await self.kg.facts(kind=kind) if f.subject.startswith(prefix)]
 
     async def _pending_sources(self, app_id: str) -> list[str]:
-        sources = sorted({f.object for f in await self._facts_for_app(app_id, "reads_source")
-                          if f.object and f.object.startswith("source:") and not f.object.startswith("source::")})
+        # database tables and files the script reads, plus what the generated SQL still names by a placeholder
+        # (files, QVDs the script does not create, generated inputs such as a calendar routine)
+        sources = {f.object for f in await self._facts_for_app(app_id, "reads_source")
+                   if f.object and f.object.startswith("source:")}
+        for f in await self._facts_for_app(app_id, "sql_candidate"):
+            sources |= set(f.value.get("unmapped", []))
+        sources = sorted(sources)
         out = []
         for s in sources:
             done = [f for f in await self.kg.facts(kind="resolves_to", subject=s) if f.trust == Trust.CONFIRMED]

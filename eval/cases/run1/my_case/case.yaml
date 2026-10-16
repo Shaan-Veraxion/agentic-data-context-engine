@@ -1,0 +1,16 @@
+id: run1/my_case
+title: 'running '
+status: active
+oracle: none
+chain:
+- 1
+- 27
+- 28
+- 24
+- 25
+- 26
+variants:
+  ai:
+  - live
+  data:
+  - full

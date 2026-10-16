@@ -291,6 +291,25 @@ def save_from_playground(req: SaveRequest) -> dict[str, Any]:
     return {"saved": dest.relative_to(ROOT).as_posix(), "id": load_case(dest / "case.yaml", root, req.private).id}
 
 
+class SourcesRequest(BaseModel):
+    case: str
+    mappings: dict[str, str]  # subject (as the SQL comment lists it) -> Dremio dataset path; "" removes one
+
+
+@app.post("/api/cases/sources")
+def set_sources(req: SourcesRequest) -> dict[str, Any]:
+    """Save the Dremio dataset of each source for a case (case.yaml dremio_sources), like a reviewer's map
+    decisions: the generated SQL then reads those datasets."""
+    try:
+        c = get_case(req.case)
+    except KeyError as e:
+        raise HTTPException(404, f"no case {req.case}") from e
+    merged = {**c.dremio_sources, **{k.strip(): v.strip() for k, v in req.mappings.items() if k.strip()}}
+    c.dremio_sources = {k: v for k, v in merged.items() if v}
+    save_case(c)
+    return {"case": c.id, "dremio_sources": c.dremio_sources}
+
+
 class ApproveRequest(BaseModel):
     case: str
     ai: str = "off"
