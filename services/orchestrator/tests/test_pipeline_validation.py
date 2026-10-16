@@ -63,6 +63,9 @@ async def test_llm_pathway_in_the_pipeline_reaches_v4_and_remembers(tmp_path):
     assert out["levels"] == {"Sales": "V4", "Running": "V4"}
     memory = await kg.facts(kind="translation_memory")
     assert len(memory) == 2 and {f.value["status"] for f in memory} == {"ai_validated"}
+    # provenance: which run, model and prompt version produced each learned answer
+    assert all(f.run_id == "r1" and f.model and f.prompt_version == "v3" for f in memory), [
+        (f.run_id, f.model, f.prompt_version) for f in memory]
 
 
 async def test_pipeline_corrects_a_wrong_rule_translation(tmp_path):

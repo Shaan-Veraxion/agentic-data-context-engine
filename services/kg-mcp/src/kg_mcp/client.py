@@ -24,7 +24,9 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
 READ_TOOLS = ("get_entity", "get_facts", "search_context", "get_context_pack", "find_similar_facts",
-              "get_feedback_history")
+              "get_feedback_history")  # offered to models by default (recorded tool-use answers depend on this set)
+ALL_READ_TOOLS = (*READ_TOOLS, "get_neighbors", "get_source_context", "get_lineage", "find_join_paths",
+                  "run_readonly_cypher")  # any of these may be offered to a model on request
 
 
 @dataclass
@@ -114,8 +116,9 @@ class McpKG:
 
     async def propose_fact(self, fact: Fact) -> str:
         check_policy(fact)
-        self._facts.append(fact.model_dump(mode="json", include={"kind", "subject", "object", "value", "trust",
-                                                                 "confidence", "evidence", "agent", "agent_version"}))
+        self._facts.append(fact.model_dump(mode="json", include={
+            "kind", "subject", "object", "value", "trust", "confidence", "evidence", "agent", "agent_version",
+            "scope", "run_id", "model", "prompt_version", "valid_from", "valid_to"}, exclude_none=True))
         if len(self._facts) >= self.BATCH:
             await self.flush()
         return fact.id
@@ -123,6 +126,10 @@ class McpKG:
     async def decide(self, fact_id: str, status: FactStatus, reviewer: str,
                      correction: dict[str, Any] | None = None) -> str:
         raise PolicyError("decisions are made in hitl-service, not through kg-mcp")
+
+    async def invalidate(self, fact_id: str, reason: str, by: str) -> str:
+        await self.flush()
+        return (await self._call("update_fact", {"fact_id": fact_id, "reason": reason, "agent": by}))["fact_id"]
 
     async def facts(self, *, kind: str | None = None, subject: str | None = None,
                     current: bool = True) -> list[Fact]:
@@ -132,8 +139,38 @@ class McpKG:
     async def search(self, text: str, *, limit: int = 10) -> list[Fact]:
         return [_fact(d) for d in await self._call("search_context", {"text": text, "limit": limit}) or []]
 
-    async def context(self, key: str, limit: int = 50) -> dict[str, Any]:
-        return await self._call("get_context_pack", {"key": key, "limit": limit})
+    async def context(self, key: str, limit: int = 50, token_budget: int | None = None) -> dict[str, Any]:
+        args: dict[str, Any] = {"key": key, "limit": limit}
+        if token_budget is not None:
+            args["token_budget"] = token_budget
+        return await self._call("get_context_pack", args)
+
+    async def neighbors(self, key: str) -> list[Fact]:
+        return [_fact(d) for d in await self._call("get_neighbors", {"key": key}) or []]
+
+    async def source_context(self, key: str) -> dict[str, Any]:
+        return await self._call("get_source_context", {"key": key})
+
+    async def lineage(self, key: str, direction: str = "upstream", depth: int = 5) -> list[dict[str, Any]]:
+        return await self._call("get_lineage", {"key": key, "direction": direction, "depth": depth}) or []
+
+    async def join_paths(self, a: str, b: str, max_hops: int = 4) -> list[list[dict[str, Any]]]:
+        return await self._call("find_join_paths", {"a": a, "b": b, "max_hops": max_hops}) or []
+
+    async def add_context(self, subject: str, text: str, agent: str, source: str = "agent") -> str:
+        await self.flush()
+        return (await self._call("add_context", {"subject": subject, "text": text, "agent": agent,
+                                                 "source": source}))["fact_id"]
+
+    async def link_entities(self, subject: str, obj: str, relation: str, agent: str) -> str:
+        await self.flush()
+        return (await self._call("link_entities", {"subject": subject, "object": obj, "relation": relation,
+                                                   "agent": agent}))["fact_id"]
+
+    async def flag_conflict(self, fact_a: str, fact_b: str, reason: str, agent: str) -> str:
+        await self.flush()
+        return (await self._call("flag_conflict", {"fact_a": fact_a, "fact_b": fact_b, "reason": reason,
+                                                   "agent": agent}))["fact_id"]
 
     async def feedback_history(self, *, kinds: list[str] | None = None, app_id: str | None = None,
                                text: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
@@ -146,7 +183,7 @@ class McpKG:
     # ------------------------------------------------------------------ model tools
     async def tools(self, allow: tuple[str, ...] = READ_TOOLS, max_chars: int = 6000) -> list[McpTool]:
         """kg-mcp tools for a model; only read tools may be offered (models never write knowledge directly)."""
-        bad = set(allow) - set(READ_TOOLS)
+        bad = set(allow) - set(ALL_READ_TOOLS)
         if bad:
             raise PolicyError(f"only read tools may be given to a model: {sorted(bad)}")
         out = []

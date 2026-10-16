@@ -65,6 +65,7 @@ async def record_memory(propose: Propose, memory: TranslationMemory, known: set[
                 trust=Trust.VALIDATED if e.status == "ai_validated" else Trust.INFERRED,
                 value={"statement": e.statement, "input_columns": e.input_columns, "sql": e.sql, "status": e.status,
                        "app_id": e.app_id, "replaces_rule": e.replaces_rule},
+                model=e.model, prompt_version=e.prompt_version,
                 evidence=[Evidence(kind="query_result" if e.status == "ai_validated" else "rule_check",
                                    ref=f"{app_id}:{run_id}")]))
     for c in memory.checks:

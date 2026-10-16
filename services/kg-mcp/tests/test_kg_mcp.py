@@ -6,7 +6,7 @@ from fastmcp.exceptions import ToolError
 from kg_mcp.server import create_server
 
 FACT = {"kind": "reads_source", "subject": "app:a/table:Orders", "object": "source:Dremio_Sales:sales.erp.orders_v2",
-        "value": {"via": "sql"}, "trust": "documented", "agent": "bi_extractor",
+        "value": {"via": "sql", "statement": 6}, "trust": "documented", "agent": "bi_extractor",
         "evidence": [{"kind": "script_span", "ref": "a/script.qvs:28-29"}]}
 
 
@@ -31,7 +31,9 @@ async def test_tools_are_listed(server):
     assert names == {"register_entity", "propose_fact", "get_entity", "get_facts", "search_context",
                      "propose_facts", "register_entities",
                      "get_context_pack", "find_similar_facts", "get_feedback_history",
-                     "subscribe_events"}  # no decide: decisions come only from hitl-service
+                     "subscribe_events", "update_fact", "get_neighbors", "get_source_context", "get_lineage",
+                     "find_join_paths", "add_context", "link_entities", "flag_conflict", "record_feedback",
+                     "run_readonly_cypher"}  # record_feedback refuses any caller but hitl-service
 
 
 async def test_register_propose_read_search(server):

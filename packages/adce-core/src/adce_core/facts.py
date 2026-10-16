@@ -65,14 +65,27 @@ class Fact(BaseModel):
     agent_version: str = "0.1.0"
     status: FactStatus = FactStatus.PROPOSED
     supersedes: str | None = None
-    valid_from: datetime | None = None
+    valid_from: datetime | None = None  # when it became true in the data
+    valid_to: datetime | None = None  # when it stopped being true in the data
     recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    invalidated_at: datetime | None = None  # set on the row that invalidates an earlier fact (KGPort.invalidate)
+    # provenance and isolation (Technical Design §11.1)
+    tenant: str = "default"  # the client the knowledge belongs to; a store refuses other tenants' facts
+    scope: str | None = None  # the source or schema it is about, when it has one
+    run_id: str | None = None  # the run that proposed it (BaseAgent.propose)
+    model: str | None = None  # the model that produced it, for AI-assisted facts
+    prompt_version: str | None = None  # the prompt version of that model call
+    impact: int | None = None  # number of facts that depend on it (the trust gate's input)
 
     @property
     def id(self) -> str:
-        """Stable content id: the same proposal always gets the same id, so re-runs are idempotent."""
-        payload = json.dumps({"k": self.kind, "s": self.subject, "o": self.object, "v": self.value,
-                              "st": self.status.value, "sup": self.supersedes}, sort_keys=True, default=str)
+        """Stable content id: the same proposal always gets the same id, so re-runs are idempotent. The tenant is
+        part of it (outside the default tenant), so two clients' identical facts stay two facts."""
+        body: dict[str, Any] = {"k": self.kind, "s": self.subject, "o": self.object, "v": self.value,
+                                "st": self.status.value, "sup": self.supersedes}
+        if self.tenant != "default":
+            body["t"] = self.tenant
+        payload = json.dumps(body, sort_keys=True, default=str)
         return hashlib.sha256(payload.encode()).hexdigest()[:24]
 
     @property

@@ -12,7 +12,7 @@ import json
 import re
 from typing import Any
 
-from adce_core.agent import AgentContext, AgentKind, AgentResult, AgentSpec, BaseAgent
+from adce_core.agent import AgentBudget, AgentContext, AgentKind, AgentResult, AgentSpec, BaseAgent
 from adce_core.artifacts import put_json
 from adce_core.facts import Evidence, Fact, Trust
 from adce_reversesql.charts import ChartTranslator, DataModel
@@ -35,7 +35,7 @@ def export_key(app_id: str, file: str, sheet: str) -> str:
 class JoinPlanner(BaseAgent):
     spec = AgentSpec(number=23, name="join_planner", version="0.1.0", kind=AgentKind.HYBRID,
                      triggers=["measures.translated"], emits=["joins.planned"],
-                     writes=["associates", "model_issue", "join_plan"])
+                     writes=["associates", "model_issue", "join_plan"], hitl_modes=["queue"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         result = AgentResult()
@@ -85,7 +85,8 @@ class JoinPlanner(BaseAgent):
 class ReportParser(BaseAgent):
     spec = AgentSpec(number=21, name="report_parser", version="0.1.0", kind=AgentKind.HYBRID,
                      triggers=["upload.classified[bi_app]"], emits=["exports.parsed"],
-                     writes=["report_export", "export_unreadable"], routes=["parse_export"])
+                     writes=["report_export", "export_unreadable"], routes=["parse_export"], hitl_modes=["queue"],
+                     budget=AgentBudget(max_calls=20))
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         result = AgentResult()
@@ -127,7 +128,8 @@ class MetricChoice(BaseModel):
 class MetricMapper(BaseAgent):
     spec = AgentSpec(number=22, name="metric_mapper", version="0.1.0", kind=AgentKind.HYBRID,
                      triggers=["exports.parsed", "joins.planned"], emits=["metrics.mapped"],
-                     writes=["export_maps_to", "export_unmapped"], routes=["map_metric"])
+                     writes=["export_maps_to", "export_unmapped"], routes=["map_metric"], hitl_modes=["ask"],
+                     budget=AgentBudget(max_calls=40))
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         result = AgentResult()

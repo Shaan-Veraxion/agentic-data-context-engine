@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     neo4j_user: str = "neo4j"
     neo4j_password: str = "adce-neo4j-pass"
     kg_group: str = "adce"  # Graphiti partition; one per tenant in client installs
+    tenant: str | None = None  # ADCE_TENANT: the client this installation's knowledge belongs to; required by the
+    #                            knowledge service (it refuses to start without one: isolation fails closed)
 
     s3_endpoint: str = "http://localhost:8333"
     s3_access_key: str = "adce"

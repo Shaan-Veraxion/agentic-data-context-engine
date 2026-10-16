@@ -74,6 +74,8 @@ class MemoryEntry:
     replaces_rule: bool = False  # a validated correction of what the rules produce for this statement
     proven: bool = False  # passed on two or more apps' data and never failed (knowledge service: memory_check)
     learned_at: str = ""  # ISO time the knowledge service recorded it (compared with reviewer rejections)
+    model: str | None = None  # the model that proposed it (none for reviewer SQL)
+    prompt_version: str | None = None
 
 
 def memory_key(statement: str, input_columns: list[str] | None) -> str:
@@ -160,6 +162,8 @@ class Outcome:
     notes: str = ""
     model_calls: int = 0  # gateway calls answered (live, memo or replay)
     tool_calls: int = 0  # tools the model called inside those calls
+    model: str | None = None  # the model of the last answer, and its prompt version (fact provenance)
+    prompt_version: str | None = None
 
 
 RELATIONS_NOTE = ("Tables of the script loaded before this statement that it names. Your SELECT may read them by "
@@ -371,7 +375,7 @@ def judge_statement(app: BIApp, u: Untranslated, out: StatementTranslation, over
     if ok:
         o.status, o.sql = ("ai_validated" if level in ("V3", "V4", "V5") else "ai_checked"), out.sql
         memory.add(MemoryEntry(statement=u.text, input_columns=u.input_columns, sql=out.sql, status=o.status,
-                               app_id=app.app_id))
+                               app_id=app.app_id, model=o.model, prompt_version=o.prompt_version))
         return "accepted"
     feedback.append({"sql": out.sql, "problems": problems})
     return "retry"
@@ -433,7 +437,8 @@ def judge_fix(app: BIApp, table: str, fix: MismatchFix, stmts: list[dict[str, An
         overrides[sid] = fix.sql
         o.statement, o.status, o.sql = sid, "ai_repaired", fix.sql
         memory.add(MemoryEntry(statement=target["text"], input_columns=target["input_columns"], sql=fix.sql,
-                               status="ai_validated", app_id=app.app_id, replaces_rule=True))
+                               status="ai_validated", app_id=app.app_id, replaces_rule=True, model=o.model,
+                               prompt_version=o.prompt_version))
         return "accepted"
     feedback.append({"statement": sid, "sql": fix.sql, "problems": bad})
     return "retry"
@@ -675,6 +680,8 @@ def _verify(app: BIApp, u: Untranslated, sql: str, overrides: dict[int, str],
 
 
 def _count(o: Outcome, res: Any) -> None:
+    o.model = getattr(res, "model", None) or o.model
+    o.prompt_version = getattr(res, "prompt_version", None) or o.prompt_version
     o.model_calls += 1
     o.tool_calls += len(getattr(res, "tool_calls", []) or [])
 
@@ -828,5 +835,6 @@ async def explain_gaps(app: BIApp, t: Translation, gateway: Any, scripts: dict[s
         assert isinstance(a, GapAnalysis)
         out.append({"kind": s["kind"], "span": f"{s['file']}:{s['line']}", "statement": s["statement"],
                     "tables": sorted({x["table"] for x in s["statements"] if x.get("table")}),
-                    "reason": s["reason"], **a.model_dump(), "model": getattr(res, "model", "")})
+                    "reason": s["reason"], **a.model_dump(), "model": getattr(res, "model", ""),
+                    "prompt_version": getattr(res, "prompt_version", None)})
     return out

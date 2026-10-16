@@ -57,7 +57,8 @@ def classify_file(name: str, head: bytes) -> FileClass:
 
 class IntakeRouter(BaseAgent):
     spec = AgentSpec(number=1, name="intake_router", version="0.1.0", kind=AgentKind.DETERMINISTIC,
-                     triggers=["upload.received"], emits=["upload.classified[bi_app]"], writes=["bi_input"])
+                     triggers=["upload.received"], emits=["upload.classified[bi_app]"], writes=["bi_input"],
+                     group="ingestion", hitl_modes=["gate"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         """job: {"app_id": str, "app_name": str?, "files": [{"name": str, "key": str}]}"""

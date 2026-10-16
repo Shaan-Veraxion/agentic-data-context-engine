@@ -19,7 +19,7 @@ SOURCE = "source:Dremio_Sales:sales.erp.orders_v2"
 def scope_link(**kw: Any) -> Fact:
     base: dict[str, Any] = dict(
         kind="scope_link", subject=TABLE, object=SOURCE, value={"statement": 9, "via": "sql_select"},
-        trust=Trust.DOCUMENTED, agent="bi_extractor",
+        trust=Trust.DOCUMENTED, agent="bi_extractor", tenant="test",
         evidence=[Evidence(kind="script_span", ref="sales_overview/script.qvs:28-29")])
     base.update(kw)
     return Fact(**base)
@@ -38,7 +38,8 @@ async def test_register_propose_and_project(service):
     recs, _, _ = await service.graph.driver.execute_query(
         "MATCH (a:Entity {uuid: $a})-[e:RELATES_TO {uuid: $e}]->(b:Entity {uuid: $b}) "
         "RETURN labels(a) AS la, e.trust AS trust, e.name AS kind, size(e.episodes) AS eps, b.key AS bkey",
-        a=node_uuid(TABLE), e=edge_uuid(fid), b=node_uuid(SOURCE))
+        a=node_uuid(TABLE, service.graph.group_id), e=edge_uuid(fid),
+        b=node_uuid(SOURCE, service.graph.group_id))
     assert len(recs) == 1
     r = recs[0]
     assert "QlikTable" in r["la"] and r["trust"] == "documented" and r["kind"] == "scope_link"
@@ -85,3 +86,37 @@ async def test_projection_rebuilds_from_the_log(service):
     recs, _, _ = await service.graph.driver.execute_query(
         "MATCH ()-[e:RELATES_TO {group_id: $g}]->() RETURN count(e) AS c", g=service.graph.group_id)
     assert recs[0]["c"] == 2
+
+
+async def test_tenants_are_isolated_in_the_log(service):
+    """Another tenant on the same database sees none of this tenant's facts, entities or events, and a fact of one
+    tenant is refused by the other's log."""
+    from adce_kg.fact_log import PostgresFactLog
+
+    other = PostgresFactLog(TEST_DSN, "other_client")
+    try:
+        assert other.query(kind=None, subject=TABLE, current=True) == []
+        assert other.entity(TABLE) is None and other.events_after(0) == []
+        with pytest.raises(ValueError, match="tenant"):
+            other.append(scope_link(), "fact.proposed")  # a fact of tenant "test"
+        assert other.append(scope_link(tenant="default"), "fact.proposed")  # bound to other_client on write
+        assert [f.tenant for f in other.query(kind="scope_link", subject=TABLE, current=True)] == ["other_client"]
+        assert all(f.tenant == "test" for f in await service.facts(subject=TABLE, current=False))
+    finally:
+        other.close()
+
+
+def test_the_log_does_not_start_without_a_tenant():
+    from adce_kg.fact_log import PostgresFactLog
+
+    with pytest.raises(ValueError, match="tenant"):
+        PostgresFactLog(TEST_DSN, "")
+
+
+async def test_readonly_cypher_is_read_only_and_tenant_bound(service):
+    rows = await service.readonly_cypher("MATCH (n:Entity) WHERE n.group_id = $group_id RETURN n.uuid AS u", {}, 5)
+    assert rows and all("u" in r for r in rows)
+    with pytest.raises(PolicyError, match="read queries"):
+        await service.readonly_cypher("MATCH (n) WHERE n.group_id = $group_id DETACH DELETE n", {}, 5)
+    with pytest.raises(PolicyError, match="group_id"):
+        await service.readonly_cypher("MATCH (n) RETURN n LIMIT 1", {}, 5)

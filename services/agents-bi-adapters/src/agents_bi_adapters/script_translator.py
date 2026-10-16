@@ -12,7 +12,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from adce_core.agent import AgentContext, AgentKind, AgentResult, AgentSpec, BaseAgent
+from adce_core.agent import (
+    READ_TOOLS,
+    WRITE_TOOLS,
+    AgentBudget,
+    AgentContext,
+    AgentKind,
+    AgentResult,
+    AgentSpec,
+    BaseAgent,
+)
 from adce_core.bi_ir import BIApp
 from adce_core.facts import Evidence, Fact, FactStatus, Trust
 from adce_reversesql.ai_loop import Outcome, TranslationMemory, Validator, explain_gaps, translate_with_ai
@@ -44,7 +53,9 @@ class ScriptTranslator(BaseAgent):
     spec = AgentSpec(number=28, name="bi_script_translator", version="0.1.0", kind=AgentKind.HYBRID,
                      triggers=["bi_ir.ready"], emits=["bi_transform.ready"],
                      writes=["bi_transform", "translation_memory", "memory_check", "gap_analysis"],
-                     routes=["translate_statement", "explain_gap"])
+                     routes=["translate_statement", "explain_gap"], subgroup="bi_adapters", hitl_modes=["queue"],
+                     tools=[*READ_TOOLS, *WRITE_TOOLS, "get_feedback_history", "model_tools"],
+                     budget=AgentBudget(max_calls=200))
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         """The whole translation in one call (the bench, the command line). The orchestrator runs the same steps as
@@ -111,7 +122,8 @@ class ScriptTranslator(BaseAgent):
                 await self.propose(ctx, Fact(
                     kind="gap_analysis", subject=f"app:{ctx.app_id}/gap:{g['span']}", trust=Trust.INFERRED,
                     confidence={"low": 0.3, "medium": 0.6, "high": 0.8}.get(g["confidence"], 0.5),
-                    value={k: v for k, v in g.items() if k != "model"},
+                    value={k: v for k, v in g.items() if k not in ("model", "prompt_version")},
+                    model=g.get("model") or None, prompt_version=g.get("prompt_version"),
                     evidence=[Evidence(kind="script_span", ref=f"{ctx.app_id}/{file}:{line}")]), result)
         key = save_translation(ctx.artifacts, ctx.app_id, job["bi_ir_key"], overrides, ai_notes,
                                [outcome_record(o) for o in outcomes], analyses)

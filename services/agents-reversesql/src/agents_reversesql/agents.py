@@ -16,7 +16,16 @@ import hashlib
 import json
 from typing import Any
 
-from adce_core.agent import AgentContext, AgentKind, AgentResult, AgentSpec, BaseAgent
+from adce_core.agent import (
+    READ_TOOLS,
+    WRITE_TOOLS,
+    AgentBudget,
+    AgentContext,
+    AgentKind,
+    AgentResult,
+    AgentSpec,
+    BaseAgent,
+)
 from adce_core.artifacts import put_json
 from adce_core.facts import Evidence, Fact, Trust
 from adce_reversesql.ai_loop import diagnose_table, failed_rules, repair_table
@@ -58,7 +67,7 @@ def output_tables(loaded: Any) -> list[str]:
 class Synthesizer(BaseAgent):
     spec = AgentSpec(number=24, name="sql_synthesizer", version="0.1.0", kind=AgentKind.HYBRID,
                      triggers=["bi_transform.ready", "joins.planned"], emits=["sql.candidates"],
-                     writes=["sql_candidate", "chart_sql"])
+                     writes=["sql_candidate", "chart_sql"], hitl_modes=[])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         result = AgentResult()
@@ -112,7 +121,7 @@ class Synthesizer(BaseAgent):
 class QueryChecker(BaseAgent):
     spec = AgentSpec(number=25, name="query_checker", version="0.2.0", kind=AgentKind.HYBRID,
                      triggers=["sql.candidates"], emits=["sql.checked"], writes=["sql_checked"],
-                     routes=["repair_sql"])
+                     routes=["repair_sql"], budget=AgentBudget(max_calls=40))
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         """job: bi_ir_key, translation_key; optional tables (default: every output table) and repair (default true:
@@ -198,7 +207,9 @@ class ReconcilerAgent(BaseAgent):
     spec = AgentSpec(number=26, name="reconciler", version="0.2.0", kind=AgentKind.HYBRID,
                      triggers=["sql.checked", "metrics.mapped"], emits=["report_sql.validated"],
                      writes=["report_sql", "figures_validated", "translation_memory", "memory_check"],
-                     routes=["diagnose_mismatch"])
+                     routes=["diagnose_mismatch"], hitl_modes=["gate"],
+                     tools=[*READ_TOOLS, *WRITE_TOOLS, "get_feedback_history", "model_tools"],
+                     budget=AgentBudget(max_calls=60))
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         """job: bi_ir_key, translation_key, files (classified uploads, for reload log, QVDs, source extracts);
@@ -367,7 +378,8 @@ def lineage(app_id: str, loaded: Any) -> dict[str, Any]:
 
 class Publisher(BaseAgent):
     spec = AgentSpec(number=20, name="publisher_lite", version="0.1.0", kind=AgentKind.DETERMINISTIC,
-                     triggers=["report_sql.validated"], emits=["pack.published"], writes=["pack_published"])
+                     triggers=["report_sql.validated"], emits=["pack.published"], writes=["pack_published", "lineage"],
+                     group="definition", hitl_modes=["gate"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         result = AgentResult()
@@ -388,7 +400,14 @@ class Publisher(BaseAgent):
                 files[f"sql/charts/{c.visual_id}.sql"] = ctx.artifacts.put(
                     f"{base}/sql/charts/{c.visual_id}.sql", apply_mappings(c.sql, mappings).sql.encode(),
                     "application/sql")
-        files["lineage.json"] = put_json(ctx.artifacts, f"{base}/lineage.json", lineage(ctx.app_id, loaded))
+        lin = lineage(ctx.app_id, loaded)
+        files["lineage.json"] = put_json(ctx.artifacts, f"{base}/lineage.json", lin)
+        for job_ in lin["jobs"]:  # lineage as knowledge (19-lite): what each Qlik table is derived from (DERIVED_FROM)
+            table = job_["job"]["name"].removeprefix("load:")
+            await self.propose(ctx, Fact(kind="lineage", subject=table_key(ctx.app_id, table), trust=Trust.DOCUMENTED,
+                                         value={"inputs": job_["inputs"], "outputs": job_["outputs"],
+                                                "dropped": job_["dropped"]},
+                                         evidence=[Evidence(kind="bi_ir", ref=job["bi_ir_key"])]), result)
         files["validation.md"] = ctx.artifacts.put(f"{base}/validation.md",
                                                    _validation_md(validation, figures).encode(), "text/markdown")
         files["review.md"] = ctx.artifacts.put(f"{base}/review.md", _review_md(loaded, charts).encode(),

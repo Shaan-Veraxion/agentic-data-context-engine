@@ -33,8 +33,9 @@ from graphiti_core.search.search_utils import edge_fulltext_search  # noqa: E402
 NS = uuid.UUID("6f1c3e2a-8d1b-4b7e-9a51-adce00000001")
 
 
-def node_uuid(key: str) -> str:
-    return str(uuid.uuid5(NS, f"entity:{key}"))
+def node_uuid(key: str, group: str = "adce") -> str:
+    """An entity's node id: its key within the tenant's group (the same key in two tenants is two nodes)."""
+    return str(uuid.uuid5(NS, f"entity:{key}" if group == "adce" else f"entity:{group}:{key}"))
 
 
 def edge_uuid(fact_id: str) -> str:
@@ -95,7 +96,8 @@ class GraphitiProjector:
             await self._save_fact(Fact(**payload["fact"]))
 
     async def _save_entity(self, e: Entity) -> EntityNode:
-        node = EntityNode(uuid=node_uuid(e.key), name=e.name, group_id=self.group_id, labels=[_label(e.type)],
+        node = EntityNode(uuid=node_uuid(e.key, self.group_id), name=e.name, group_id=self.group_id,
+                          labels=[_label(e.type)],
                           summary=f"{e.type} {e.key}",
                           attributes={"key": e.key, "entity_type": e.type, **_scalar_props(e.attributes, "attr_")})
         await node.generate_name_embedding(self.embedder)
@@ -103,7 +105,7 @@ class GraphitiProjector:
         return node
 
     async def _ensure_node(self, key: str) -> str:
-        uid = node_uuid(key)
+        uid = node_uuid(key, self.group_id)
         records, _, _ = await self.driver.execute_query("MATCH (n:Entity {uuid: $uuid}) RETURN n.uuid AS uuid",
                                                          uuid=uid, routing_="r")
         if not records:
@@ -133,7 +135,8 @@ class GraphitiProjector:
             attributes={"fact_id": fid, "trust": f.trust.value, "status": f.status.value,
                         "confidence": f.confidence, "agent": f.agent, "agent_version": f.agent_version,
                         "value_json": json.dumps(f.value, default=str, sort_keys=True),
-                        "supersedes": f.supersedes})
+                        "supersedes": f.supersedes, "tenant": f.tenant, "run_id": f.run_id, "model": f.model,
+                        "prompt_version": f.prompt_version})
         await edge.generate_embedding(self.embedder)
         await edge.save(self.driver)
         if f.supersedes:
@@ -162,7 +165,7 @@ class GraphitiProjector:
         records, _, _ = await self.driver.execute_query(
             "MATCH (n:Entity {uuid: $uuid})-[e:RELATES_TO]-(m:Entity) WHERE e.expired_at IS NULL "
             "RETURN e.fact_id AS fact_id, e.name AS kind, m.key AS other, e.trust AS trust LIMIT $limit",
-            uuid=node_uuid(key), limit=limit, routing_="r")
+            uuid=node_uuid(key, self.group_id), limit=limit, routing_="r")
         return [dict(r) for r in records]
 
     async def wipe_group(self) -> None:

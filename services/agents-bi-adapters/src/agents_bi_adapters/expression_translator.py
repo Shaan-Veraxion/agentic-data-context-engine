@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from adce_core.agent import AgentContext, AgentKind, AgentResult, AgentSpec, BaseAgent
+from adce_core.agent import AgentBudget, AgentContext, AgentKind, AgentResult, AgentSpec, BaseAgent
 from adce_core.facts import Evidence, Fact, Trust
 from adce_reversesql.charts import ChartTranslator
 from adce_reversesql.runtime import load_translation
@@ -31,7 +31,8 @@ def measure_key(app_id: str, visual_id: str, measure_id: str) -> str:
 class ExpressionTranslator(BaseAgent):
     spec = AgentSpec(number=29, name="bi_expression_translator", version="0.1.0", kind=AgentKind.HYBRID,
                      triggers=["bi_transform.ready"], emits=["measures.translated"], writes=["measure_translation"],
-                     routes=["translate_expression"])
+                     routes=["translate_expression"], subgroup="bi_adapters", hitl_modes=["ask"],
+                     budget=AgentBudget(max_calls=60))
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         result = AgentResult()

@@ -14,6 +14,7 @@ config:
   ADCE_NEO4J_URI: bolt://neo4j:7687
   ADCE_NEO4J_USER: neo4j
   ADCE_KG_GROUP: adce
+  ADCE_TENANT: adce                                  # the client whose knowledge this install holds (required)
   ADCE_S3_ENDPOINT: https://storage.googleapis.com   # GCS through its S3-compatible XML API in Google Cloud
   ADCE_S3_BUCKET: adce-artifacts
   ADCE_S3_REGION: auto

@@ -134,7 +134,24 @@ artifact store, `run_id`, `app_id` and the model `gateway` (or `None` when AI is
 where the `latency_ms` numbers on the bench come from.
 
 `self.propose(ctx, fact, result)` is the only way an agent writes knowledge. It refuses a fact kind that is not in
-`spec.writes` (`PolicyViolation`) and stamps the agent's name and version on the fact.
+`spec.writes` (`PolicyViolation`) and stamps the agent's name, version and run on the fact.
+
+Before `run`, `__call__` reads the application's **context pack** (`read_context`, `spec.context_budget` tokens,
+default 2000) into `ctx.context` when the spec grants `get_context_pack`; the metric `context_facts` says how
+many facts it held. Prompts do not include it yet (that would change every recorded model answer); agents can use it
+in code.
+
+The spec is enforced at run time (`BaseAgent.bind(ctx)`, applied by `__call__` and by graph nodes that call an
+agent's steps directly through `pipeline._actx`):
+
+| Spec field | Enforced by | What happens |
+|---|---|---|
+| `writes` | `propose` | a fact of another kind is refused |
+| `tools` | `GuardedKG` around `ctx.kg` | a knowledge tool outside the list is refused (e.g. `record_feedback`, only for the review service); default: the read tools and propose/register/context/link/conflict; 26 and 28 add `model_tools` and `get_feedback_history` |
+| `routes` | `BudgetedGateway` around `ctx.gateway` | a model route outside the list is refused |
+| `budget` (`max_calls`, `max_usd`) | `BudgetedGateway` | past the budget a call raises `BudgetExceeded`, handled like an unavailable provider (the statement is `skipped`); one counter per agent per run |
+| `emits` | `check_events` | an event not in the spec, or not declared in [events.py](../packages/adce-core/src/adce_core/events.py), is refused |
+| `group`, `subgroup`, `hitl_modes` | (descriptive) | the agent catalogue: e.g. 27-29 are group reversesql, subgroup bi_adapters |
 
 ### 3.2 Facts, trust and evidence
 
@@ -152,7 +169,18 @@ confidence, evidence[], agent, status, supersedes}`.
   superseded ones.
 
 The write policy (`check_policy` in ports.py) runs in every implementation: evidence required, agent named,
-confidence in 0..1, only `proposed` status.
+confidence in 0..1, only `proposed` status, and the **fact kind's contract**
+([fact_schemas.py](../packages/adce-core/src/adce_core/fact_schemas.py)): the kind must be declared and its value
+must carry the kind's required keys (extra keys are allowed). That file also maps the code's kind names to the
+design's (e.g. `associates` = `bi_model_link`); the names were kept because renaming would change every fact id.
+Outbox payloads are checked the same way (`events.outbox_problems`).
+
+**Provenance and isolation** (fields on every fact, migration 0005): `tenant` (the client; a store bound to one
+tenant refuses another's facts, and the id includes the tenant), `scope`, `run_id` (set by `propose`), `model` and
+`prompt_version` (AI-assisted facts: learned answers, gap analyses), `impact`, `valid_from` / `valid_to` (when true
+in the data), `recorded_at` / `invalidated_at` (when believed). **Invalidation** (`KGPort.invalidate(fact_id,
+reason, by)`, kg-mcp tool `update_fact`) appends a row with status superseded pointing at the fact; current reads
+hide both, nothing is deleted.
 
 ### 3.3 Ports
 
@@ -660,13 +688,33 @@ user = inputs as JSON) → provider (primary, then fallbacks) → validate again
 
 - **Record of truth:** the Postgres fact log ([fact_log.py](../packages/adce-kg/src/adce_kg/fact_log.py)). Each
   write commits the fact and an **outbox event** (`fact.proposed`, `fact.confirmed`, `fact.rejected`,
-  `entity.registered`) in one transaction.
+  `fact.superseded`, `entity.registered`) in one transaction. **A log is bound to one tenant**
+  (`PostgresFactLog(dsn, tenant)`): every read and write is filtered by `tenant_id`, entities are keyed by (tenant,
+  key), outbox events carry the tenant. The knowledge service takes the tenant from `ADCE_TENANT` and **does not
+  start without it** (isolation fails closed); the tenant is also the Graphiti group, and node ids include it.
 - **Graph:** [graphiti_projection.py](../packages/adce-kg/src/adce_kg/graphiti_projection.py) projects the outbox
   into Graphiti on Neo4j (entities = nodes, facts = edges, evidence = episodes, superseded edges expired). It can
   always be rebuilt from the log. It is used for search and context packs.
 - **KnowledgeService** ([service.py](../packages/adce-kg/src/adce_kg/service.py)): the `KGPort` over both.
+- **The write path** (every `propose_fact`, in MemoryKG and KnowledgeService alike): policy (`check_policy`, with
+  the fact kind's contract) → **validator** (`queries.conflict_with`: a proposal of a one-value-per-subject kind,
+  `resolves_to`, `variable_value`, `primary_key`, `translation_override`, that disagrees with a confirmed fact is
+  kept, and a `conflict` fact plus a `conflict.flagged` event are written; nothing is overwritten) → **trust gate**
+  (`queries.impact_of`: facts about the same entity, stored as `impact`; `queries.gate`: `gate` for kinds a person
+  must approve, `auto` for validated, confident (≥ 0.9), low-impact facts, `queue` otherwise; the route is the
+  `review` field of the `fact.proposed` event) → commit and outbox in one transaction. Conflicts become Queue items
+  in the review service (keep the confirmed fact, or accept the new one, which invalidates the old one).
+- **Queries** ([queries.py](../packages/adce-core/src/adce_core/queries.py), the same for every store):
+  `neighbors`, `source_context`, `lineage` (upstream / downstream over `lineage` facts), `join_paths` (shortest
+  association paths, trusted links first), `context_pack` (the entity's and its children's facts, highest trust
+  first, newest first, trimmed to a token budget, deterministic).
 - **kg-mcp** ([server.py](../services/kg-mcp/src/kg_mcp/server.py)): the same operations as MCP tools; the only way
-  agents reach knowledge in a deployment (ADR-2). `McpKG` ([client.py](../services/kg-mcp/src/kg_mcp/client.py))
+  agents reach knowledge in a deployment (ADR-2). Tools: register_entity(ies), propose_fact(s), get_entity,
+  get_facts, search_context, find_similar_facts, get_context_pack (with `token_budget`), get_neighbors,
+  get_source_context, get_lineage, find_join_paths, add_context, link_entities, flag_conflict, update_fact
+  (invalidate), get_feedback_history, subscribe_events, record_feedback (refused unless the caller is
+  hitl-service), run_readonly_cypher (write clauses refused, the query must filter on `$group_id`, which the server
+  binds to the tenant; read routing; row limit). `McpKG` ([client.py](../services/kg-mcp/src/kg_mcp/client.py))
   is the client: it buffers writes and flushes in batches, and `tools()` exposes **read** tools to a model. The
   bench runs an in-process kg-mcp over a `MemoryKG` (`McpKG.serving(...)`), which is why its results show
   `kg-mcp calls`.
@@ -678,12 +726,12 @@ Fact kinds you will see, by writer:
 | Writer | Kinds |
 |--------|-------|
 | 1 intake | `bi_input` |
-| 27 extract | `bi_table`, `contains`, `reads_source`, `stores_qvd`, `reads_qvd`, `uses_mapping`, `variable_value`, `bi_issue`, row counts |
+| 27 extract | `bi_table`, `contains`, `reads_source`, `stores_qvd`, `reads_qvd`, `uses_mapping`, `variable_value`, `bi_issue`, `rls_requirement`, row counts |
 | 28 translate | `bi_transform`, `translation_memory`, `memory_check`, `gap_analysis` |
 | 24 synthesize | `sql_candidate`, `chart_sql` |
 | 25 check / repair | `sql_checked` |
 | 26 reconcile / diagnose / record | `report_sql`, `figures_validated`, `translation_memory` and `memory_check` (diagnosis) |
-| 20 publish | `pack_published` |
+| 20 publish (19-lite lineage) | `pack_published`, `lineage` (per table: inputs and outputs, OpenLineage-shaped) |
 | reviewers | decisions on `report_sql`; `translation_override`, `bi_gap_accepted`, `variable_value`, `resolves_to`, `gap_answer`, `bi_issue_acknowledged` |
 
 ---
@@ -834,6 +882,10 @@ tokens, latency and error.
 | `join_fields` warning | a JOIN/KEEP with no shared field (cartesian product in Qlik too) | the script lines named in the warning |
 | `loop_unrolled_from_log` issue | a file-list loop was unrolled with the values the reload log showed | the issue message lists them; check they are all the files |
 | Re-run validated fewer tables than expected | it was scoped to the tables the change touches | trace `scope` (hints, tables); the result's `validated` |
+| `PolicyError: <kind> needs <key>` or `not declared` | a fact that does not follow its kind's contract | fact_schemas.py: add the key to the value, or declare the kind |
+| `PolicyViolation: <agent> may not call the knowledge tool` / `model route` | the agent's spec does not grant it | the agent's `AgentSpec(tools=..., routes=...)` |
+| A `conflict` review item | a proposal disagrees with a fact a person confirmed | the item's reason; keep the confirmed fact or accept the new one |
+| `ADCE_TENANT is not set` | the knowledge service starts only with a tenant | set `ADCE_TENANT` (local: `default`) |
 | `prj_object_not_understood` | a QlikView -prj object whose XML shape the reader does not know | send the file: the reader learns the shape |
 | `section_access` issue | the script has Section Access; it is a requirement, not SQL | review.md "Row-level security"; `rls_requirement` facts |
 | Level shown "(within tolerance, drift)" | counts or sums differ within the tolerance | the comparisons with basis `within tolerance (drift)` |
@@ -871,6 +923,8 @@ Be aware of these when you read specs:
 - Translation is still composed for the whole application on a scoped re-run (it is one pure function of the BI IR
   and the overrides); only the model calls, checks and validation are limited to the affected tables.
 - The QlikView -prj reader is checked on synthetic samples only.
+- The trust gate routes proposals (`review` on the event), but nothing accepts `auto` facts automatically yet
+  (step 4); prompts do not include the context pack yet.
 - No grain (key uniqueness) facts yet, so `fan_out` cannot accept pre-aggregated many-to-one joins (phase PD).
 - Grouped comparisons per dimension member (to pinpoint mismatching rows) are not built; the diagnosis gets
   per-field aggregates.

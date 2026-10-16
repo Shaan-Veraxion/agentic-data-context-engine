@@ -8,6 +8,7 @@ config:
   ADCE_VERTEX_PROJECT: client-vertex-project
   ADCE_KEYCLOAK_ISSUER: https://login.client.example/realms/adce
   ADCE_KG_GROUP: client
+  ADCE_TENANT: client
 secrets:
   existingSecret: adce-secrets
 services:

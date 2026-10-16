@@ -37,7 +37,8 @@ class BIExtractor(BaseAgent):
         triggers=["upload.classified[bi_app]", "bi_inputs.received"], emits=["bi_ir.ready"],
         writes=["bi_table", "contains", "reads_source", "stores_qvd", "reads_qvd", "uses_mapping", "variable_value",
                 "loaded_rows", "qvd_header", "bi_coverage", "bi_issue", "bi_measure", "bi_visual",
-                "rls_requirement"])
+                "rls_requirement"],
+        subgroup="bi_adapters", hitl_modes=["ask", "gate"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         """job: {"files": [{"name", "key", "class"}]} as produced by the intake router."""

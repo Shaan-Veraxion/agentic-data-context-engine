@@ -36,6 +36,7 @@ DECISIONS: dict[str, set[str]] = {
     "unresolved_variable": {"answer"},
     "map_source": {"map"},
     "gap": {"answer", "accept_gap"},
+    "conflict": {"keep_confirmed", "accept_new"},
 }
 LEVEL_UNCERTAINTY = {"none": 1.0, "V0": 0.9, "V1": 0.7, "V2": 0.5, "V3": 0.25, "V4": 0.1, "V5": 0.05}
 
@@ -203,6 +204,16 @@ class ReviewService:
                 title=f"{v.get('pattern') or 'untranslated block'} ({v.get('span')}): {v.get('summary', '')[:120]}",
                 detail=v, options=sorted(DECISIONS["gap"]), impact=5,
                 uncertainty={"low": 1.0, "medium": 0.8, "high": 0.6}.get(v.get("confidence", ""), 0.8)))
+        reads = {f.object for f in await self._facts_for_app(app_id, "reads_source") if f.object}
+        conflicts = [f for f in await self.kg.facts(kind="conflict")
+                     if f.subject.startswith(f"app:{app_id}/") or f.subject == app_key or f.subject in reads]
+        for f in conflicts:  # the validator found a contradiction with a confirmed fact (kg-mcp write path)
+            v = f.value
+            items.append(ReviewItem(
+                id=_id(app_id, "conflict", f.id), app_id=app_id, mode="queue", kind="conflict", subject=f.subject,
+                fact_id=f.id,
+                title=f"conflict on {v.get('kind')} {f.subject.split(':')[-1]}: {v.get('reason', '')[:120]}",
+                detail=v, options=sorted(DECISIONS["conflict"]), impact=4, uncertainty=1.0))
         for src in await self._pending_sources(app_id):
             items.append(ReviewItem(
                 id=_id(app_id, "map", src), app_id=app_id, mode="seed", kind="map_source", subject=src,
@@ -257,6 +268,14 @@ class ReviewService:
 
     async def _apply(self, item: ReviewItem, decision: str, reviewer: str, payload: dict[str, Any]) -> str | None:
         ev = [Evidence(kind="reviewer", ref=f"review_item:{item.id}", detail={"reviewer": reviewer})]
+        if item.kind == "conflict":
+            old_id, new_id = item.detail["facts"]
+            if decision == "keep_confirmed":  # the proposal is rejected; the confirmed fact stays
+                return await self.kg.decide(new_id, FactStatus.REJECTED, reviewer,
+                                            {"reason": payload.get("reason") or "conflicts with a confirmed fact"})
+            await self.kg.invalidate(old_id, payload.get("reason") or "replaced after a conflict review",
+                                     f"reviewer:{reviewer}")
+            return await self.kg.decide(new_id, FactStatus.CONFIRMED, reviewer, None)
         if item.kind == "approve_sql":
             assert item.fact_id
             status = FactStatus.CONFIRMED if decision == "approve" else FactStatus.REJECTED

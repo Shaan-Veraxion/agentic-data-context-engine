@@ -49,7 +49,7 @@ async def service():
     from adce_kg import KnowledgeService
 
     migrate_fresh(TEST_DSN)
-    svc = await KnowledgeService.from_settings(Settings(embedder="hash"), dsn=TEST_DSN,
+    svc = await KnowledgeService.from_settings(Settings(embedder="hash", tenant="test"), dsn=TEST_DSN,
                                                group_id=f"test_{uuid.uuid4().hex[:10]}")
     yield svc
     if svc.graph:

@@ -143,6 +143,15 @@ def _ctx(state: PipelineState, runtime: Runtime[Deps]) -> AgentContext:
                         gateway=d.gateway)
 
 
+def _actx(state: PipelineState, runtime: Runtime[Deps], agent: BaseAgent) -> AgentContext:
+    """The context an agent's step runs with when the graph calls it directly: bound to the agent's tools, routes
+    and budget (BaseAgent.bind), with one budget counter per agent for the whole run."""
+    ctx = agent.bind(_ctx(state, runtime))
+    if ctx.gateway is not None:
+        ctx = replace(ctx, gateway=runtime.context.work.setdefault(f"gateway:{agent.spec.name}", ctx.gateway))
+    return ctx
+
+
 def _stamp(agent: BaseAgent, metrics: dict[str, Any], t0: float) -> dict[str, Any]:
     """The metrics BaseAgent.__call__ adds, for an agent step the graph calls directly."""
     metrics.setdefault("agent", f"{agent.spec.name}@{agent.spec.version}")
@@ -267,7 +276,7 @@ async def _work(state: PipelineState, runtime: Runtime[Deps]) -> TranslateWork:
     deps = runtime.context
     w = deps.work.get("translate")
     if w is None:
-        w = await ScriptTranslator().prepare(_translate_job(state, runtime), _ctx(state, runtime))
+        w = await ScriptTranslator().prepare(_translate_job(state, runtime), _actx(state, runtime, ScriptTranslator()))
         deps.work["translate"] = w
     return w
 
@@ -351,7 +360,8 @@ async def t_propose(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, A
     overrides = _overrides(tr)
     inputs, kw = statement_request(w.app, u, w.memory, script_settings(w.app), feedback, overrides, w.validator,
                                    tools=w.use_tools, kg_tools=w.kg_tools)
-    res, nxt = await call_model(runtime.context.gateway, "translate_statement", inputs, StatementTranslation, o,
+    gateway = _actx(state, runtime, ScriptTranslator()).gateway
+    res, nxt = await call_model(gateway, "translate_statement", inputs, StatementTranslation, o,
                                 task=f"{state['run_id']}:translate", kw=kw)
     verdict = nxt
     if res is not None:
@@ -374,7 +384,7 @@ async def t_finish(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, An
     tr = _need(state, "tr")
     w = await _work(state, runtime)
     agent = ScriptTranslator()
-    r = await agent.finish(_translate_job(state, runtime), _ctx(state, runtime), w, _overrides(tr),
+    r = await agent.finish(_translate_job(state, runtime), _actx(state, runtime, agent), w, _overrides(tr),
                            [Outcome(**d) for d in tr["outcomes"]])
     m = _stamp(agent, r.metrics, runtime.context.work.get("translate_t0", time.perf_counter()))
     return {"translation_key": r.outputs["translation_key"], "events": r.events, "metrics": {"translate": m},
@@ -432,7 +442,7 @@ def _fan_check(state: PipelineState) -> Any:
 async def check_one(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
     t = _need(state, "table")
     loaded = load_translation(runtime.context.artifacts, _need(state, "bi_ir_key"), state.get("translation_key"))
-    c = await QueryChecker().check_one(_ctx(state, runtime), AgentResult(), loaded, t)
+    c = await QueryChecker().check_one(_actx(state, runtime, QueryChecker()), AgentResult(), loaded, t)
     return {"checks": {t: c}, "trace": _t("check", table=t, ok=c["ok"], failing=c["failing"][:3],
                                           warnings=c.get("warnings", [])[:3])}
 
@@ -443,7 +453,7 @@ async def check_join(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, 
     passed = sum(1 for t in tables if checks.get(t, {}).get("ok"))
     agent = QueryChecker()
     loaded = load_translation(runtime.context.artifacts, _need(state, "bi_ir_key"), state.get("translation_key"))
-    charts = await agent.check_charts(_ctx(state, runtime), AgentResult(), loaded)
+    charts = await agent.check_charts(_actx(state, runtime, agent), AgentResult(), loaded)
     m: dict[str, Any] = {"passed": passed, "agent": f"{agent.spec.name}@{agent.spec.version}"}
     if charts:
         m["charts_passed"] = sum(c["ok"] for c in charts.values())
@@ -471,7 +481,7 @@ def _after_check(state: PipelineState) -> Any:
 
 async def repair(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
     tables = _failing(state)
-    key, outcomes = await QueryChecker().repair({**_job(state)}, _ctx(state, runtime), tables)
+    key, outcomes = await QueryChecker().repair({**_job(state)}, _actx(state, runtime, QueryChecker()), tables)
     loop = dict(state.get("loop", {}))
     loop["repairs"] = loop.get("repairs", 0) + 1
     loop["repaired"] = bool(key)
@@ -490,7 +500,7 @@ def _after_repair(state: PipelineState) -> Any:
 async def reconcile_one(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
     t = _need(state, "table")
     job = {**_job(state), "tolerance": runtime.context.tolerance}
-    e = ReconcilerAgent().validate(job, _ctx(state, runtime), t)
+    e = ReconcilerAgent().validate(job, _actx(state, runtime, ReconcilerAgent()), t)
     return {"validations": {t: e}, "trace": _t("reconcile", table=t, level=e["level"],
                                                mismatch=e["mismatch"]["category"],
                                                detail=e["mismatch"]["detail"][:200])}
@@ -540,7 +550,7 @@ def _after_supervisor(state: PipelineState) -> str:
 async def diagnose(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
     t = _need(state, "next")["table"]
     job = {**_job(state), "llm_tools": runtime.context.llm_tools}
-    key, outcomes = await ReconcilerAgent().diagnose(job, _ctx(state, runtime), AgentResult(), [t])
+    key, outcomes = await ReconcilerAgent().diagnose(job, _actx(state, runtime, ReconcilerAgent()), AgentResult(), [t])
     loop = copy.deepcopy(state.get("loop", {}))
     loop.setdefault("diagnosed", {})[t] = loop.get("diagnosed", {}).get(t, 0) + 1
     loop["fixed"] = bool(key)
@@ -578,7 +588,7 @@ async def record(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]
     r = AgentResult()
     v = state.get("validations", {})
     entries = {t: v[t] for t in _tables(state) if t in v}
-    await agent.record(_job(state), _ctx(state, runtime), r, list(entries.values()))
+    await agent.record(_job(state), _actx(state, runtime, agent), r, list(entries.values()))
     vkey = put_json(runtime.context.artifacts, f"apps/{state['app_id']}/runs/{state['run_id']}/validation_entries.json",
                     entries)
     return {"validation_key": r.outputs["validation_key"], "figures_key": r.outputs["figures_key"],

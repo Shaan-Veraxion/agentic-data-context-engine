@@ -86,6 +86,12 @@ fields, determinism and inputs only ([check.py](../packages/adce-reversesql/src/
 
 ### 1.4 Contracts drifted from the frozen versions (ADR-1)
 
+**Status: step 3a (2026-10-16)**: AgentSpec has group, subgroup, tools, hitl_modes and budget, enforced at run time
+(tools, routes, budget, events); every fact kind is declared with its required keys and checked on write; events
+and outbox payloads are declared and checked; lineage facts are written. Fact and evidence kinds keep their names,
+with the design names mapped in `fact_schemas.py` (renaming would change every fact id). The BI IR, `kg_port` and
+`data_port` shapes still differ from the sketches.
+
 | Contract | Design | Code |
 |---|---|---|
 | `AgentSpec` | name, version, **group**, kind, subscribes, **allowed_tools**, emits_fact_kinds, **hitl_modes**, model_route, **budget** | No group, allowed_tools, hitl_modes or budget ([agent.py](../packages/adce-core/src/adce_core/agent.py)) |
@@ -99,6 +105,11 @@ fields, determinism and inputs only ([check.py](../packages/adce-reversesql/src/
 
 ### 1.5 Fact log and isolation
 
+**Status: step 3b (2026-10-16)**: migration 0005 adds tenant, scope, run, model, prompt version, impact, valid_to and
+invalidated_at; logs are bound to a tenant and the service fails closed without one; AI facts record model and
+prompt version; invalidation is an appended row. `version` and the `impact` computation come with the trust gate
+(3c).
+
 The design's `fact_log` (TD §11.1, ADR-Q5) has `tenant_id`, `scope_id`, `version`, `impact`, `valid_to`,
 `invalidated_at`, `prompt_version`, `model`, `run_id`. The migration
 ([0001_fact_log.py](../migrations/alembic/versions/0001_fact_log.py)) has none of these.
@@ -110,6 +121,14 @@ The design's `fact_log` (TD §11.1, ADR-Q5) has `tenant_id`, `scope_id`, `versio
 - **No invalidation time**: point-in-time reads use `recorded_at` only.
 
 ### 1.6 Knowledge service (kg-mcp, ADR-2)
+
+**Status: step 3c (2026-10-16)**: the write path has a validator (contradictions of confirmed facts become conflicts,
+reviewed in the queue) and a trust gate (impact and review route on every proposal); the missing tools exist
+(neighbours, source context, lineage, join paths, add context, link entities, flag conflict, update fact, record
+feedback for hitl-service only, read-only Cypher bound to the tenant); context packs are trust-ranked and
+token-budgeted, and agents read one before they run. Still open: the validator's data re-check for data claims,
+entity-existence checks, per-agent allow-lists from Keycloak tokens (the caller still names itself over MCP), and
+prompts that use the context pack.
 
 | Design | Code |
 |---|---|
@@ -252,6 +271,8 @@ answers endpoint, re-entry at extract/resolve/translate, per-run budgets (`RunGa
   Section Access as an RLS requirement, QUALIFY.
 
 ### Step 3. Contracts and knowledge
+
+**Done 2026-10-16** (3a contracts, 3b fact log and tenants, 3c knowledge service; see the status notes in 1.4 to 1.6).
 - AgentSpec fields (group, allowed tools, HITL modes, budget); fact payload and event schemas validated on write; fact
   and evidence kinds renamed to the design's (with a migration of existing facts).
 - Fact log migration: tenant, scope, version, impact, valid_to, invalidated_at, prompt version, model, run id; tenant

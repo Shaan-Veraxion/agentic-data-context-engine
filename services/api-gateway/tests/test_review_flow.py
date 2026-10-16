@@ -84,3 +84,26 @@ async def test_reviewer_sql_and_variable_answers_feed_the_next_run(api):
     assert tr[-1].value["untranslated"] == []
     v = await kg.facts(kind="variable_value", subject="app:rev/var:vMax")
     assert v[-1].trust.value == "confirmed" and v[-1].value["value"] == "42"
+
+
+async def test_a_conflict_is_reviewed_and_the_decision_applied():
+    from adce_core.facts import Evidence, Fact, FactStatus, Trust
+    from adce_core.ports import MemoryKG
+    from hitl_service.service import MemoryReviewStore, ReviewService
+
+    kg = MemoryKG()
+    ev = [Evidence(kind="rule_check", ref="t")]
+    await kg.propose_fact(Fact(kind="reads_source", subject="app:a/table:T", object="source:c:s.t",
+                               value={"statement": 1}, trust=Trust.DOCUMENTED, agent="t", evidence=ev))
+    first = await kg.propose_fact(Fact(kind="resolves_to", subject="source:c:s.t", value={"dataset": "lake.s.t"},
+                                       trust=Trust.INFERRED, agent="t", evidence=ev))
+    old = await kg.decide(first, FactStatus.CONFIRMED, "owner")
+    new = await kg.propose_fact(Fact(kind="resolves_to", subject="source:c:s.t", value={"dataset": "lake.copy.t"},
+                                     trust=Trust.INFERRED, agent="entity_linker", evidence=ev))
+    review = ReviewService(MemoryReviewStore(), kg)
+    await review.refresh("a")
+    item = next(i for i in review.queue("a") if i.kind == "conflict")
+    assert item.detail["facts"] == [old, new]
+    await review.decide(item.id, "accept_new", "owner")
+    current = {f.value["dataset"]: f.trust for f in await kg.facts(kind="resolves_to")}
+    assert current == {"lake.copy.t": Trust.CONFIRMED}  # the old mapping is invalidated, the new one confirmed
