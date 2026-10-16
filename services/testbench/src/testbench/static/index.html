@@ -461,7 +461,7 @@ function renderPlayground() {
     <div id="presult"></div>
     <div class="card" id="psave" style="display:none"><h2>Save as a case</h2><div class="controls">
       <label>Suite<input id="ssuite" value="custom"></label><label>Name<input id="sname" placeholder="my_case"></label>
-      <label>Title<input id="stitle" size="40"></label><label><span><input type="checkbox" id="spriv"> private (real client data, git-ignored)</span></label>
+      <label>Title<input id="stitle" size="40"></label><label title="Private cases go to eval/private/cases, which git ignores. Untick only for synthetic scripts and data you made up: everything else in eval/cases is committed"><span><input type="checkbox" id="spriv" checked> private (git-ignored; untick only for synthetic data)</span></label>
       <button class="primary" id="sbtn">Save</button></div></div>`;
   const lists = () => {
     for (const [key, el, label] of [["sources", "#psrc", "path"], ["expected", "#pexp", "table name"]]) {
