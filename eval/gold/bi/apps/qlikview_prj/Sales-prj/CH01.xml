@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic QlikView -prj chart object (shape of QlikView 11/12 project files), for tests only. -->
+<GraphProperties>
+  <ObjectId>Document\CH01</ObjectId>
+  <ChartProperties>
+    <Title><v>Sales by region</v></Title>
+  </ChartProperties>
+  <Dimensions>
+    <GraphDimension>
+      <Field><v>Region</v></Field>
+      <Label><v>Region</v></Label>
+    </GraphDimension>
+  </Dimensions>
+  <Expressions>
+    <GraphExpression>
+      <ExpressionData>
+        <Enable>1</Enable>
+        <Definition><v>Sum({&lt;Year={$(vYear)}&gt;} Amount)</v></Definition>
+        <Label><v>Sales this year</v></Label>
+      </ExpressionData>
+    </GraphExpression>
+    <GraphExpression>
+      <ExpressionData>
+        <Enable>0</Enable>
+        <Definition><v>Count(Region)</v></Definition>
+        <Label><v>Disabled</v></Label>
+      </ExpressionData>
+    </GraphExpression>
+  </Expressions>
+</GraphProperties>

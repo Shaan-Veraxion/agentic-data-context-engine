@@ -40,7 +40,7 @@ async def test_the_run_timeline_shows_every_node_and_the_supervisor_decides_to_p
     out: dict = dict(await run_pipeline(app_id="orders_local", run_id="r1", files=_upload(store, "orders_local"),
                                          deps=Deps(kg=kg, artifacts=store)))
     nodes = _nodes(out)
-    assert nodes[:4] == ["enter", "intake", "extract", "resolve"]
+    assert nodes[:5] == ["enter", "intake", "extract", "resolve", "scope"]
     assert "translate.prepare" in nodes and "translate.finish" in nodes
     # one check and one reconcile per table (fan-out), then the supervisor
     assert sorted(e["table"] for e in out["trace"] if e["node"] == "check") == ["CustomerTotals", "Orders"]
@@ -119,12 +119,12 @@ async def test_a_rerun_enters_at_translate_with_the_previous_runs_results(tmp_pa
                                            deps=Deps(kg=kg, artifacts=store), start_at="translate",
                                            previous=previous))
     nodes = _nodes(again)
-    assert nodes[:2] == ["enter", "translate.prepare"] and "intake" not in nodes and "extract" not in nodes
+    assert nodes[:3] == ["enter", "scope", "translate.prepare"] and "intake" not in nodes and "extract" not in nodes
     assert again["levels"] == first["levels"]
     mapped: dict = dict(await run_pipeline(app_id="orders_local", run_id="r3", files=files,
                                             deps=Deps(kg=kg, artifacts=store), start_at="resolve", previous=previous,
                                             reuse_translation=True))
-    assert _nodes(mapped)[:3] == ["enter", "resolve", "synthesize"]
+    assert _nodes(mapped)[:4] == ["enter", "resolve", "scope", "synthesize"]
 
 
 def test_events_choose_the_earliest_node_they_need():
@@ -206,3 +206,65 @@ async def test_the_run_budget_stops_model_calls():
     except BudgetExceeded:
         pass
     assert gw.left()["calls"] == 2 and gw.mode == "live"
+
+
+async def test_a_scoped_rerun_validates_only_the_affected_tables_and_reuses_the_others(tmp_path):
+    store, kg = LocalArtifactStore(tmp_path), MemoryKG()
+    files = _upload(store, "orders_local")
+    first: dict = dict(await run_pipeline(app_id="orders_local", run_id="r1", files=files,
+                                           deps=Deps(kg=kg, artifacts=store)))
+    from orchestrator.learning import latest_summary
+
+    previous = latest_summary(store, "orders_local")
+    again: dict = dict(await run_pipeline(app_id="orders_local", run_id="r2", files=files,
+                                           deps=Deps(kg=kg, artifacts=store), start_at="translate",
+                                           previous=previous, scope={"tables": ["CustomerTotals"]}))
+    assert again["scope_tables"] == ["CustomerTotals"]
+    assert [e["table"] for e in again["trace"] if e["node"] == "reconcile"] == ["CustomerTotals"]
+    assert [e["table"] for e in again["trace"] if e["node"] == "check"] == ["CustomerTotals"]
+    assert again["levels"] == first["levels"]  # Orders kept its earlier validation
+
+
+def test_the_scope_adds_every_table_downstream_and_falls_back_to_all():
+    from adce_qlik.document import read_script
+    from adce_qlik.model import build_app
+    from orchestrator.scope import Hints, tables_in_scope
+
+    script = ("A:\nLOAD * INLINE [\nk, x\n1, 2\n];\nB:\nNoConcatenate LOAD k, x AS y RESIDENT A;\n"
+              "C:\nLOAD * INLINE [\nz\n3\n];\nSTORE B INTO [lib://q/B.qvd] (qvd);\n"
+              "D:\nNoConcatenate LOAD * FROM [lib://q/B.qvd] (qvd);\n")
+    app = build_app(read_script("s", {"s.qvs": script}))
+    assert tables_in_scope(app, {}, Hints(tables={"A"})) == ["A", "B", "D"]
+    assert tables_in_scope(app, {}, Hints(tables={"C"})) == ["C"]
+    assert tables_in_scope(app, {}, Hints(tables={"nope"})) is None  # nothing matched: every table
+    assert tables_in_scope(app, {}, Hints(everything=True)) is None
+
+
+async def test_events_become_scope_hints_per_application():
+    from orchestrator.scope import hints_from_events
+
+    def ev(topic: str, kind: str, subject: str, value: dict) -> dict:
+        return {"topic": topic, "payload": {"fact": {"kind": kind, "subject": subject, "value": value}}}
+
+    events = [ev("fact.confirmed", "translation_override", "app:a/table:T", {"text": "LOAD x RESIDENT y"}),
+              ev("fact.confirmed", "variable_value", "app:b/var:vYear", {"value": "2026"}),
+              ev("fact.rejected", "report_sql", "app:a/table:U", {})]
+    hints = await hints_from_events(MemoryKG(), events, {"a": [], "b": [], "c": []})
+    assert hints["a"].tables == {"T", "U"} and not hints["a"].everything
+    assert hints["b"].variables == {"vYear"} and hints["b"].statements == {"LOAD x RESIDENT y"}
+    assert hints["c"].statements == {"LOAD x RESIDENT y"}  # the reviewer's SQL may apply there too
+
+
+async def test_a_qlikview_project_folder_runs_end_to_end(tmp_path):
+    store, kg = LocalArtifactStore(tmp_path), MemoryKG()
+    prj = APPS / "qlikview_prj" / "Sales-prj"
+    files = [{"name": f"Sales-prj/{p.name}", "key": store.put(f"uploads/prj/{p.name}", p.read_bytes())}
+             for p in sorted(prj.iterdir())]
+    out: dict = dict(await run_pipeline(app_id="prj", run_id="r1", files=files, deps=Deps(kg=kg, artifacts=store)))
+    classes = next(e for e in out["trace"] if e["node"] == "intake")["files"]
+    assert classes == {"Sales-prj/CH01.xml": "qlikview_project", "Sales-prj/DocProperties.xml": "qlikview_project",
+                       "Sales-prj/LoadScript.txt": "script"}
+    manifest = get_json(store, f"{out['pack_prefix']}/manifest.json")
+    assert "sql/charts/CH01.sql" in manifest["files"]
+    sql = store.get(f"{out['pack_prefix']}/sql/charts/CH01.sql").decode()
+    assert "2026" in sql  # the set modifier with $(vYear) expanded from the script

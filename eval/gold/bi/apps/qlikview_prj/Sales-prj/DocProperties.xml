@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic QlikView -prj document properties, for tests only. -->
+<DocProperties>
+  <Variables>
+    <DocVariable>
+      <Name><v>vLabel</v></Name>
+      <RawValue><v>Sales</v></RawValue>
+    </DocVariable>
+  </Variables>
+</DocProperties>

@@ -13,7 +13,7 @@ from adce_core.artifacts import content_key, put_json
 from adce_core.bi_ir import BIApp, LogicalSource, QlikTable, ScriptDocument, SourceSpan
 from adce_core.facts import Entity, Evidence, Fact, Trust
 from adce_qlik import parse_qvd_header, parse_reload_log, read_script
-from adce_qlik.frontend import attach_frontend
+from adce_qlik.frontend import attach_frontend, attach_prj
 from adce_qlik.model import build_app
 from adce_qlik.qvd import QvdHeader
 from adce_qlik.reload_log import ReloadLog
@@ -67,6 +67,10 @@ class BIExtractor(BaseAgent):
                    if f["class"] == "app_objects"}
         if objects:
             attach_frontend(app, objects)
+        prj = {f["name"]: ctx.artifacts.get(f["key"]).decode("utf-8-sig", errors="replace") for f in files
+               if f["class"] == "qlikview_project"}
+        if prj:  # QlikView -prj folder: charts and expressions (the script itself is LoadScript.txt, a script file)
+            attach_prj(app, prj)
 
         ir = {"document": doc.model_dump(mode="json"), "app": app.model_dump(mode="json")}
         payload = put_json(ctx.artifacts, content_key(f"apps/{ctx.app_id}/bi_ir", repr(ir).encode(), ".json"), ir)

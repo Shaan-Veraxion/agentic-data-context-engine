@@ -1,0 +1,10 @@
+SET ThousandSep=',';
+LET vYear = 2026;
+
+Sales:
+LOAD * INLINE [
+Region, Year, Amount
+North, 2026, 100
+South, 2026, 250
+North, 2025, 80
+];

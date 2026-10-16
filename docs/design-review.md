@@ -38,8 +38,8 @@ the design calls essential:
 
 ### 1.1 Orchestration (the biggest gap)
 
-**Status: fixed in step 1 (2026-10-16)**, except that re-runs restart at a node for the whole application rather
-than only the affected tables. See [code-guide.md](code-guide.md) section 4.
+**Status: fixed in step 1 (2026-10-16)**; re-runs validate only the affected tables and those downstream (scope,
+added the same day). See [code-guide.md](code-guide.md) section 4.
 
 | Design | Code | Where |
 |---|---|---|
@@ -138,7 +138,8 @@ The design's `fact_log` (TD §11.1, ADR-Q5) has `tenant_id`, `scope_id`, `versio
 
 **Status: step 2** translated IntervalMatch (keyed too), Previous()/Peek() over the load's ORDER BY, Above() and
 RangeSum(Above()) in charts, unrolled file-list loops from the reload log, recorded Section Access as an RLS
-requirement, and applied QUALIFY. Still open: QlikView `-prj` reading; GENERIC, Hierarchy and recursive Peek stay T3.
+requirement, and applied QUALIFY. QlikView `-prj` folders are read (script, charts, variables; checked on synthetic
+samples only). GENERIC, Hierarchy and recursive Peek stay T3.
 
 | Construct | Commitment | Code |
 |---|---|---|

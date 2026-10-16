@@ -63,8 +63,12 @@ def reviewer_name(p: Principal = Depends(require("reviewer"))) -> str:
 
 
 def safe_name(filename: str) -> str:
-    """Keep a 'sources/<path>' prefix (local source extracts); otherwise only the file's own name."""
+    """Keep a 'sources/<path>' prefix (local source extracts) and a QlikView '<App>-prj/' folder; otherwise only the
+    file's own name."""
     parts = [p for p in filename.replace("\\", "/").split("/") if p not in ("", ".", "..")]
+    prj = next((i for i, p in enumerate(parts[:-1]) if p.lower().endswith("-prj")), None)
+    if prj is not None:
+        return "/".join(re.sub(r"[^\w.\- ]", "_", p) for p in parts[prj:])
     if "sources" in parts:
         parts = parts[parts.index("sources"):]
         return "/".join(re.sub(r"[^\w.\- ]", "_", p) for p in parts)

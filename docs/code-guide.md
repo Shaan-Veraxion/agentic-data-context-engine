@@ -268,7 +268,13 @@ The Qlik reader, in order:
    `rls_requirement` fact and a section of the pack's review record (CP-001: Section Access is never translated).
    A RESIDENT load's `ORDER BY` is kept (`LoadOp.order_by`), for Peek()/Previous(). Embedded `SQL SELECT` is parsed in the source database's
    dialect ([sql_dialect.py](../packages/adce-qlik/src/adce_qlik/sql_dialect.py)).
-7. [reload_log.py](../packages/adce-qlik/src/adce_qlik/reload_log.py) and
+7. **QlikView project folders** (`<App>-prj/`): `LoadScript.txt` is read as the script; the object XML
+   (charts, tables, document properties) by [prj.py](../packages/adce-qlik/src/adce_qlik/prj.py) `read_prj`
+   (charts: dimensions and enabled expressions; variables), attached with `frontend.attach_prj` ($(variables)
+   expanded). The reader is tolerant of element names (they vary by version) and reports what it does not
+   understand (`prj_object_not_understood`, `prj_parse_error`); it is checked on synthetic samples only, so confirm
+   it on the first real -prj folder. Uploads keep the `<App>-prj/` folder in the file name (API `safe_name`).
+8. [reload_log.py](../packages/adce-qlik/src/adce_qlik/reload_log.py) and
    [qvd.py](../packages/adce-qlik/src/adce_qlik/qvd.py) read row counts and QVD headers.
 
 - Writes: the BI IR artifact (`bi_ir_key`); facts `bi_table`, `contains`, `reads_source`, `stores_qvd`,
@@ -282,6 +288,15 @@ For every logical database source, look for a confirmed `resolves_to` fact. With
 **pending** with `waits_for: dremio_catalog (phase PD)`. Nothing blocks; a run with pending sources ends with
 status `waiting_for_dremio`. A re-run for a source mapping only (`reuse_translation`) goes from here straight to
 `synthesize`.
+
+#### scope (orchestrator, [scope.py](../services/orchestrator/src/orchestrator/scope.py))
+On a full run it does nothing (every table). On a re-run with **hints** (what changed: tables, statement texts,
+variables, sources; built from the outbox events by `scope.hints_from_events`), `tables_in_scope` finds the tables
+the hints touch in the BI IR and adds every table **downstream** of them (`scope.downstream`: tables that read them
+RESIDENT, join or keep against them, use them as a mapping, or load a QVD they store). The run then translates,
+checks, validates and may diagnose **only those tables** (`scope_tables`); the other tables keep the previous run's
+validation entries (`validation_entries.json` of that run, `previous_validations_key`). Hints that match nothing
+mean every table, so a re-run never skips a table it should check.
 
 #### translate → agent 28, as a subgraph
 `build_translate_graph()`. Each node is one step of `ai_loop` (section 5), so every model attempt is a separate,
@@ -411,9 +426,10 @@ trace) and `apps/<app>/latest.json` (the pointer re-runs use), and sets the fina
 
 ### 4.5 Re-entry, budgets, bounds
 
-- **Re-entry**: `run_pipeline(start_at=..., previous=<last summary>, reuse_translation=...)` enters at `extract`,
-  `resolve` or `translate` with the previous run's classified files, BI IR, translation, tables and sources. The
-  event consumer uses it (section 10). Without a previous summary the run starts at `intake`.
+- **Re-entry**: `run_pipeline(start_at=..., previous=<last summary>, reuse_translation=..., scope=...)` enters at
+  `extract`, `resolve` or `translate` (through `scope`) with the previous run's classified files, BI IR,
+  translation, tables and sources, and with `scope` validates only the affected tables (4.2, scope). The event
+  consumer uses it (section 10). Without a previous summary the run starts at `intake`.
 - **Budget**: `RunGateway` counts the run's model calls and cost; past `budget_usd` or `max_calls` it raises
   `BudgetExceeded`, which agents treat like an unavailable provider (`skipped`). The supervisor sees the spend.
 - **Bounds**: 5 translation rounds, 4 answers per statement, 1 repair pass (2 answers per table), 1 diagnosis per
@@ -700,6 +716,8 @@ in the outbox and triggers re-runs (section 10).
   saved position (`event_cursor` table), works out which apps an event affects (`affected()`; the table at the top
   of the file lists the triggers), and re-runs each affected app once per batch. Because fact ids are content
   hashes, a re-run that proposes the same facts emits nothing new, so events do not loop.
+- **Re-runs validate only the affected tables**: `scope.hints_from_events` turns the batch into hints per
+  application, passed as `scope` to the re-run (4.2, scope); the result row says which tables were validated.
 - **Re-runs enter at the node the change affects** (`events.start_for`): a variable's value → `extract`; a source
   mapping only → `resolve` with the translation reused; reviewer SQL, a gap answer, a rejection, a disproved
   answer → `translate`. `rerun_all(start_at=...)` loads the last run's summary (`learning.latest_summary`, from
@@ -815,6 +833,8 @@ tokens, latency and error.
 | `fan_out` failing on a chart | an aggregate over a join that can repeat records | the rule message; the chart's SQL (`sql/charts/<visual>.sql`) |
 | `join_fields` warning | a JOIN/KEEP with no shared field (cartesian product in Qlik too) | the script lines named in the warning |
 | `loop_unrolled_from_log` issue | a file-list loop was unrolled with the values the reload log showed | the issue message lists them; check they are all the files |
+| Re-run validated fewer tables than expected | it was scoped to the tables the change touches | trace `scope` (hints, tables); the result's `validated` |
+| `prj_object_not_understood` | a QlikView -prj object whose XML shape the reader does not know | send the file: the reader learns the shape |
 | `section_access` issue | the script has Section Access; it is a requirement, not SQL | review.md "Row-level security"; `rls_requirement` facts |
 | Level shown "(within tolerance, drift)" | counts or sums differ within the tolerance | the comparisons with basis `within tolerance (drift)` |
 | Status `queued` for long | No orchestrator worker is running | `orchestrator-worker` pod / `python -m orchestrator.worker` |
@@ -848,7 +868,9 @@ Be aware of these when you read specs:
   deterministic.
 - Agents 21, 22, 23 and 29 are not in the LangGraph graph (bench chain mode only).
 - `DremioSource` is a stub; every validation is local until phase PD.
-- Re-runs restart at a node for the whole application, not only the affected tables.
+- Translation is still composed for the whole application on a scoped re-run (it is one pure function of the BI IR
+  and the overrides); only the model calls, checks and validation are limited to the affected tables.
+- The QlikView -prj reader is checked on synthetic samples only.
 - No grain (key uniqueness) facts yet, so `fan_out` cannot accept pre-aggregated many-to-one joins (phase PD).
 - Grouped comparisons per dimension member (to pinpoint mismatching rows) are not built; the diagnosis gets
   per-field aggregates.

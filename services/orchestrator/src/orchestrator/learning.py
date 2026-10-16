@@ -51,7 +51,8 @@ def latest_summary(store: Any, app_id: str) -> dict[str, Any] | None:
 
 
 async def rerun_all(deps: Deps, *, apps: list[str] | None = None, run_prefix: str = "scheduled",
-                    start_at: dict[str, tuple[str, bool]] | None = None) -> list[dict[str, Any]]:
+                    start_at: dict[str, tuple[str, bool]] | None = None,
+                    scopes: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Re-run applications from their stored uploads. start_at: app -> (node, reuse_translation) to enter the
     graph at a later node with the last run's summary (event-driven re-runs); without a summary the run starts
     from the beginning."""
@@ -66,9 +67,12 @@ async def rerun_all(deps: Deps, *, apps: list[str] | None = None, run_prefix: st
             node, reuse = "intake", False
         try:
             st = dict(await run_pipeline(app_id=app_id, run_id=f"{run_prefix}-{stamp}", files=files, deps=deps,
-                                         start_at=node, previous=previous, reuse_translation=reuse))
-            out.append({"app_id": app_id, "status": st.get("status"), "levels": st.get("levels", {}),
-                        "started_at": node})
+                                         start_at=node, previous=previous, reuse_translation=reuse,
+                                         scope=(scopes or {}).get(app_id)))
+            row = {"app_id": app_id, "status": st.get("status"), "levels": st.get("levels", {}), "started_at": node}
+            if st.get("scope_tables") is not None:
+                row["validated"] = st["scope_tables"]
+            out.append(row)
         except Exception as e:  # noqa: BLE001 - one application failing does not stop the others
             out.append({"app_id": app_id, "status": "error", "error": f"{type(e).__name__}: {e}"})
     return out

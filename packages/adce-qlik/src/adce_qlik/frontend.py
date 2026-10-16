@@ -9,7 +9,7 @@ do not matter:
 - qHyperCubeDef   a chart or table        (qDimensions, qMeasures, each inline or a qLibraryId reference)
 - qType "sheet"   a sheet; its cells name the objects placed on it
 - qName + qDefinition  a variable
-QlikView documents (-prj XML) are not read yet.
+QlikView documents: their -prj folder XML is read by prj.py (attach_prj below).
 """
 from __future__ import annotations
 
@@ -150,5 +150,28 @@ def attach_frontend(app: BIApp, documents: dict[str, str]) -> BIApp:
                 m.expression = exp_text(m.expression, f"{v.id} measure {m.label}")
             m.label = m.label or m.expression
     app.measures, app.dimensions, app.visuals = measures, dimensions, visuals
+    app.issues += issues
+    return app
+
+
+def attach_prj(app: BIApp, documents: dict[str, str]) -> BIApp:
+    """Read a QlikView -prj folder's objects (prj.read_prj) into the app: charts and their expressions, with
+    $(variables) expanded from the script's and the document's variables. Adds to any visuals already read."""
+    from .prj import read_prj
+
+    visuals, doc_vars, issues = read_prj(documents)
+    env: dict[str, str | None] = {k: v.value for k, v in app.variables.items()}
+    env.update({k: v for k, v in doc_vars.items() if k not in env or env[k] is None})
+    for v in visuals:
+        for d in v.dimensions:
+            d.field, unresolved = expand(d.field, env)
+            if unresolved:
+                issues.append(_issue("unresolved_variable", f"{v.id} dimension: unresolved {', '.join(unresolved)}"))
+        for m in v.measures:
+            m.expression, unresolved = expand(m.expression, env)
+            if unresolved:
+                issues.append(_issue("unresolved_variable", f"{v.id} measure {m.label}: unresolved "
+                                     f"{', '.join(unresolved)}"))
+    app.visuals = [*app.visuals, *visuals]
     app.issues += issues
     return app

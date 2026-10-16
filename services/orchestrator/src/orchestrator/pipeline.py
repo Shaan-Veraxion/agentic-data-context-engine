@@ -1,6 +1,6 @@
 """qlik_pipeline: the starting-stage graph (LangGraph), checkpointed in Postgres.
 
-    enter ─┬─▶ intake (1) ─▶ extract (27) ─▶ resolve ─▶ translate (28, subgraph) ─▶ synthesize (24)
+    enter ─┬─▶ intake (1) ─▶ extract (27) ─▶ resolve ─▶ scope ─▶ translate (28, subgraph) ─▶ synthesize (24)
            │      ▲                                                                       │
            │      └──────────── ask_owner (interrupt) ◀──┐                       Send per table
            │                                             │                                ▼
@@ -115,6 +115,10 @@ class PipelineState(_Required, total=False):
     questions: list[str]  # owner questions the supervisor may ask
     table: str  # set on a per-table branch (Send)
     out_tables: list[str]  # the tables the pack covers (agents.output_tables), set by synthesize
+    scope: dict[str, Any]  # a re-run's hints: what changed (orchestrator.scope.Hints)
+    scope_tables: list[str]  # the tables this run validates (absent: every table)
+    previous_validations_key: str  # the previous run's validation entries, reused for the other tables
+    validations_key: str  # this run's validation entries (every table)
     has_model: bool  # the run has a model gateway (repair and diagnosis need one)
 
 
@@ -174,6 +178,8 @@ async def enter(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
 
 def _route_start(state: PipelineState) -> str:
     s = state.get("start_at") or "intake"
+    if s == "translate":
+        return "scope"  # the scope (affected tables) is worked out before translating again
     return s if s in ENTRIES else "intake"
 
 
@@ -214,8 +220,45 @@ async def resolve(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any
             "trace": _t("resolve", pending=len(pending))}
 
 
-def _after_resolve(state: PipelineState) -> str:
+def _after_scope(state: PipelineState) -> str:
     return "synthesize" if state.get("reuse_translation") and state.get("translation_key") else "translate"
+
+
+async def scope(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
+    """A re-run with hints (what changed): the tables affected and everything downstream of them; the previous
+    run's validation entries are reused for the others. A full run, or hints that match nothing: every table."""
+    hints = state.get("scope")
+    if not hints:
+        return {"trace": _t("scope", tables="all")}
+    from adce_core.artifacts import get_json
+    from adce_core.bi_ir import BIApp
+
+    from .scope import Hints, tables_in_scope
+
+    store = runtime.context.artifacts
+    ir = get_json(store, _need(state, "bi_ir_key"))
+    app = BIApp.model_validate(ir["app"])
+    raw = {int(s["index"]): s["text"] for s in (ir.get("document", {}).get("executed") or [])}
+    tables = tables_in_scope(app, raw, Hints.of(hints))
+    out: dict[str, Any] = {"trace": _t("scope", hints=hints, tables=tables or "all")}
+    if tables is None:
+        return out
+    out["scope_tables"] = tables
+    prev_key = state.get("previous_validations_key")
+    if prev_key and store.exists(prev_key):
+        prev = get_json(store, prev_key)
+        out["validations"] = {t: e for t, e in prev.items() if t not in tables}
+    return out
+
+
+def _targets(state: PipelineState) -> list[str]:
+    """The tables to check and validate now: the scope, and any table with no validation to reuse."""
+    tables = _tables(state)
+    sc = state.get("scope_tables")
+    if sc is None:
+        return tables
+    have = state.get("validations", {})
+    return [t for t in tables if t in sc or t not in have]
 
 
 # ---------------------------------------------------------------- translate (subgraph, agent 28)
@@ -258,6 +301,9 @@ async def t_pick(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]
             tr["next"] = "finish"
             return {"tr": tr, "trace": _t("translate.pick", done="stopped" if tr["stop"] else "round limit")}
         roots = next_statements(w.app, _overrides(tr), set(tr["tried"]))
+        sc = state.get("scope_tables")
+        if sc is not None:  # a scoped re-run: only the affected tables' statements go to the model
+            roots = [u for u in roots if u.table in sc]
         if not roots:
             tr["next"] = "finish"
             return {"tr": tr, "trace": _t("translate.pick", done="nothing left to translate")}
@@ -379,7 +425,7 @@ async def synthesize(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, 
 
 
 def _fan_check(state: PipelineState) -> Any:
-    tables = _tables(state)
+    tables = _targets(state)
     return [Send("check_one", {**state, "table": t}) for t in tables] if tables else "check_join"
 
 
@@ -392,7 +438,7 @@ async def check_one(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, A
 
 
 async def check_join(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
-    tables = _tables(state)
+    tables = _targets(state)
     checks = state.get("checks", {})
     passed = sum(1 for t in tables if checks.get(t, {}).get("ok"))
     agent = QueryChecker()
@@ -408,11 +454,11 @@ async def check_join(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, 
 
 def _failing(state: PipelineState) -> list[str]:
     checks = state.get("checks", {})
-    return [t for t in _tables(state) if checks.get(t, {}).get("failing")]
+    return [t for t in _targets(state) if checks.get(t, {}).get("failing")]
 
 
 def _fan_reconcile(state: PipelineState) -> Any:
-    tables = _tables(state)
+    tables = _targets(state)
     return [Send("reconcile_one", {**state, "table": t}) for t in tables] if tables else "supervisor"
 
 
@@ -460,7 +506,7 @@ async def supervisor(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, 
     loop = dict(state.get("loop", {}))
     steps = loop.get("steps", 0)
     all_v = state.get("validations", {})
-    validations = {t: all_v[t] for t in _tables(state) if t in all_v}
+    validations = {t: all_v[t] for t in _targets(state) if t in all_v}  # a scoped re-run acts on its tables
     diagnosed = loop.get("diagnosed", {})
     questions = await _owner_questions(deps.kg, state["app_id"]) if deps.interactive and not loop.get("asked") \
         else []
@@ -531,8 +577,12 @@ async def record(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]
     agent = ReconcilerAgent()
     r = AgentResult()
     v = state.get("validations", {})
-    await agent.record(_job(state), _ctx(state, runtime), r, [v[t] for t in _tables(state) if t in v])
+    entries = {t: v[t] for t in _tables(state) if t in v}
+    await agent.record(_job(state), _ctx(state, runtime), r, list(entries.values()))
+    vkey = put_json(runtime.context.artifacts, f"apps/{state['app_id']}/runs/{state['run_id']}/validation_entries.json",
+                    entries)
     return {"validation_key": r.outputs["validation_key"], "figures_key": r.outputs["figures_key"],
+            "validations_key": vkey,
             "levels": r.outputs["levels"], "events": r.events, "metrics": {"reconcile": _stamp(agent, r.metrics, t0)},
             "trace": _t("record", levels=r.outputs["levels"])}
 
@@ -544,7 +594,7 @@ async def publish(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any
 
 
 SUMMARY_KEYS = ("app_id", "run_id", "classified", "bi_ir_key", "translation_key", "tables", "sources", "pending",
-                "levels", "pack_prefix", "events", "metrics", "decisions", "trace")
+                "levels", "pack_prefix", "events", "metrics", "decisions", "trace", "validations_key", "scope_tables")
 
 
 async def summarize(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
@@ -560,17 +610,18 @@ async def summarize(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, A
 def build_graph() -> StateGraph[PipelineState, Deps, PipelineState, PipelineState]:
     g = StateGraph(PipelineState, context_schema=Deps)
     for name, fn in (("enter", enter), ("intake", intake), ("extract", extract), ("resolve", resolve),
-                     ("synthesize", synthesize), ("check_one", check_one), ("check_join", check_join),
+                     ("scope", scope), ("synthesize", synthesize), ("check_one", check_one), ("check_join", check_join),
                      ("repair", repair), ("reconcile_one", reconcile_one), ("supervisor", supervisor),
                      ("diagnose", diagnose), ("ask_owner", ask_owner), ("record", record), ("publish", publish),
                      ("summarize", summarize)):
         g.add_node(name, fn)  # type: ignore[call-overload]
     g.add_node("translate", build_translate_graph().compile())
     g.add_edge(START, "enter")
-    g.add_conditional_edges("enter", _route_start, list(ENTRIES))
+    g.add_conditional_edges("enter", _route_start, ["intake", "extract", "resolve", "scope"])
     g.add_edge("intake", "extract")
     g.add_conditional_edges("extract", _after_extract, ["resolve", END])
-    g.add_conditional_edges("resolve", _after_resolve, ["translate", "synthesize"])
+    g.add_edge("resolve", "scope")
+    g.add_conditional_edges("scope", _after_scope, ["translate", "synthesize"])
     g.add_edge("translate", "synthesize")
     g.add_conditional_edges("synthesize", _fan_check, ["check_one", "check_join"])
     g.add_edge("check_one", "check_join")
@@ -599,10 +650,12 @@ def _config(app_id: str, run_id: str) -> RunnableConfig:
 
 async def run_pipeline(*, app_id: str, run_id: str, files: list[dict[str, Any]], deps: Deps,
                        checkpointer: Any | None = None, app_name: str | None = None, start_at: str | None = None,
-                       previous: dict[str, Any] | None = None, reuse_translation: bool = False) -> PipelineState:
+                       previous: dict[str, Any] | None = None, reuse_translation: bool = False,
+                       scope: dict[str, Any] | None = None) -> PipelineState:
     """One run. start_at/previous: a re-run entering at a later node with the previous run's summary (its
-    classified files, BI IR, translation, tables and sources). A run paused for owner questions returns its state
-    with "__interrupt__"; resume_pipeline continues it."""
+    classified files, BI IR, translation, tables and sources); scope: what changed (orchestrator.scope.Hints as a
+    dict), so only the affected tables and those downstream are validated. A run paused for owner questions
+    returns its state with "__interrupt__"; resume_pipeline continues it."""
     graph = build_graph().compile(checkpointer=checkpointer)
     run_deps = _deps_for_run(deps)
     state: PipelineState = {"app_id": app_id, "run_id": run_id, "files": files, "events": [],
@@ -615,6 +668,9 @@ async def run_pipeline(*, app_id: str, run_id: str, files: list[dict[str, Any]],
         for k in ("classified", "bi_ir_key", "translation_key", "tables", "sources"):
             if previous.get(k) is not None:
                 state[k] = previous[k]  # type: ignore[literal-required]
+        if scope and previous.get("validations_key"):
+            state["scope"] = scope  # only the affected tables are validated again; the others reuse their entries
+            state["previous_validations_key"] = previous["validations_key"]
     return await graph.ainvoke(state, config=_config(app_id, run_id), context=run_deps)  # type: ignore[return-value]
 
 

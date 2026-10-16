@@ -21,6 +21,9 @@ pipeline, re-entry): a variable's value at extract (the script is read again), a
 translation is reused: only the SQL's source names change), everything else at translate. Without an earlier
 run the application runs from the start.
 
+Each re-run validates only the tables the change affects and those downstream (orchestrator.scope); the other
+tables keep the previous run's validation.
+
 Re-runs do not loop: facts are content-addressed, so a re-run that reaches the same conclusions writes nothing new
 and raises no event. Re-runs reuse memoized model answers, so they cost no model calls unless something changed.
 
@@ -39,6 +42,7 @@ from adce_core.ports import KGPort
 from adce_reversesql.ai_loop import memory_key, normalise
 
 from .learning import rerun_all
+from .scope import hints_from_events
 
 log = logging.getLogger("adce.events")
 
@@ -160,7 +164,10 @@ class EventConsumer:
         if apps:
             log.info("events %s-%s: re-running %s", events[0]["seq"], events[-1]["seq"], sorted(apps))
             entries = {a: start_for(why) for a, why in apps.items()}
-            for r in await rerun_all(self.deps, apps=sorted(apps), run_prefix="event", start_at=entries):
+            hints = await hints_from_events(self.deps.kg, events, apps)
+            scopes = {a: h.as_dict() for a, h in hints.items() if not h.everything}
+            for r in await rerun_all(self.deps, apps=sorted(apps), run_prefix="event", start_at=entries,
+                                     scopes=scopes):
                 results.append(r | {"because": apps[r["app_id"]]})
         self.cursor.set(self.name, events[-1]["seq"])
         return results
