@@ -3,6 +3,8 @@
 Everything here runs on one laptop. Sections 1–4 need no Docker, no keys and no network; sections 5–6 use a model;
 section 7 uses the full local stack.
 
+To understand what the code does and where a failure comes from, read [code-guide.md](code-guide.md).
+
 | I want to… | Go to |
 |---|---|
 | Click through agents and cases in a browser | 2. The test bench |

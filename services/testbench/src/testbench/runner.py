@@ -324,6 +324,7 @@ class Runner:
 
         out: dict[str, Any] = {"number": PIPELINE, "step": "pipeline", "name": "orchestrator", "kind": "D",
                                "auto": False, "error": None}
+        before = len(await self.kg.facts())
         try:
             st = dict(await run_pipeline(app_id=self.state["app_id"], run_id="bench", files=self.state["files"],
                                          deps=Deps(kg=ctx.kg, artifacts=self.store, gateway=ctx.gateway,
@@ -334,10 +335,16 @@ class Runner:
             return out
         self.state.update({k: st[k] for k in ("classified", "bi_ir_key", "translation_key", "validation_key",
                                                "levels", "tables", "sources", "pack_prefix") if k in st})
+        flush = getattr(ctx.kg, "flush", None)
+        if flush is not None:
+            await flush()  # McpKG buffers writes
+        facts = (await self.kg.facts())[before:]  # what every node wrote, shown on the Agents tab
         out.update({"events": st.get("events", []), "metrics": _jsonable(st.get("metrics", {})),
                     "outputs": _jsonable({k: v for k, v in st.items() if k not in ("files", "classified", "events",
                                                                                     "metrics")}),
-                    "facts": [], "artifacts": []})
+                    "facts": [{"kind": f.kind, "subject": f.subject, "object": f.object, "trust": f.trust.value,
+                               "agent": f.agent, "value": _jsonable(f.value)} for f in facts],
+                    "artifacts": []})
         return out
 
     # ------------------------------------------------------------------ checks
