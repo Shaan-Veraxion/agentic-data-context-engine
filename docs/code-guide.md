@@ -4,7 +4,8 @@ This guide explains the code as it is today: what happens when you run the pipel
 what every agent reads and writes, where LangGraph and the models come in, and where to look when something fails.
 It is written to be read next to the code; every section links the files it describes.
 
-For why the system is built this way, see [architecture.md](architecture.md). For how to run things, see
+For why the system is built this way, see [architecture.md](architecture.md); for where the code differs from that
+design, see [design-review.md](design-review.md). For how to run things, see
 [testing-guide.md](testing-guide.md).
 
 Contents
@@ -19,7 +20,7 @@ Contents
 9. [Review (human in the loop)](#9-review-human-in-the-loop)
 10. [Learning and event-driven re-runs](#10-learning-and-event-driven-re-runs)
 11. [Front-end agents (charts, exports)](#11-front-end-agents-charts-exports)
-12. [Services: API gateway, hitl-service, kg-mcp](#12-services-api-gateway-hitl-service-kg-mcp)
+12. [Services: API gateway, hitl-service, kg-mcp, workbench](#12-services-api-gateway-hitl-service-kg-mcp-workbench)
 13. [The test bench](#13-the-test-bench)
 14. [Debugging playbook](#14-debugging-playbook)
 15. [What is declared but not wired yet](#15-what-is-declared-but-not-wired-yet)
@@ -88,6 +89,7 @@ applications it affects.
 | [services/kg-mcp](../services/kg-mcp/src/kg_mcp) | The knowledge service as MCP tools; the client agents use | [server.py](../services/kg-mcp/src/kg_mcp/server.py), [client.py](../services/kg-mcp/src/kg_mcp/client.py) |
 | [services/hitl-service](../services/hitl-service/src/hitl_service) | Review items and decisions | [service.py](../services/hitl-service/src/hitl_service/service.py) |
 | [services/api-gateway](../services/api-gateway/src/api_gateway) | HTTP entry point: uploads, runs, reads; Keycloak auth | [app.py](../services/api-gateway/src/api_gateway/app.py) |
+| [apps/workbench](../apps/workbench/src) | The review workbench for reviewers and owners (Next.js + React Flow): app overview, review queue, lineage; talks only to the API gateway | [page.tsx](../apps/workbench/src/app/apps/[appId]/page.tsx), [review/page.tsx](../apps/workbench/src/app/apps/[appId]/review/page.tsx), [lib/api.ts](../apps/workbench/src/lib/api.ts) |
 | [services/testbench](../services/testbench/src/testbench) | The browser bench and `adce-bench` CLI | [runner.py](../services/testbench/src/testbench/runner.py), [server.py](../services/testbench/src/testbench/server.py), [static/index.html](../services/testbench/src/testbench/static/index.html) |
 | [prompts/](../prompts) | One system prompt per model route and version (`prompts/<route>/<version>.md`) | [translate_statement/v3.md](../prompts/translate_statement/v3.md) |
 | [eval/](../eval) | Synthetic gold apps, bench cases, recordings of model answers, eval results | [eval/cases](../eval/cases) |
@@ -519,7 +521,7 @@ TOTAL).
 
 ---
 
-## 12. Services: API gateway, hitl-service, kg-mcp
+## 12. Services: API gateway, hitl-service, kg-mcp, workbench
 
 [api_gateway/app.py](../services/api-gateway/src/api_gateway/app.py):
 
@@ -530,6 +532,11 @@ TOTAL).
 | `GET /apps/{app}/runs/{run}` | the run summary |
 | `GET /apps`, `/apps/{app}/overview`, `/lineage`, `/tables`, `/packs/{run}/files/...`, `/facts` | reads |
 | `/review/...` | hitl-service router ([api.py](../services/hitl-service/src/hitl_service/api.py)): items, decisions |
+
+The **review workbench** ([apps/workbench](../apps/workbench/src)) is the product UI on top of these endpoints: an app
+overview (inputs, coverage, level per table), the review queue (Ask, Queue, Gate, Seed items and decisions) and a lineage
+graph. Its `/api/...` route proxies to the API gateway. The test bench (section 13) is an internal debugging tool, not
+the product UI.
 
 Auth: Keycloak bearer tokens with roles viewer / reviewer / approver / admin ([auth.py](../services/api-gateway/src/api_gateway/auth.py)).
 
