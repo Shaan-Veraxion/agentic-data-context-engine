@@ -42,7 +42,7 @@ aside input { width: 100%; padding: 7px 9px; border: 1px solid var(--line); bord
 .case .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dots { display: flex; gap: 2px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
-.dot.pass { background: var(--pass); } .dot.fail, .dot.error, .dot.xpass { background: var(--fail); } .dot.xfail { background: var(--warn); }
+.dot.pass { background: var(--pass); } .dot.fail, .dot.error, .dot.xpass { background: var(--fail); } .dot.xfail, .dot.unchecked { background: var(--warn); }
 main { padding: 16px 20px 60px; min-width: 0; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
 .card h2 { font-size: 15px; margin: 0 0 8px; }
@@ -50,7 +50,7 @@ main { padding: 16px 20px 60px; min-width: 0; }
 .muted { color: var(--muted); }
 .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--soft); border: 1px solid var(--line); font-size: 12px; margin: 2px 4px 2px 0; }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }
-.badge.pass { background: var(--pass-bg); color: var(--pass); } .badge.fail, .badge.error, .badge.xpass { background: var(--fail-bg); color: var(--fail); }
+.badge.pass { background: var(--pass-bg); color: var(--pass); } .badge.unchecked { background: var(--warn-bg); color: var(--warn); } .badge.fail, .badge.error, .badge.xpass { background: var(--fail-bg); color: var(--fail); }
 .badge.xfail, .badge.warn { background: var(--warn-bg); color: var(--warn); } .badge.info { background: var(--info-bg); color: var(--accent); }
 .badge.k-D { background: var(--soft); color: var(--muted); } .badge.k-H { background: var(--info-bg); color: var(--accent); } .badge.k-L { background: #efe4fb; color: #7a3fc4; }
 .controls { display: flex; gap: 14px; flex-wrap: wrap; align-items: end; }
@@ -337,6 +337,7 @@ function renderResult(r, el) {
   <div class="card">
     <div class="row"><h2 style="margin:0">Result</h2><span class="badge ${r.status}">${r.status.toUpperCase()}</span>
       <span class="muted">${r.passed} checks passed · ${r.failed} failed · ${r.seconds}s · ai=${esc(r.variant.ai)}${r.variant.tools ? "+tools" : ""}${r.variant.model ? " model=" + esc(r.variant.model) : ""} data=${esc(r.variant.data)}${calls.length ? " · " + calls.length + " model call(s)" : ""} · ${r.kg_calls || 0} kg-mcp calls</span></div>
+    ${(r.notes || []).map(n => `<div class="note">${esc(n)}</div>`).join("")}
     <div class="tabs" id="rtabs"></div><div id="rview"></div>
   </div>`;
   const tabs = [["checks", `Checks (${r.checks.length})`], ["agents", `Agents (${r.steps.length})`], ["rows", `Rows (${Object.keys(r.rows).length})`], ["sql", "SQL"]];

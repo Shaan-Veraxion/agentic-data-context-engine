@@ -33,6 +33,20 @@ def _levels(app, overrides, data, tables):  # type: ignore[no-untyped-def]
     return {x: Reconciler(t, *data).validate(x) for x in tables}
 
 
+def test_sources_with_no_local_data_are_not_sent_to_the_model_as_a_mismatch(tmp_path):
+    from adce_reversesql.local import LocalVenue
+
+    app, _, _, (_, log, heads, conts) = _setup("rulefix_local", ROOT / "eval" / "recordings")
+    validator = make_validator(LocalVenue(), log, heads, conts)  # a venue with none of the app's data
+    t = compose(app, {})
+    level, problems = validator(t, "Products")
+    assert level == "V1" and problems == []
+    # a gateway with no recordings: any model call would fail the test with ReplayMiss, recorded as "skipped"
+    empty = ModelGateway("replay", Recordings(tmp_path / "none"), config=load_config(CONFIG))
+    _, fixes = asyncio.run(repair_with_ai(app, empty, TranslationMemory(tmp_path / "m.json"), validator))
+    assert fixes == []
+
+
 def test_untranslatable_statements_are_translated_validated_and_remembered(tmp_path):
     app, validator, gw, data = _setup("longtail_local", ROOT / "eval" / "recordings")
     memory = TranslationMemory(tmp_path / "memory.json")

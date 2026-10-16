@@ -24,6 +24,16 @@ from .compose import DIALECT, EXTENSION_RX, FILE_DB, GEN_DB, QVD_DB
 from .expressions import ExprContext, Translator, Untranslatable, _split_top
 from .formats import to_duckdb
 
+NO_DATA = "no local data for: "
+
+
+class MissingData(LookupError):
+    """The SQL reads sources with no local data: it cannot run here, which says nothing about the translation."""
+
+    def __init__(self, sources: list[str]) -> None:
+        self.sources = sorted(set(sources))
+        super().__init__(f"{NO_DATA}{', '.join(self.sources)}")
+
 
 def _local(name: str) -> str:
     return re.sub(r"[^0-9a-zA-Z]+", "_", name).strip("_").lower()
@@ -108,7 +118,7 @@ class LocalVenue:
                 break
             out = again
         if missing:
-            raise LookupError(f"no local data for: {', '.join(sorted(set(missing)))}")
+            raise MissingData(missing)
         return out.sql(dialect="duckdb")
 
     def run(self, dremio_sql: str, label: str, max_rows: int = 100_000) -> QueryResult:

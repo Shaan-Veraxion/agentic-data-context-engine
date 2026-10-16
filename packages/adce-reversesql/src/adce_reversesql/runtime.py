@@ -164,6 +164,7 @@ def validator_from_files(store: ArtifactStore, files: list[dict[str, Any]], app:
 def make_validator(venue: LocalVenue, log: Any, headers: dict[str, Any], contents: dict[str, Any]) -> Any:
     """ai_loop.Validator over a local venue: the level reached and every failed comparison, worded the same way
     everywhere (the wording is part of the retry prompt, so recordings replay only if it is stable)."""
+    from .local import NO_DATA
     from .reconcile import Reconciler
 
     def describe(c: Any) -> str:
@@ -180,7 +181,8 @@ def make_validator(venue: LocalVenue, log: Any, headers: dict[str, Any], content
 
     def validate(t: Translation, table: str) -> tuple[str, list[str]]:
         tv = Reconciler(t, venue, log, headers, contents).validate(table)
-        problems = [describe(c) for c in tv.comparisons if not c.ok] + tv.errors
+        # sources with no local data stop the check, they do not contradict it: the model is not asked to fix them
+        problems = [describe(c) for c in tv.comparisons if not c.ok] + [e for e in tv.errors if NO_DATA not in e]
         return (tv.level.name if tv.level >= 0 else "none"), problems
 
     return validate

@@ -22,6 +22,7 @@ from typing import Any
 from adce_core.agent import AgentContext, BaseAgent
 from adce_core.artifacts import LocalArtifactStore
 from adce_core.ports import MemoryKG
+from adce_reversesql.local import NO_DATA
 
 from .cases import LEVELS, ROOT, Case
 
@@ -109,15 +110,17 @@ class RunResult:
     steps: list[dict[str, Any]] = field(default_factory=list)
     checks: list[Check] = field(default_factory=list)
     rows: dict[str, dict[str, Any]] = field(default_factory=dict)
-    status: str = "pass"  # pass | fail | error | xfail | xpass
+    status: str = "pass"  # pass | fail | error | xfail | xpass | unchecked (ran, but nothing could be compared)
     seconds: float = 0.0
     gateway: dict[str, Any] = field(default_factory=dict)
     kg_calls: int = 0  # knowledge reads and writes made over MCP
+    notes: list[str] = field(default_factory=list)  # why something could not be checked
 
     def to_dict(self) -> dict[str, Any]:
         return {"case": self.case, "variant": self.variant.__dict__, "chain": self.chain, "steps": self.steps,
                 "checks": [c.__dict__ for c in self.checks], "rows": self.rows, "status": self.status,
                 "seconds": round(self.seconds, 2), "gateway": self.gateway, "kg_calls": self.kg_calls,
+                "notes": self.notes,
                 "passed": sum(c.ok for c in self.checks), "failed": sum(not c.ok for c in self.checks)}
 
 
@@ -249,7 +252,15 @@ class Runner:
         if self.case.status == "known_gap":
             res.status = "xfail" if failed else "xpass"
         else:
-            res.status = "error" if errored else "fail" if failed else "pass"
+            res.status = "error" if errored else "fail" if failed else "pass" if res.checks else "unchecked"
+        no_data = sorted(t for t, v in res.rows.items() if NO_DATA in (v.get("error") or ""))
+        if no_data:
+            res.notes.append(f"{len(no_data)} table(s) could not run because their sources have no local data "
+                             f"({', '.join(no_data)}): add sample data for those sources to the case, or check them "
+                             f"in Dremio (phase PD). The model is not asked to fix these.")
+        if not res.checks:
+            res.notes.append("Nothing was compared: this case has no expected rows or expectations. Inspect the "
+                             "Agents, Rows and SQL tabs, then “Approve result” to keep it as expected.")
         return res
 
     def _job(self, n: int) -> dict[str, Any]:
