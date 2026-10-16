@@ -54,6 +54,9 @@ class JoinPlanner(BaseAgent):
             await self.propose(ctx, Fact(kind="model_issue", subject=f"app:{a}", value={"message": msg},
                                          trust=Trust.DOCUMENTED,
                                          evidence=[Evidence(kind="bi_ir", ref=job["bi_ir_key"])]), result)
+        if not loaded.app.visuals:  # the associations above are still recorded: they come from the script
+            result.metrics["idle"] = ("no chart objects in the upload (Qlik Sense app objects JSON, e.g. from "
+                                      "qlik app unbuild): only the data model's associations were recorded")
         tr = ChartTranslator(loaded.app, loaded.translation)
         planned = 0
         for v in loaded.app.visuals:
@@ -87,6 +90,8 @@ class ReportParser(BaseAgent):
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         result = AgentResult()
         parsed: list[dict[str, Any]] = []
+        if not any(f["class"] == "report_export" for f in job.get("files", [])):
+            result.metrics["idle"] = "no exported reports in the upload (xlsx / csv exports of Qlik charts)"
         for f in job.get("files", []):
             if f["class"] != "report_export":
                 continue
@@ -129,6 +134,8 @@ class MetricMapper(BaseAgent):
         loaded = load_translation(ctx.artifacts, job["bi_ir_key"], job.get("translation_key"))
         visuals = loaded.app.visuals
         mapped = 0
+        if not job.get("exports"):
+            result.metrics["idle"] = "no exported reports to match to charts (agent 21 found none)"
         for e in job.get("exports", []):
             et = ExportTable(**json.loads(ctx.artifacts.get(e["key"])))
             m = map_export(et, visuals)

@@ -38,6 +38,9 @@ class ExpressionTranslator(BaseAgent):
         loaded = load_translation(ctx.artifacts, job["bi_ir_key"], job.get("translation_key"))
         tr = ChartTranslator(loaded.app, loaded.translation)
         total = ok_count = suggested = 0
+        if not loaded.app.visuals:
+            result.metrics["idle"] = ("no chart objects in the upload (Qlik Sense app objects JSON, e.g. from "
+                                      "qlik app unbuild)")
         for v in loaded.app.visuals:
             dims = [d.field for d in v.dimensions]
             for m in v.measures:

@@ -362,8 +362,9 @@ function stepView(s) {
   const facts = s.facts || [], arts = s.artifacts || [];
   const kinds = {}; for (const f of facts) kinds[f.kind] = (kinds[f.kind] || 0) + 1;
   const m = Object.fromEntries(Object.entries(s.metrics || {}).filter(([k]) => k !== "agent"));
-  return `<details ${s.error ? "open" : ""}><summary><b>${s.number === 0 ? "▶" : s.number} ${esc(s.name)}</b><span class="badge k-${s.kind}">${s.kind}</span>${s.auto ? '<span class="chip">prerequisite</span>' : ""}${s.error ? `<span class="badge fail">error</span>` : `<span class="badge pass">ran</span>`}<span class="muted">${m.latency_ms ?? ""} ms · ${facts.length} facts · ${(s.events || []).join(", ")}</span></summary><div class="body">
+  return `<details ${s.error ? "open" : ""}><summary><b>${s.number === 0 ? "▶" : s.number} ${esc(s.name)}</b><span class="badge k-${s.kind}">${s.kind}</span>${s.auto ? '<span class="chip">prerequisite</span>' : ""}${s.error ? `<span class="badge fail">error</span>` : m.idle ? `<span class="badge warn">nothing to do</span>` : `<span class="badge pass">ran</span>`}<span class="muted">${m.latency_ms ?? ""} ms · ${facts.length} facts · ${(s.events || []).join(", ")}</span></summary><div class="body">
     ${s.error ? `<pre class="wrap" style="color:var(--fail)">${esc(s.traceback || s.error)}</pre>` : ""}
+    ${m.idle ? `<div class="note">Nothing to do: ${esc(m.idle)}</div>` : ""}
     <h4>Metrics</h4><div class="kv">${Object.entries(m).map(([k, v]) => `<div>${esc(k)}</div><div>${fmt(v)}</div>`).join("")}</div>
     ${s.outputs ? `<h4>Outputs</h4><pre class="wrap">${esc(JSON.stringify(s.outputs, null, 2))}</pre>` : ""}
     ${facts.length ? `<h4>Facts proposed (${Object.entries(kinds).map(([k, n]) => k + " ×" + n).join(", ")})</h4>${table(["kind", "subject", "object", "trust", "value"], facts.slice(0, 300).map(f => [f.kind, f.subject, f.object, f.trust, f.value]))}` : ""}
