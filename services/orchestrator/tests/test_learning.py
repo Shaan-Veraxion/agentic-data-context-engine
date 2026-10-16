@@ -73,4 +73,5 @@ async def test_a_learned_correction_is_proven_then_disproved_by_new_data(tmp_pat
     # the scheduled re-run finds every app from its uploads; the disproved correction is no longer applied
     assert set(await uploads_by_app(kg)) == {"rulefix_local", "rulefix_copy", "integer_prices"}
     results = await rerun_all(deps, apps=["integer_prices"])
-    assert results == [{"app_id": "integer_prices", "status": "waiting_for_dremio", "levels": {"Products": "V4"}}]
+    assert results == [{"app_id": "integer_prices", "status": "waiting_for_dremio", "levels": {"Products": "V4"},
+                        "started_at": "intake"}]

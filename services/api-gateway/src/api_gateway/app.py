@@ -18,7 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFi
 from fastapi.middleware.cors import CORSMiddleware
 from hitl_service.api import create_router as review_router
 from hitl_service.service import ReviewService
-from orchestrator.pipeline import Deps, run_pipeline
+from orchestrator.pipeline import Deps, resume_pipeline, run_pipeline
 from pydantic import BaseModel
 
 from .auth import Principal, require
@@ -37,6 +37,16 @@ class Services:
     gateway: Any | None = None
     kg_mcp_url: str | None = None  # agents reach knowledge through kg-mcp at this URL (settings.kg_transport=mcp)
     llm_tools: bool = False
+    interactive: bool = False  # owner questions pause runs (needs the checkpointer)
+    budget_usd: float | None = None
+    max_calls: int | None = None
+    supervisor: str = "auto"
+    queue: Any | None = None  # orchestrator.worker.RunQueue: runs are queued for the worker instead of run here
+
+    def deps(self, kg: Any) -> Deps:
+        return Deps(kg=kg, artifacts=self.artifacts, gateway=self.gateway, llm_tools=self.llm_tools,
+                    supervisor=self.supervisor, interactive=self.interactive and self.checkpointer is not None,
+                    budget_usd=self.budget_usd, max_calls=self.max_calls)
 
 
 def services(request: Request) -> Services:
@@ -71,9 +81,36 @@ def upload_name(key: str) -> str:
     return key.split("/", 3)[3] if key.count("/") >= 3 else key.split("/")[-1]
 
 
+class AnswersIn(BaseModel):
+    answers: dict[str, str]  # review item id (Ask: unresolved_variable) -> the value
+
+
+def run_view(run_id: str, out: Any, new_items: int) -> dict[str, Any]:
+    """A run's response: its status and results, or the owner questions it is waiting for."""
+    view: dict[str, Any] = {"run_id": run_id, "status": out.get("status"), "tables": out.get("tables", []),
+                            "levels": out.get("levels", {}), "pending": out.get("pending", []),
+                            "pack_prefix": out.get("pack_prefix"), "new_review_items": new_items,
+                            "metrics": out.get("metrics", {}), "decisions": out.get("decisions", [])}
+    paused = out.get("__interrupt__")
+    if paused:
+        view["status"] = "waiting_for_owner"
+        view["questions"] = [q for i in paused for q in (getattr(i, "value", {}) or {}).get("questions", [])]
+    return view
+
+
 class RunRequest(BaseModel):
     app_name: str | None = None
     files: list[str] | None = None  # artifact keys; default: every file uploaded for the app
+
+
+async def with_agents_kg(s: Services, fn: Any) -> Any:
+    """Run fn(kg) with the knowledge port agents use: kg-mcp when configured (ADR-2), else the service itself."""
+    if s.kg_mcp_url:
+        from kg_mcp.client import McpKG
+
+        async with McpKG.connect(s.kg_mcp_url) as kg:
+            return await fn(kg)
+    return await fn(s.kg)
 
 
 def create_app(svc: Services | None = None, cors_origins: list[str] | None = None) -> FastAPI:
@@ -96,13 +133,22 @@ def create_app(svc: Services | None = None, cors_origins: list[str] | None = Non
         gateway = gateway_from_settings(s)
         async with AsyncPostgresSaver.from_conn_string(s.pg_dsn) as saver:
             await saver.setup()
-            app.state.services = Services(kg=kg, artifacts=artifacts_from_settings(s),
+            queue = None
+            if s.orchestrator_mode == "worker":
+                from orchestrator.worker import PostgresRunQueue
+
+                queue = PostgresRunQueue(s.pg_dsn)
+            app.state.services = Services(kg=kg, artifacts=artifacts_from_settings(s), queue=queue,
                                           review=ReviewService(store, kg), checkpointer=saver, gateway=gateway,
                                           kg_mcp_url=s.kg_mcp_url if s.kg_transport == "mcp" else None,
-                                          llm_tools=s.llm_tools)
+                                          llm_tools=s.llm_tools, interactive=s.interactive_runs,
+                                          budget_usd=s.run_budget_usd, max_calls=s.run_max_calls,
+                                          supervisor=s.supervisor)
             try:
                 yield
             finally:
+                if queue is not None:
+                    queue.close()
                 store.close()
                 await kg.close()
 
@@ -147,29 +193,51 @@ def create_app(svc: Services | None = None, cors_origins: list[str] | None = Non
             raise HTTPException(409, "no files uploaded for this app")
         files = [{"name": upload_name(k), "key": k} for k in keys]
         run_id = uuid.uuid4().hex[:12]
+        if s.queue is not None:  # the orchestrator worker runs it; poll GET /apps/{app}/runs/{run}
+            rid = s.queue.put("run", app_id, run_id, {"files": files, "app_name": req.app_name})
+            return {"run_id": run_id, "status": "queued", "request_id": rid}
 
         async def run(kg: Any) -> Any:
             return await run_pipeline(app_id=app_id, run_id=run_id, files=files, app_name=req.app_name,
-                                      deps=Deps(kg=kg, artifacts=s.artifacts, gateway=s.gateway,
-                                                llm_tools=s.llm_tools), checkpointer=s.checkpointer)
+                                      deps=s.deps(kg), checkpointer=s.checkpointer)
 
-        if s.kg_mcp_url:  # ADR-2: agents read and write knowledge only through kg-mcp
-            from kg_mcp.client import McpKG
+        out = await with_agents_kg(s, run)
+        return run_view(run_id, out, await s.review.refresh(app_id))
 
-            async with McpKG.connect(s.kg_mcp_url) as kg:
-                out = await run(kg)
-        else:
-            out = await run(s.kg)
-        new_items = await s.review.refresh(app_id)
-        return {"run_id": run_id, "status": out.get("status"), "tables": out.get("tables", []),
-                "levels": out.get("levels", {}), "pending": out.get("pending", []),
-                "pack_prefix": out.get("pack_prefix"), "new_review_items": new_items,
-                "metrics": out.get("metrics", {})}
+    @app.post("/apps/{app_id}/runs/{run_id}/answers")
+    async def answer_run(app_id: str, run_id: str, body: AnswersIn, s: Services = Depends(services),
+                         reviewer: str = Depends(reviewer_name)) -> dict[str, Any]:
+        """Answer the owner questions a paused run asked: each answer is recorded as a review decision (a confirmed
+        variable_value fact), then the run continues and reads the script again with the answers."""
+        check_app_id(app_id)
+        if s.checkpointer is None:
+            raise HTTPException(409, "runs cannot be resumed without the checkpointer")
+        await s.review.refresh(app_id)
+        answered = []
+        for item_id, value in body.answers.items():
+            try:
+                await s.review.decide(item_id, "answer", reviewer, {"value": value})
+            except Exception as e:  # noqa: BLE001 - unknown or already decided item: tell the caller
+                raise HTTPException(409, f"{item_id}: {e}") from e
+            answered.append(item_id)
+        if s.queue is not None:
+            rid = s.queue.put("resume", app_id, run_id, {"answer": {"answered": answered}})
+            return {"run_id": run_id, "status": "queued", "request_id": rid, "answered": answered}
+
+        async def run(kg: Any) -> Any:
+            return await resume_pipeline(app_id=app_id, run_id=run_id, deps=s.deps(kg), checkpointer=s.checkpointer,
+                                         answer={"answered": answered})
+
+        out = await with_agents_kg(s, run)
+        return run_view(run_id, out, await s.review.refresh(app_id))
 
     @app.get("/apps/{app_id}/runs/{run_id}")
     async def get_run(app_id: str, run_id: str, s: Services = Depends(services),
                       _p: Principal = Depends(require("viewer"))) -> Any:
         key = f"apps/{check_app_id(app_id)}/runs/{run_id}/summary.json"
+        req = s.queue.latest(app_id, run_id) if s.queue is not None else None
+        if req is not None and req.status != "done":  # queued, running, waiting for the owner, or failed
+            return {"run_id": run_id, "status": req.status, "request_id": req.id, **req.result}
         if not s.artifacts.exists(key):
             raise HTTPException(404, "run not found")
         return get_json(s.artifacts, key)

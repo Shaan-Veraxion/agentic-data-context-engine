@@ -38,6 +38,9 @@ the design calls essential:
 
 ### 1.1 Orchestration (the biggest gap)
 
+**Status: fixed in step 1 (2026-10-16)**, except that re-runs restart at a node for the whole application rather
+than only the affected tables. See [code-guide.md](code-guide.md) section 4.
+
 | Design | Code | Where |
 |---|---|---|
 | A **LangGraph supervisor** with one subgraph per group; first subgraph `qlik_pipeline` (Arch §5.6, TD §6.4) | One linear `StateGraph` of 8 nodes; no supervisor, no subgraph | [pipeline.py](../services/orchestrator/src/orchestrator/pipeline.py) |
@@ -49,6 +52,10 @@ the design calls essential:
 | The orchestrator is its own worker | Runs inside the API gateway process (noted as open in the implementation plan) | [app.py](../services/api-gateway/src/api_gateway/app.py) |
 
 ### 1.2 Agent responsibilities moved or not done
+
+**Status: fixed in step 1** for agents 25 (repair, route `repair_sql`) and 26 (diagnosis from classified
+mismatches; per-member grouped comparisons come with step 2). `classify_file`, `parse_export` and sending `kind:
+other` statements to a model remain open.
 
 | Design | Code |
 |---|---|
@@ -208,6 +215,12 @@ tolerance, the connection mapping, cross-application QVD chains, all of 1.1, 1.3
 Each step leaves the system working and tested; the bench and the gold set run after every step.
 
 ### Step 1. The orchestrator as designed (agentic)
+
+**Done 2026-10-16.** Supervisor graph with a translate subgraph (one node per step), `Send` fan-out for check and
+reconcile, repair by agent 25 (`repair_sql` v2) and diagnosis by agent 26 (mismatch classes, back through
+synthesize), an LLM supervisor (`plan_next`) with rules as fallback, `interrupt()` for owner questions with an
+answers endpoint, re-entry at extract/resolve/translate, per-run budgets (`RunGateway`), the orchestrator worker
+(queue table `run_request`, Helm `worker`), and the run timeline on the bench.
 - Supervisor graph over a `qlik_pipeline` subgraph; `Send` fan-out per table after resolve.
 - A translation subgraph per untranslated statement: memory → propose (LLM) → verify (code) → retry / accept / give up,
   replacing the Python loop in `ai_loop.py`.

@@ -1,0 +1,42 @@
+{{- if .Values.worker.enabled }}
+# The orchestrator worker: runs the LangGraph pipeline for runs the API gateway queued (ADCE_ORCHESTRATOR_MODE=worker),
+# including resumes of runs paused for owner questions (services/orchestrator/.../worker.py). Scale with replicas.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-orchestrator-worker
+  labels: {{- include "adce.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels: { app.kubernetes.io/component: orchestrator-worker, app.kubernetes.io/instance: {{ .Release.Name }} }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/component: orchestrator-worker, app.kubernetes.io/instance: {{ .Release.Name }} }
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: worker
+          image: {{ include "adce.image" (dict "root" . "kind" "python") }}
+          command: {{- toYaml .Values.worker.command | nindent 12 }}
+          {{- include "adce.env" . | nindent 10 }}
+          {{- with .Values.worker.env }}
+          env:
+            {{- range $k, $v := . }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          resources: {{- toYaml .Values.worker.resources | nindent 12 }}
+          {{- if .Values.gateway.config }}
+          volumeMounts:
+            - { name: gateway-config, mountPath: /etc/adce, readOnly: true }
+          {{- end }}
+      {{- if .Values.gateway.config }}
+      volumes:
+        - name: gateway-config
+          configMap: { name: {{ .Release.Name }}-gateway }
+      {{- end }}
+{{- end }}

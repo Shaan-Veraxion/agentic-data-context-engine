@@ -9,80 +9,91 @@ AI-assisted SQL stays marked for review. Reviewer decisions steer it too (adce_r
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from adce_core.agent import AgentContext, AgentKind, AgentResult, AgentSpec, BaseAgent
-from adce_core.artifacts import content_key, put_json
+from adce_core.bi_ir import BIApp
 from adce_core.facts import Evidence, Fact, FactStatus, Trust
-from adce_reversesql.ai_loop import (
-    MemoryEntry,
-    TranslationMemory,
-    explain_gaps,
-    memory_key,
-    memory_stats,
-    repair_with_ai,
-    translate_with_ai,
-)
+from adce_reversesql.ai_loop import Outcome, TranslationMemory, Validator, explain_gaps, translate_with_ai
 from adce_reversesql.compose import compose
-from adce_reversesql.runtime import load_translation, validator_from_files
+from adce_reversesql.learned import load_memory, record_memory
+from adce_reversesql.runtime import load_translation, outcome_record, save_translation, validator_from_files
 
 from .bi_extractor import table_key
+
+
+@dataclass
+class TranslateWork:
+    """What the AI steps of one translation need. Built by prepare(); lives in memory for the run (the graph's
+    checkpointed state keeps only the overrides, outcomes and queue; a resumed run builds this again)."""
+
+    app: BIApp
+    overrides: dict[int, str]  # reviewer SQL for this application, by statement
+    ai_notes: dict[int, str]
+    memory: TranslationMemory
+    known: set[int]  # ids of the memory entries loaded at the start (the rest are learned in this run)
+    validator: Validator | None
+    use_tools: bool
+    kg_tools: list[Any]
+    accepted_gaps: set[str]
+    rejected: dict[str, dict[str, str]]
 
 
 class ScriptTranslator(BaseAgent):
     spec = AgentSpec(number=28, name="bi_script_translator", version="0.1.0", kind=AgentKind.HYBRID,
                      triggers=["bi_ir.ready"], emits=["bi_transform.ready"],
                      writes=["bi_transform", "translation_memory", "memory_check", "gap_analysis"],
-                     routes=["translate_statement", "diagnose_mismatch", "explain_gap"])
+                     routes=["translate_statement", "explain_gap"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
-        result = AgentResult()
+        """The whole translation in one call (the bench, the command line). The orchestrator runs the same steps as
+        graph nodes instead: prepare, then one node per statement step (ai_loop), then finish."""
+        w = await self.prepare(job, ctx)
+        overrides, outcomes = await translate_with_ai(w.app, ctx.gateway, w.memory, overrides=w.overrides,
+                                                      validator=w.validator, task=f"{ctx.run_id}:translate",
+                                                      tools=w.use_tools, kg_tools=w.kg_tools,
+                                                      accepted_gaps=w.accepted_gaps, rejected=w.rejected)
+        return await self.finish(job, ctx, w, overrides, outcomes)
+
+    async def prepare(self, job: dict[str, Any], ctx: AgentContext) -> TranslateWork:
+        """Rules, then the SQL reviewers wrote for this application, then what the AI steps need: the memory
+        (learned and reviewer answers, used with AI off too), the validator over the uploads, the reviewer
+        decisions, and the knowledge tools when tools are on."""
         loaded = load_translation(ctx.artifacts, job["bi_ir_key"])
-        t = loaded.translation
         overrides: dict[int, str] = {}
         ai_notes: dict[int, str] = {}
         reviewed = {f.value.get("span"): f.value["sql"] for f in await ctx.kg.facts(kind="translation_override")
                     if f.trust == Trust.CONFIRMED and f.subject.startswith(f"app:{ctx.app_id}/")}
-        for r in t.tables.values():
+        for r in loaded.translation.tables.values():
             for u in r.untranslated:
                 if u.span in reviewed:
                     overrides[u.statement] = reviewed[u.span]
                     ai_notes[u.statement] = "reviewer-provided SQL"
-        if overrides:
-            t = compose(loaded.app, overrides)
-        ai_outcomes: list[dict[str, Any]] = []
-        # learned and reviewer answers apply without a model too (AI off: gateway None); the model is asked only
-        # for what the memory does not hold
-        memory = await self._memory(ctx)
-        known = {id(e) for e in memory.entries}
+        memory = await load_memory(ctx.kg)
         validator = validator_from_files(ctx.artifacts, job["files"], loaded.app) if job.get("files") else None
         use_tools = bool(job.get("llm_tools")) and ctx.gateway is not None
         # read-only knowledge tools come from kg-mcp when the agent reaches knowledge over MCP (ADR-2)
         kg_tools = await ctx.kg.tools() if use_tools and hasattr(ctx.kg, "tools") else []  # type: ignore[attr-defined]
         gaps, rejected = await self._decisions(ctx)
-        overrides, outcomes = await translate_with_ai(loaded.app, ctx.gateway, memory, overrides=overrides,
-                                                      validator=validator, task=f"{ctx.run_id}:translate",
-                                                      tools=use_tools, kg_tools=kg_tools, accepted_gaps=gaps,
-                                                      rejected=rejected)
-        if validator is not None and ctx.gateway is not None:
-            # agent 26's diagnosis, run here so corrected SQL flows to synthesis, checks and the pack: tables
-            # the rules translated but the data contradicts get one statement corrected (diagnose_mismatch)
-            overrides, fixes = await repair_with_ai(loaded.app, ctx.gateway, memory, validator,
-                                                    overrides=overrides, task=f"{ctx.run_id}:diagnose",
-                                                    tools=use_tools, kg_tools=kg_tools)
-            outcomes += fixes
+        return TranslateWork(loaded.app, overrides, ai_notes, memory, {id(e) for e in memory.entries}, validator,
+                             use_tools, kg_tools, gaps, rejected)
+
+    async def finish(self, job: dict[str, Any], ctx: AgentContext, w: TranslateWork, overrides: dict[int, str],
+                     outcomes: list[Outcome]) -> AgentResult:
+        """Record what was learned, explain what stays for a person (explain_gap), write the translation artifact
+        and one bi_transform fact per table."""
+        result = AgentResult()
+        ai_notes = dict(w.ai_notes)
         for o in outcomes:
-            ai_outcomes.append({"statement": o.statement, "table": o.table, "status": o.status,
-                                "attempts": len(o.attempts), "model_calls": o.model_calls,
-                                "tool_calls": o.tool_calls, "notes": o.notes})
             if o.sql and o.status != "memory":
                 ai_notes[o.statement] = f"{o.status}: {o.notes}"
-        for e in memory.entries:
-            if id(e) not in known:
-                await self._remember(ctx, result, e)
-        await self._record_checks(ctx, result, memory)
-        if overrides:
-            t = compose(loaded.app, overrides)
+
+        async def propose(f: Fact) -> str:
+            return await self.propose(ctx, f, result)
+
+        await record_memory(propose, w.memory, w.known, ctx.app_id, ctx.run_id)
+        t = compose(w.app, overrides)
         analyses: list[dict[str, Any]] = []
         if ctx.gateway is not None:
             # what stays for a person: the model explains each gap and asks the data owner what it needs
@@ -90,9 +101,9 @@ class ScriptTranslator(BaseAgent):
                        for f in job.get("files", []) if f["class"] == "script"}
             answers = {f.subject: f.value for f in await ctx.kg.facts(kind="gap_answer")
                        if f.trust == Trust.CONFIRMED and f.subject.startswith(f"app:{ctx.app_id}/")}
-            analyses = await explain_gaps(loaded.app, t, ctx.gateway, scripts, outcomes, task=f"{ctx.run_id}:gaps",
-                                      answers={k.removeprefix(f"app:{ctx.app_id}/gap:"): v
-                                               for k, v in answers.items()})
+            analyses = await explain_gaps(w.app, t, ctx.gateway, scripts, outcomes, task=f"{ctx.run_id}:gaps",
+                                          answers={k.removeprefix(f"app:{ctx.app_id}/gap:"): v
+                                                   for k, v in answers.items()})
             for g in analyses:
                 if "error" in g:
                     continue
@@ -102,19 +113,15 @@ class ScriptTranslator(BaseAgent):
                     confidence={"low": 0.3, "medium": 0.6, "high": 0.8}.get(g["confidence"], 0.5),
                     value={k: v for k, v in g.items() if k != "model"},
                     evidence=[Evidence(kind="script_span", ref=f"{ctx.app_id}/{file}:{line}")]), result)
-        key = put_json(ctx.artifacts, content_key(f"apps/{ctx.app_id}/translation",
-                                                  repr(sorted(overrides.items())).encode() + job["bi_ir_key"].encode(),
-                                                  ".json"),
-                       {"bi_ir_key": job["bi_ir_key"], "overrides": {str(k): v for k, v in overrides.items()},
-                        "ai_notes": {str(k): v for k, v in ai_notes.items()}, "ai_outcomes": ai_outcomes,
-                        "gaps": analyses})
+        key = save_translation(ctx.artifacts, ctx.app_id, job["bi_ir_key"], overrides, ai_notes,
+                               [outcome_record(o) for o in outcomes], analyses)
         result.artifacts.append(key)
         for name, r in t.tables.items():
             if r.mapping and not r.steps:
                 continue
             ctes = [c for c in t.ctes.values() if any(s in c.spans for st in r.steps for s in st.spans)]
-            evidence = [Evidence(kind="script_span", ref=f"{ctx.app_id}/{s}") for st in r.steps for s in st.spans] or \
-                [Evidence(kind="script_span", ref=f"{ctx.app_id}/{u.span}") for u in r.untranslated]
+            evidence = ([Evidence(kind="script_span", ref=f"{ctx.app_id}/{s}") for st in r.steps for s in st.spans]
+                        or [Evidence(kind="script_span", ref=f"{ctx.app_id}/{u.span}") for u in r.untranslated])
             if not evidence:
                 continue
             await self.propose(ctx, Fact(
@@ -134,37 +141,6 @@ class ScriptTranslator(BaseAgent):
         result.events.append("bi_transform.ready")
         return result
 
-    async def _memory(self, ctx: AgentContext) -> TranslationMemory:
-        """The translation memory from knowledge facts: the latest entry per statement, without disproved ones,
-        marked proven when its re-checks (memory_check facts) passed on two or more apps and never failed."""
-        latest: dict[str, Any] = {}
-        for f in await ctx.kg.facts(kind="translation_memory"):
-            latest[f.subject] = f
-        stats = memory_stats(await ctx.kg.facts(kind="memory_check"))
-        mem = TranslationMemory()
-        for subject, f in latest.items():
-            if f.value.get("status") != "disproved":
-                e = MemoryEntry(**{k: f.value[k] for k in ("statement", "input_columns", "sql", "status", "app_id",
-                                                           "replaces_rule") if k in f.value},
-                                learned_at=f.recorded_at.isoformat())
-                st = stats.get(subject.removeprefix("memory:"), {})
-                confirmed = set(st.get("passed_apps", ())) | ({e.app_id} if e.status == "ai_validated" else set())
-                e.proven = len(confirmed) >= 2 and not st.get("failed_apps")
-                mem.entries.append(e)
-        # SQL reviewers wrote for a statement, in any application: reused for the same statement elsewhere (checked
-        # on that application's data like any memory answer) and shown as examples for similar statements
-        for f in await ctx.kg.facts(kind="translation_override"):
-            v = f.value
-            if f.trust != Trust.CONFIRMED or not v.get("text"):
-                continue
-            key = f"memory:{memory_key(v['text'], v.get('input_columns'))}"
-            if key in latest and latest[key].value.get("status") == "disproved":
-                continue
-            mem.add(MemoryEntry(statement=v["text"], input_columns=v.get("input_columns"), sql=v["sql"],
-                                status="reviewer", app_id=f.subject.removeprefix("app:").split("/")[0],
-                                learned_at=f.recorded_at.isoformat()))
-        return mem
-
     async def _decisions(self, ctx: AgentContext) -> tuple[set[str], dict[str, dict[str, str]]]:
         """This application's reviewer decisions the AI loop acts on: statements accepted as untranslated (spans)
         and tables whose SQL a reviewer rejected (table -> reason and time)."""
@@ -176,30 +152,3 @@ class ScriptTranslator(BaseAgent):
                     for f in await ctx.kg.facts(kind="report_sql")
                     if f.status == FactStatus.REJECTED and f.subject.startswith(prefix)}
         return gaps, rejected
-
-    async def _record_checks(self, ctx: AgentContext, result: AgentResult, memory: TranslationMemory) -> None:
-        """Every reuse of a learned answer was checked on this app's data: keep the result, and retire an answer
-        the data disproved (the latest translation_memory fact for it says disproved)."""
-        for c in memory.checks:
-            await self.propose(ctx, Fact(
-                kind="memory_check", subject=f"memory:{c['key']}", trust=Trust.VALIDATED if c["passed"] and
-                c["level"] in ("V3", "V4", "V5") else Trust.INFERRED,
-                value={"app_id": ctx.app_id, "run_id": ctx.run_id, "passed": c["passed"], "level": c["level"],
-                       "problems": c["problems"]},
-                evidence=[Evidence(kind="query_result", ref=f"{ctx.app_id}:{ctx.run_id}")]), result)
-        for e in memory.disproved:
-            await self.propose(ctx, Fact(
-                kind="translation_memory", subject=f"memory:{memory_key(e.statement, e.input_columns)}",
-                trust=Trust.INFERRED, value={"statement": e.statement, "input_columns": e.input_columns,
-                                             "sql": e.sql, "status": "disproved", "app_id": ctx.app_id,
-                                             "replaces_rule": e.replaces_rule},
-                evidence=[Evidence(kind="query_result", ref=f"{ctx.app_id}:{ctx.run_id}")]), result)
-
-    async def _remember(self, ctx: AgentContext, result: AgentResult, e: MemoryEntry) -> None:
-        await self.propose(ctx, Fact(
-            kind="translation_memory", subject=f"memory:{memory_key(e.statement, e.input_columns)}",
-            trust=Trust.VALIDATED if e.status == "ai_validated" else Trust.INFERRED,
-            value={"statement": e.statement, "input_columns": e.input_columns, "sql": e.sql, "status": e.status,
-                   "app_id": e.app_id, "replaces_rule": e.replaces_rule},
-            evidence=[Evidence(kind="query_result" if e.status == "ai_validated" else "rule_check",
-                               ref=f"{ctx.app_id}:{ctx.run_id}")]), result)

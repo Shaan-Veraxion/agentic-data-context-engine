@@ -1,9 +1,12 @@
 """Reverse-SQL agents for the Qlik path.
 
 24 Synthesizer     renders the Dremio SQL per table (CTE chain with statement map) and per chart as artifacts
-25 Query checker   runs the rule checks (syntax, translation, fields, determinism, inputs)
+25 Query checker   runs the rule checks (syntax, translation, fields, determinism, inputs); with a model, repairs a
+                   table that fails a blocking rule (route repair_sql, at most twice)
 26 Reconciler      executes in the venue available (local DuckDB until phase PD) and climbs the validation ladder;
-                   charts with an exported report reach V5 when every figure matches
+                   classifies each mismatch (adce_reversesql.diagnose) and, with a model, corrects the statement the
+                   evidence contradicts (route diagnose_mismatch); charts with an exported report reach V5 when every
+                   figure matches
 19 Lineage (lite)  dataset-level lineage from logical sources through Qlik tables to QVDs, OpenLineage-shaped
 20 Publisher (lite) writes the migration pack: SQL, lineage, validation report, review record, manifest
 """
@@ -16,12 +19,22 @@ from typing import Any
 from adce_core.agent import AgentContext, AgentKind, AgentResult, AgentSpec, BaseAgent
 from adce_core.artifacts import put_json
 from adce_core.facts import Evidence, Fact, Trust
+from adce_reversesql.ai_loop import diagnose_table, failed_rules, repair_table
 from adce_reversesql.charts import translate_charts
 from adce_reversesql.check import check_table
+from adce_reversesql.diagnose import classify
 from adce_reversesql.figures import check_exports
+from adce_reversesql.learned import load_memory, record_memory
 from adce_reversesql.reconcile import Level, Reconciler
 from adce_reversesql.resolve import apply_mappings, known_mappings
-from adce_reversesql.runtime import load_translation, local_evidence
+from adce_reversesql.runtime import (
+    load_translation,
+    local_evidence,
+    outcome_record,
+    save_translation,
+    translation_doc,
+    validator_from_files,
+)
 
 
 def table_key(app_id: str, name: str) -> str:
@@ -95,72 +108,176 @@ class Synthesizer(BaseAgent):
 
 
 class QueryChecker(BaseAgent):
-    spec = AgentSpec(number=25, name="query_checker", version="0.1.0", kind=AgentKind.HYBRID,
+    spec = AgentSpec(number=25, name="query_checker", version="0.2.0", kind=AgentKind.HYBRID,
                      triggers=["sql.candidates"], emits=["sql.checked"], writes=["sql_checked"],
                      routes=["repair_sql"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
+        """job: bi_ir_key, translation_key; optional tables (default: every output table) and repair (default true:
+        with a model, tables failing blocking rules are repaired, at most twice each, and checked again)."""
         result = AgentResult()
         loaded = load_translation(ctx.artifacts, job["bi_ir_key"], job.get("translation_key"))
-        passed = 0
-        for name in output_tables(loaded):
-            chk = check_table(loaded.translation, name)
-            passed += chk.ok
-            await self.propose(ctx, Fact(
-                kind="sql_checked", subject=table_key(ctx.app_id, name),
-                trust=Trust.VALIDATED if chk.ok else Trust.INFERRED,
-                value={"ok": chk.ok, "rules": [{"name": r.name, "ok": r.ok, "message": r.message,
-                                                "blocking": r.blocking} for r in chk.rules]},
-                evidence=[Evidence(kind="rule_check", ref=f"{ctx.app_id}/{name}")]), result)
-        result.metrics["passed"] = passed
+        tables = job.get("tables") or output_tables(loaded)
+        checked = {name: await self.check_one(ctx, result, loaded, name) for name in tables}
+        if ctx.gateway is not None and job.get("repair", True) and any(checked[t]["failing"] for t in checked):
+            key, outcomes = await self.repair(job, ctx, [t for t in tables if checked[t]["failing"]])
+            if key:
+                result.outputs["translation_key"] = key
+                loaded = load_translation(ctx.artifacts, job["bi_ir_key"], key)
+                for o in outcomes:
+                    if o["status"] == "sql_repaired":
+                        checked[o["table"]] = await self.check_one(ctx, result, loaded, o["table"])
+            result.outputs["repairs"] = outcomes
+        result.outputs["checks"] = checked
+        result.metrics["passed"] = sum(c["ok"] for c in checked.values())
         result.events.append("sql.checked")
         return result
 
+    async def check_one(self, ctx: AgentContext, result: AgentResult, loaded: Any, name: str) -> dict[str, Any]:
+        """The rule checks of one table, proposed as a sql_checked fact. Returns {ok, failing}: failing are the
+        blocking rules a repair can fix (not untranslated statements)."""
+        chk = check_table(loaded.translation, name)
+        await self.propose(ctx, Fact(
+            kind="sql_checked", subject=table_key(ctx.app_id, name),
+            trust=Trust.VALIDATED if chk.ok else Trust.INFERRED,
+            value={"ok": chk.ok, "rules": [{"name": r.name, "ok": r.ok, "message": r.message,
+                                            "blocking": r.blocking} for r in chk.rules]},
+            evidence=[Evidence(kind="rule_check", ref=f"{ctx.app_id}/{name}")]), result)
+        return {"ok": chk.ok, "failing": failed_rules(loaded.translation, name)}
+
+    async def repair(self, job: dict[str, Any], ctx: AgentContext,
+                     tables: list[str]) -> tuple[str | None, list[dict[str, Any]]]:
+        """Route repair_sql for each table: one statement's SQL replaced so the table passes its blocking rules.
+        Returns the new translation artifact's key (None when nothing was repaired) and the outcomes."""
+        doc = translation_doc(ctx.artifacts, job.get("translation_key"))
+        loaded = load_translation(ctx.artifacts, job["bi_ir_key"], job.get("translation_key"))
+        overrides = dict(loaded.overrides)
+        outcomes = []
+        for name in tables:
+            o = await repair_table(loaded.app, name, ctx.gateway, overrides, task=f"{ctx.run_id}:repair")
+            if o is not None:
+                outcomes.append(o)
+            if o is not None and o.status == "skipped":
+                break
+        records = [outcome_record(o) for o in outcomes]
+        if not any(o.status == "sql_repaired" for o in outcomes):
+            return None, records
+        notes = {int(k): v for k, v in doc.get("ai_notes", {}).items()}
+        notes |= {o.statement: f"sql_repaired: {o.notes}" for o in outcomes if o.status == "sql_repaired"}
+        key = save_translation(ctx.artifacts, ctx.app_id, job["bi_ir_key"], overrides, notes,
+                               doc.get("ai_outcomes", []) + records, doc.get("gaps", []))
+        return key, records
+
 
 class ReconcilerAgent(BaseAgent):
-    spec = AgentSpec(number=26, name="reconciler", version="0.1.0", kind=AgentKind.HYBRID,
+    spec = AgentSpec(number=26, name="reconciler", version="0.2.0", kind=AgentKind.HYBRID,
                      triggers=["sql.checked", "metrics.mapped"], emits=["report_sql.validated"],
-                     writes=["report_sql", "figures_validated"], routes=["diagnose_mismatch"])
+                     writes=["report_sql", "figures_validated", "translation_memory", "memory_check"],
+                     routes=["diagnose_mismatch"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
-        """job: bi_ir_key, translation_key, files (classified uploads, for reload log, QVDs, source extracts)."""
+        """job: bi_ir_key, translation_key, files (classified uploads, for reload log, QVDs, source extracts);
+        optional diagnose (default true). Validates every output table; with a model, tables the evidence
+        contradicts are diagnosed (one statement corrected, accepted only when every comparison then passes) and
+        validated again; then the results are recorded."""
         result = AgentResult()
+        tables = output_tables(load_translation(ctx.artifacts, job["bi_ir_key"], job.get("translation_key")))
+        entries = {t: self.validate(job, ctx, t) for t in tables}
+        if ctx.gateway is not None and job.get("diagnose", True):
+            todo = [t for t, e in entries.items() if e["mismatch"]["route"] == "diagnose"]
+            if todo:
+                key, outcomes = await self.diagnose(job, ctx, result, todo)
+                result.outputs["diagnoses"] = outcomes
+                if key:
+                    job = {**job, "translation_key": key}
+                    result.outputs["translation_key"] = key
+                    for o in outcomes:
+                        if o["status"] == "ai_repaired":
+                            entries[o["table"]] = self.validate(job, ctx, o["table"])
+        await self.record(job, ctx, result, list(entries.values()))
+        return result
+
+    def validate(self, job: dict[str, Any], ctx: AgentContext, name: str) -> dict[str, Any]:
+        """One table on the validation ladder (no facts yet): its summary, the level, the failed comparisons, the
+        errors, the evidence used, and what kind of mismatch it is (adce_reversesql.diagnose)."""
+        loaded = load_translation(ctx.artifacts, job["bi_ir_key"], job.get("translation_key"))
+        ev = local_evidence(ctx.artifacts, job.get("files", []), loaded.app)
+        tv = Reconciler(loaded.translation, ev.venue, ev.log, ev.headers, ev.contents).validate(name)
+        failed = [c.__dict__ for c in tv.comparisons if not c.ok]
+        evidence = [{"kind": "query_result", "ref": f"{tv.venue}:{ctx.run_id}:{name}",
+                     "detail": {"comparisons": len(tv.comparisons)}}]
+        if ev.log is not None:
+            evidence.append({"kind": "reload_log", "ref": ev.log_key or "reload_log", "detail": {}})
+        evidence += [{"kind": "qvd_header", "ref": t, "detail": {}} for t, _ in loaded.translation.tables[name].stores
+                     if t in ev.headers]
+        return {"table": name, "summary": tv.summary(), "level": tv.level.name if tv.level >= 0 else "none",
+                "validated": tv.level >= Level.V3, "venue": tv.venue, "failed": failed, "errors": tv.errors,
+                "comparisons_ok": sum(c.ok for c in tv.comparisons), "comparisons": len(tv.comparisons),
+                "sql_sha256": hashlib.sha256((tv.sql or "").encode()).hexdigest(), "evidence": evidence,
+                "mismatch": classify(failed, tv.errors), "unreadable": ev.unreadable}
+
+    async def diagnose(self, job: dict[str, Any], ctx: AgentContext, result: AgentResult,
+                       tables: list[str]) -> tuple[str | None, list[dict[str, Any]]]:
+        """Route diagnose_mismatch for each table (at most 3 answers each, judged against the evidence). Accepted
+        corrections are remembered as rule fixes (translation_memory, replaces_rule). Returns the new translation
+        artifact's key (None when nothing was corrected) and the outcomes."""
+        doc = translation_doc(ctx.artifacts, job.get("translation_key"))
+        loaded = load_translation(ctx.artifacts, job["bi_ir_key"], job.get("translation_key"))
+        validator = validator_from_files(ctx.artifacts, job.get("files", []), loaded.app)
+        memory = await load_memory(ctx.kg)
+        known = {id(e) for e in memory.entries}
+        overrides = dict(loaded.overrides)
+        tools = bool(job.get("llm_tools"))
+        kg_tools = await ctx.kg.tools() if tools and hasattr(ctx.kg, "tools") else []  # type: ignore[attr-defined]
+        outcomes = []
+        for name in tables:
+            o = await diagnose_table(loaded.app, name, ctx.gateway, memory, validator, overrides,
+                                     task=f"{ctx.run_id}:diagnose", tools=tools, kg_tools=kg_tools)
+            if o is not None:
+                outcomes.append(o)
+            if o is not None and o.status == "skipped":
+                break
+
+        async def propose(f: Fact) -> str:
+            return await self.propose(ctx, f, result)
+
+        await record_memory(propose, memory, known, ctx.app_id, ctx.run_id)
+        records = [outcome_record(o) for o in outcomes]
+        if not any(o.status == "ai_repaired" for o in outcomes):
+            return None, records
+        notes = {int(k): v for k, v in doc.get("ai_notes", {}).items()}
+        notes |= {o.statement: f"ai_repaired: {o.notes}" for o in outcomes if o.status == "ai_repaired"}
+        key = save_translation(ctx.artifacts, ctx.app_id, job["bi_ir_key"], overrides, notes,
+                               doc.get("ai_outcomes", []) + records, doc.get("gaps", []))
+        return key, records
+
+    async def record(self, job: dict[str, Any], ctx: AgentContext, result: AgentResult,
+                     entries: list[dict[str, Any]]) -> None:
+        """The final results: one report_sql fact per table (the review Gate), the V5 figure checks, and the
+        validation report artifacts."""
         loaded = load_translation(ctx.artifacts, job["bi_ir_key"], job.get("translation_key"))
         files = job.get("files", [])
-        ev = local_evidence(ctx.artifacts, files, loaded.app)
-        venue, log, headers, contents = ev.venue, ev.log, ev.headers, ev.contents
-        result.metrics["qvd_contents_unreadable"] = ev.unreadable
-        rec = Reconciler(loaded.translation, venue, log, headers, contents)
-        report = []
-        for name in output_tables(loaded):
-            tv = rec.validate(name)
-            report.append(tv.summary())
-            failed = [c.__dict__ for c in tv.comparisons if not c.ok]
-            evidence = [Evidence(kind="query_result", ref=f"{tv.venue}:{ctx.run_id}:{name}",
-                                 detail={"comparisons": len(tv.comparisons)})]
-            if log is not None:
-                evidence.append(Evidence(kind="reload_log", ref=ev.log_key or "reload_log"))
-            evidence += [Evidence(kind="qvd_header", ref=t) for t, _ in loaded.translation.tables[name].stores
-                         if t in headers]
+        for e in entries:
             await self.propose(ctx, Fact(
-                kind="report_sql", subject=table_key(ctx.app_id, name),
-                trust=Trust.VALIDATED if tv.level >= Level.V3 else Trust.INFERRED,
-                value={"level": tv.level.name if tv.level >= 0 else "none", "venue": tv.venue,
-                       "comparisons_ok": sum(c.ok for c in tv.comparisons), "comparisons": len(tv.comparisons),
-                       "failed": failed[:20], "errors": tv.errors,
-                       "sql_sha256": hashlib.sha256((tv.sql or "").encode()).hexdigest()},
-                evidence=evidence), result)
+                kind="report_sql", subject=table_key(ctx.app_id, e["table"]),
+                trust=Trust.VALIDATED if e["validated"] else Trust.INFERRED,
+                value={"level": e["level"], "venue": e["venue"], "comparisons_ok": e["comparisons_ok"],
+                       "comparisons": e["comparisons"], "failed": e["failed"][:20], "errors": e["errors"],
+                       "sql_sha256": e["sql_sha256"]},
+                evidence=[Evidence(**x) for x in e["evidence"]]), result)
+        venue = local_evidence(ctx.artifacts, files, loaded.app).venue
         figures = await self._figures(ctx, result, loaded, venue, files)
+        report = [e["summary"] for e in entries]
         key = put_json(ctx.artifacts, f"apps/{ctx.app_id}/runs/{ctx.run_id}/validation.json", report)
         result.artifacts.append(key)
         fkey = put_json(ctx.artifacts, f"apps/{ctx.app_id}/runs/{ctx.run_id}/figures.json", figures)
         result.artifacts.append(fkey)
+        result.metrics["qvd_contents_unreadable"] = entries[0]["unreadable"] if entries else []
         result.outputs.update({"validation_key": key, "figures_key": fkey,
                                "levels": {r["table"]: r["level"] for r in report},
+                               "mismatches": {e["table"]: e["mismatch"] for e in entries},
                                "chart_levels": {f["visual"]: f["level"] for f in figures if f.get("visual")}})
         result.events.append("report_sql.validated")
-        return result
-
 
     async def _figures(self, ctx: AgentContext, result: AgentResult, loaded: Any, venue: Any,
                        files: list[dict[str, Any]]) -> list[dict[str, Any]]:

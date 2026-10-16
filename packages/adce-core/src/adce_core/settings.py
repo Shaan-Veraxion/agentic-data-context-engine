@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     gateway_config: str | None = None
     # LLM steps may call tools (check their SQL, read script context, kg-mcp lookups) before answering
     llm_tools: bool = False
+    # orchestrator: owner questions pause a run until answered (POST /apps/{app}/runs/{run}/answers); budgets per run
+    interactive_runs: bool = False
+    run_budget_usd: float | None = None
+    run_max_calls: int | None = None
+    supervisor: str = "auto"  # auto | llm | rules
+    orchestrator_mode: str = "inline"  # inline: the API runs the pipeline | worker: queued for orchestrator.worker
     # how agents reach the knowledge service: in-process (tests, CLI) or the kg-mcp service (ADR-2)
     kg_transport: Literal["inprocess", "mcp"] = "inprocess"
     kg_mcp_url: str = "http://localhost:8701/mcp"

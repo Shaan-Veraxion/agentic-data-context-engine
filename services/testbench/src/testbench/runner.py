@@ -340,8 +340,10 @@ class Runner:
             await flush()  # McpKG buffers writes
         facts = (await self.kg.facts())[before:]  # what every node wrote, shown on the Agents tab
         out.update({"events": st.get("events", []), "metrics": _jsonable(st.get("metrics", {})),
-                    "outputs": _jsonable({k: v for k, v in st.items() if k not in ("files", "classified", "events",
-                                                                                    "metrics")}),
+                    "outputs": _jsonable({k: v for k, v in st.items() if k not in (
+                        "files", "classified", "events", "metrics", "tr", "checks", "validations", "trace",
+                        "decisions", "table", "next", "questions")}),
+                    "trace": _jsonable(st.get("trace", [])), "decisions": _jsonable(st.get("decisions", [])),
                     "facts": [{"kind": f.kind, "subject": f.subject, "object": f.object, "trust": f.trust.value,
                                "agent": f.agent, "value": _jsonable(f.value)} for f in facts],
                     "artifacts": []})

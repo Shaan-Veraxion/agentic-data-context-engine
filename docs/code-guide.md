@@ -36,12 +36,20 @@ data for the sources, front-end objects (charts as JSON) and exported reports.
 **Output:** a *migration pack*: Dremio SQL for every table the script builds (and every chart), a validation
 report saying how far each table's SQL was proven, lineage, and a list of what a person still has to decide.
 
-**How:** a fixed chain of agents, run by a LangGraph graph:
+**How:** a LangGraph graph of agents. The front of the graph is a fixed sequence; after the SQL is checked and run,
+a **supervisor** decides what to do next (fix a table, ask the owner, or publish) and the graph loops until nothing
+more can be improved:
 
 ```
-files ─▶ intake (1) ─▶ extract (27) ─▶ resolve ─▶ translate (28) ─▶ synthesize (24) ─▶ check (25)
-                                                                                           │
-          summary ◀── publish (20) ◀── reconcile (26) ◀──────────────────────────────────┘
+files ─▶ intake (1) ─▶ extract (27) ─▶ resolve ─▶ translate (28) ─▶ synthesize (24) ─▶ check (25) per table
+                                                     subgraph                   ▲                │
+                                                                                │       repair (25) once
+                                                       correction ──────────────┤                ▼
+                                                                                │      reconcile (26) per table
+                                                     ask_owner ◀── supervisor ◀─┘◀───────────────┘
+                                                     (pauses)        │  └──▶ diagnose (26) ──▶ back to synthesize
+                                                                     ▼
+                                                record (26) ─▶ publish (20) ─▶ summarize
 ```
 
 | # | Node | Agent class | In one sentence |
@@ -49,21 +57,27 @@ files ─▶ intake (1) ─▶ extract (27) ─▶ resolve ─▶ translate (28)
 | 1 | intake | `IntakeRouter` | Decides what each file is (script, log, QVD, sample data, ...). |
 | 27 | extract | `BIExtractor` | Parses the script into the BI IR: tables, load steps, fields, sources, variables. |
 | – | resolve | (function) | Lists the database sources that still need a Dremio dataset. |
-| 28 | translate | `ScriptTranslator` | Turns every load statement into SQL: rules first, then memory, then the LLM. |
+| 28 | translate | `ScriptTranslator` | Turns every load statement into SQL: rules first, then memory, then the LLM (a subgraph, one node per step). |
 | 24 | synthesize | `Synthesizer` | Writes one `.sql` file per table, with sources mapped to Dremio names. |
-| 25 | check | `QueryChecker` | Static rule checks on each table's SQL (parses, known fields, ...). |
-| 26 | reconcile | `ReconcilerAgent` | Runs the SQL on local data and compares with the reload log and QVDs (V0 to V5). |
+| 25 | check, repair | `QueryChecker` | Rule checks per table; with a model, repairs a table that fails a blocking rule. |
+| 26 | reconcile, diagnose, record | `ReconcilerAgent` | Runs each table's SQL on local data, compares with the reload log and QVDs (V0 to V5), classifies each mismatch, corrects a contradicted statement with a model, records the results. |
+| – | supervisor | (orchestrator) | Picks the next action among those code allows; the model decides when it is on. |
 | 20 | publish | `Publisher` | Writes the migration pack (SQL, validation.md, review.md, lineage, manifest). |
 
 **Deterministic first, LLM second.** Most of the work is plain code (a Qlik parser and a translator built on
-sqlglot). The LLM is used in three places only, all inside agent 28:
+sqlglot). The LLM is used where rules run out, and always through the model gateway:
 
-1. `translate_statement`: a statement the rules could not translate;
-2. `diagnose_mismatch`: a table whose SQL runs but whose data disagrees with the evidence;
-3. `explain_gap`: what is still untranslated, explained for a person, with questions for the data owner.
+| Route | Agent | When |
+|---|---|---|
+| `translate_statement` | 28 | a statement the rules could not translate |
+| `explain_gap` | 28 | what stays untranslated, explained for a person, with questions for the data owner |
+| `repair_sql` | 25 | a table whose SQL fails a blocking rule (unknown field, invalid SQL) |
+| `diagnose_mismatch` | 26 | a table whose SQL runs but whose data disagrees with the evidence |
+| `plan_next` | supervisor | what the run does next, when several actions are possible |
 
-Every LLM answer is checked by code before it is used, and every accepted answer is remembered (translation
-memory), so the next run of any application reuses it without calling the model.
+Every LLM answer is checked by code before it is used (SQL by the checks and the data, the supervisor's choice
+against the allowed options), and every accepted SQL answer is remembered (translation memory), so the next run of
+any application reuses it without calling the model.
 
 **Everything the agents learn is a fact** in the knowledge service (append-only, with evidence and a trust level).
 A person reviews what is uncertain (the review queue). A decision is also a fact, and it triggers a re-run of the
@@ -85,7 +99,7 @@ applications it affects.
 | [services/agents-ingestion](../services/agents-ingestion/src/agents_ingestion) | Agent 1 | [intake_router.py](../services/agents-ingestion/src/agents_ingestion/intake_router.py) |
 | [services/agents-bi-adapters](../services/agents-bi-adapters/src/agents_bi_adapters) | Agents 27, 28, 29 | [bi_extractor.py](../services/agents-bi-adapters/src/agents_bi_adapters/bi_extractor.py), [script_translator.py](../services/agents-bi-adapters/src/agents_bi_adapters/script_translator.py) |
 | [services/agents-reversesql](../services/agents-reversesql/src/agents_reversesql) | Agents 24, 25, 26, 20 and the front-end agents 21, 22, 23 | [agents.py](../services/agents-reversesql/src/agents_reversesql/agents.py), [frontend_agents.py](../services/agents-reversesql/src/agents_reversesql/frontend_agents.py) |
-| [services/orchestrator](../services/orchestrator/src/orchestrator) | The LangGraph pipeline, scheduled learning re-runs, the event consumer | [pipeline.py](../services/orchestrator/src/orchestrator/pipeline.py), [events.py](../services/orchestrator/src/orchestrator/events.py), [learning.py](../services/orchestrator/src/orchestrator/learning.py) |
+| [services/orchestrator](../services/orchestrator/src/orchestrator) | The LangGraph pipeline (graph, translate subgraph, supervisor, budget), the worker, scheduled re-runs, the event consumer | [pipeline.py](../services/orchestrator/src/orchestrator/pipeline.py), [supervisor.py](../services/orchestrator/src/orchestrator/supervisor.py), [worker.py](../services/orchestrator/src/orchestrator/worker.py), [events.py](../services/orchestrator/src/orchestrator/events.py), [learning.py](../services/orchestrator/src/orchestrator/learning.py) |
 | [services/kg-mcp](../services/kg-mcp/src/kg_mcp) | The knowledge service as MCP tools; the client agents use | [server.py](../services/kg-mcp/src/kg_mcp/server.py), [client.py](../services/kg-mcp/src/kg_mcp/client.py) |
 | [services/hitl-service](../services/hitl-service/src/hitl_service) | Review items and decisions | [service.py](../services/hitl-service/src/hitl_service/service.py) |
 | [services/api-gateway](../services/api-gateway/src/api_gateway) | HTTP entry point: uploads, runs, reads; Keycloak auth | [app.py](../services/api-gateway/src/api_gateway/app.py) |
@@ -94,7 +108,7 @@ applications it affects.
 | [prompts/](../prompts) | One system prompt per model route and version (`prompts/<route>/<version>.md`) | [translate_statement/v3.md](../prompts/translate_statement/v3.md) |
 | [eval/](../eval) | Synthetic gold apps, bench cases, recordings of model answers, eval results | [eval/cases](../eval/cases) |
 | [deploy/](../deploy) | docker compose, Helm chart, gateway configs (`deploy/gateway/*.toml`) | [deploy/gateway](../deploy/gateway) |
-| [migrations/](../migrations) | Alembic migrations for Postgres (fact log, outbox, review items, event cursor) | |
+| [migrations/](../migrations) | Alembic migrations for Postgres (fact log, outbox, review items, event cursor, run requests) | |
 
 Local-only folders (git-ignored): `.adce/` (bench runs, recordings made live, memory), `eval/private/` (cases
 with client scripts), `scripts.md`.
@@ -171,28 +185,42 @@ the same SQL. So if you want to know "why does table X have this SQL", the answe
 
 ### 4.1 How LangGraph is used
 
-LangGraph is used in one file, [pipeline.py](../services/orchestrator/src/orchestrator/pipeline.py), and only as a
-**state machine with checkpoints**. No LLM agent framework is involved: there are no LangChain chains, LLM
-tool-routing or LangGraph prebuilt agents. Each node is an ordinary async function that calls one agent.
+The graph lives in [pipeline.py](../services/orchestrator/src/orchestrator/pipeline.py); the supervisor's policy in
+[supervisor.py](../services/orchestrator/src/orchestrator/supervisor.py); the run budget in
+[budget.py](../services/orchestrator/src/orchestrator/budget.py). LangGraph features used:
 
-- **State** (`PipelineState`, a `TypedDict`): plain data only (app id, run id, file list, artifact keys, table
-  names, levels, pending sources). Two fields are *reducers*: `events` is appended (`operator.add`) and `metrics`
-  is merged (`_merge`), so each node adds its part without overwriting the others.
-- **Dependencies** (`Deps`: `kg`, `artifacts`, `gateway`, `llm_tools`) cannot be checkpointed, so they travel in
-  LangGraph's **runtime context** (`StateGraph(PipelineState, context_schema=Deps)`; each node gets
-  `runtime: Runtime[Deps]`). `_ctx()` turns state + runtime into the agent's `AgentContext`.
-- **Edges** are fixed and linear. The only branch is `_after_extract`: if extraction found no script
-  (`status = needs_inputs`) the run ends.
-- **Checkpointer**: the API gateway passes a Postgres checkpointer, so a crashed run resumes from the last
-  finished node (thread id `"<app>:<run>"`). The bench runs without one.
-- `run_pipeline(...)` compiles the graph and calls `graph.ainvoke(state, config, context=deps)`.
+| Feature | Where | What for |
+|---|---|---|
+| `StateGraph` with a typed state | `build_graph()` | the whole run as nodes and edges |
+| **Subgraph** | `build_translate_graph()`, added as node `translate` | agent 28's steps as their own nodes |
+| **Conditional edges** | `_route_start`, `_after_check`, `_after_supervisor`, `_tr_next`, ... | loops and branches decided from the state |
+| **`Send` fan-out** | `_fan_check`, `_fan_reconcile` | one `check_one` and one `reconcile_one` branch per table, joined before the next node |
+| **Reducers** | `events`, `trace`, `decisions` (appended), `metrics`, `checks`, `validations` (merged) | parallel branches and loops add to the state without overwriting each other |
+| **`interrupt()` / `Command(resume=...)`** | `ask_owner`, `resume_pipeline` | pause the run for the data owner, continue with the answers |
+| **Runtime context** | `Deps` (`context_schema=Deps`) | dependencies that cannot be checkpointed |
+| **Checkpointer** | Postgres in the API and the worker; in-memory in tests | resume after a crash or an interrupt |
 
-To add a node: write `async def mynode(state, runtime) -> dict` that returns only the keys it changes, then
-`g.add_node` and `g.add_edge` in `build_graph()`.
+The **model** is never called through LangChain: every call goes through our model gateway (privacy guard,
+recordings, budgets, tracing). LangGraph runs the steps; the gateway calls the models; code judges the answers.
 
-### 4.2 Node by node
+**State** (`PipelineState`): plain data only. Artifact keys (`bi_ir_key`, `translation_key`, ...), the classified
+files, table lists, `tr` (the translate subgraph's working state: overrides, tried statements, the queue, outcomes,
+the current statement and its attempts), `checks` and `validations` (one entry per table), `loop` (counters: steps,
+repairs, diagnosed tables, asked), `next` (the supervisor's last choice), `trace` and `decisions`.
 
-For each node: what it reads, what it does, what it writes, how it typically fails.
+**Deps** (runtime context): `kg`, `artifacts`, `gateway` (wrapped in `RunGateway` for the run's budget),
+`llm_tools`, `supervisor` (`auto`/`llm`/`rules`), `interactive` (owner questions pause the run), `max_steps`,
+`budget_usd`, `max_calls`, and `work` (the translation's in-memory objects: memory, validator; rebuilt when
+missing, e.g. after a restart).
+
+**The trace** is the run timeline: every node appends `{node, at, ...what it found}`. It is in the run summary and
+on the bench (Agents tab, orchestrator step). **Read the trace first when a run does something unexpected.**
+
+### 4.2 Entry, front and the translate subgraph
+
+#### enter
+Routes to `intake` (a new run) or, for a re-run with the previous run's summary, straight to `extract`, `resolve` or
+`translate` (`start_at`). See 4.5.
 
 #### intake → agent 1 `IntakeRouter`
 [intake_router.py](../services/agents-ingestion/src/agents_ingestion/intake_router.py)
@@ -203,7 +231,7 @@ For each node: what it reads, what it does, what it writes, how it typically fai
   app_binary, qlikview_project, other`. A file under `sources/<space>/.../<table>.csv` is a **source extract**:
   sample data for that database table, used by the local venue.
 - Writes: `bi_input` facts (what the app was given, used by re-runs); output `files` with `class` added.
-- Fails: a script named oddly is classed `other` and never parsed. Check the `classified` list.
+- Fails: a script named oddly is classed `other` and never parsed. Check the `classified` list (trace: `intake`).
 
 #### extract → agent 27 `BIExtractor`
 [bi_extractor.py](../services/agents-bi-adapters/src/agents_bi_adapters/bi_extractor.py), built on
@@ -222,9 +250,10 @@ The Qlik reader, in order:
    by modelled statements from [libraries.py](../packages/adce-qlik/src/adce_qlik/libraries.py); that is where
    `"__generated__"."Qvc.Calendar(...)"` comes from.
 4. [variables.py](../packages/adce-qlik/src/adce_qlik/variables.py) resolves `SET`/`LET` and `$(var)`.
-   Values only known at reload time are recovered from the reload log echo lines. If neither works, the
-   statement keeps `unresolved_variables` and an `unresolved_variable` issue is raised. This is how
-   `"__file__"."$(vLoadfile)"` ends up in SQL.
+   Values only known at reload time are recovered from the reload log echo lines; **values a reviewer or owner
+   confirmed** (`variable_value` facts) are used as seeds. If neither works, the statement keeps
+   `unresolved_variables` and an `unresolved_variable` issue is raised (an Ask item, and an owner question the
+   supervisor can ask). This is how `"__file__"."$(vLoadfile)"` ends up in SQL.
 5. [load_parser.py](../packages/adce-qlik/src/adce_qlik/load_parser.py) parses each LOAD into fields
    (expressions as a small AST, `Expr`), source, WHERE, GROUP BY, INLINE rows.
 6. [model.py](../packages/adce-qlik/src/adce_qlik/model.py) `build_app` builds the **BI IR** (`BIApp`): Qlik
@@ -237,22 +266,38 @@ The Qlik reader, in order:
 - Writes: the BI IR artifact (`bi_ir_key`); facts `bi_table`, `contains`, `reads_source`, `stores_qvd`,
   `reads_qvd`, `uses_mapping`, `variable_value`, `bi_issue`, row counts. Metrics: `statements`, `coverage`
   (share of statements understood), `tables`, `issues`.
-- Fails: coverage < 1.0 means some statements are `OTHER` (not understood). Issues are listed as `bi_issue` facts
-  and show in the review queue.
+- Fails: coverage < 1.0 means some statements are `OTHER` (not understood). No script: the run ends with status
+  `needs_inputs`.
 
 #### resolve (function in pipeline.py)
-
 For every logical database source, look for a confirmed `resolves_to` fact. Without one, the source is
-**pending** with `waits_for: dremio_catalog (phase PD)`. This only records the fact; nothing blocks. A run with
-pending sources ends with status `waiting_for_dremio` instead of `complete`.
+**pending** with `waits_for: dremio_catalog (phase PD)`. Nothing blocks; a run with pending sources ends with
+status `waiting_for_dremio`. A re-run for a source mapping only (`reuse_translation`) goes from here straight to
+`synthesize`.
 
-#### translate → agent 28 `ScriptTranslator`
-The core of the system. Section 5 covers it in full.
+#### translate → agent 28, as a subgraph
+`build_translate_graph()`. Each node is one step of `ai_loop` (section 5), so every model attempt is a separate,
+checkpointed node in the trace:
+
+| Node | Calls | Does | Next |
+|---|---|---|---|
+| `translate.prepare` | `ScriptTranslator.prepare`, `ai_loop.apply_rule_fixes` | rules, reviewer SQL, memory and validator loaded; learned rule corrections applied | pick |
+| `translate.pick` | `ai_loop.next_statements` | takes the next root statement still untranslated; when the round's queue is empty, composes again and starts the next round (at most 5) | memory, or finish |
+| `translate.memory` | `ai_loop.from_memory` | an accepted gap, or a learned answer checked on this app's data | propose (ask the model), or pick |
+| `translate.propose` | `ai_loop.statement_request`, `call_model`, `judge_statement` | one `translate_statement` call, judged by code; on problems, again with the problems (at most 4 answers) | propose, or pick |
+| `translate.finish` | `ScriptTranslator.finish` | learned answers recorded, gaps explained (`explain_gap`), translation artifact and `bi_transform` facts written | (back to the graph) |
+
+The round's statements are stored in `tr.queue` exactly as composed when the round started, so prompts are the
+same as the plain loop's (`translate_with_ai`) and recorded answers replay. A `skipped` statement (provider not
+answering, budget used) stops translation; the next run tries again.
 
 - Writes: the translation artifact (`translation_key`: overrides, AI notes, AI outcomes, gap analyses); facts
-  `bi_transform` (per table: final CTE, untranslated statements with reason, tier and text), `translation_memory`,
-  `memory_check`, `gap_analysis`. Metrics: `steps`, `untranslated`, `ai_overrides`, `gap_analyses`,
-  `translated_ratio`.
+  `bi_transform`, `translation_memory`, `memory_check`, `gap_analysis`. Metrics: `steps`, `untranslated`,
+  `ai_overrides`, `gap_analyses`, `translated_ratio`.
+- The subgraph has its own input schema (`TranslateIn`: no trace, events or metrics), so it returns only what it
+  adds and nothing is counted twice.
+
+### 4.3 Synthesize, check per table, repair
 
 #### synthesize → agent 24 `Synthesizer`
 [agents.py](../services/agents-reversesql/src/agents_reversesql/agents.py)
@@ -263,42 +308,126 @@ The core of the system. Section 5 covers it in full.
   `resolves_to` facts or the case's `dremio_sources`. The SQL starts with a comment listing what is still
   unmapped.
 - Writes: `apps/<app>/runs/<run>/sql/<table>.sql`, `sql_candidate` facts (`unmapped`, `unqualified`, `mapped`),
-  chart SQL (`chart_sql`).
+  chart SQL (`chart_sql`). Sets `out_tables` (the tables the pack covers) for the fan-out.
+- Runs again after every accepted repair or diagnosis.
 
-#### check → agent 25 `QueryChecker`
-[check.py](../packages/adce-reversesql/src/adce_reversesql/check.py) `check_table`: rules per table:
-`translated`, `composed`, `dremio_syntax`, `transpiles_for_local_run`, `known_fields` (blocking), and
-`deterministic`, `inputs_in_dremio`, `rules_only` (warnings). Writes `sql_checked`.
+#### check_one ×N, check_join → agent 25 `QueryChecker`
+`Send` gives each table its own `check_one` branch: `QueryChecker.check_one` runs
+[check.py](../packages/adce-reversesql/src/adce_reversesql/check.py) `check_table`: `translated`, `composed`,
+`dremio_syntax`, `transpiles_for_local_run`, `known_fields` (blocking), and `deterministic`, `inputs_in_dremio`,
+`rules_only` (warnings). It proposes a `sql_checked` fact and returns `{ok, failing}` (`failing`: blocking rules a
+repair can fix, `ai_loop.failed_rules`). `check_join` counts the passes and emits `sql.checked`.
 
-#### reconcile → agent 26 `ReconcilerAgent`
-Runs the validation ladder (section 6) for every output table in the **local venue**, then V5 figure checks
-against exported reports. Writes `report_sql` (level, venue, comparisons, errors), `figures_validated`,
-`validation.json`, `figures.json`. Results are always labelled `venue: local`.
+#### repair → agent 25 (route `repair_sql`)
+When a table fails a blocking rule (other than an untranslated statement) and the run has a model, `repair` runs
+once per run: `QueryChecker.repair` → `ai_loop.repair_table` for each failing table: the model sees the statements
+and the failed rules and replaces one statement's SQL (prompt
+[repair_sql/v2.md](../prompts/repair_sql/v2.md), output `runtime.SqlRepair`); `judge_repair` accepts it only when
+the table then passes every blocking rule (at most 2 answers per table). An accepted repair writes a new
+translation artifact (outcome status `sql_repaired`) and the graph goes back to `synthesize`.
+
+### 4.4 Reconcile per table, the supervisor, diagnose, ask the owner, record
+
+#### reconcile_one ×N → agent 26 `ReconcilerAgent.validate`
+One branch per table: the validation ladder (section 6) in the local venue, **no facts yet**. The entry keeps the
+level, failed comparisons, errors, evidence, and a **mismatch classification**
+([diagnose.py](../packages/adce-reversesql/src/adce_reversesql/diagnose.py) `classify`):
+
+| Category | Symptom | Route |
+|---|---|---|
+| `no_data` | sources with no local data | none (the evidence is missing, not the SQL) |
+| `execution_error` | the SQL fails to run | diagnose |
+| `rows_more` | more rows than Qlik loaded (fan-out, duplicate keys) | diagnose |
+| `rows_fewer` | fewer rows (a filter or a variable) | diagnose |
+| `fields` | stored columns differ from the QVD's | diagnose |
+| `values` | counts match, field aggregates differ | diagnose |
+| `mapping_keys` | a mapping table has duplicate keys | review |
+| `none` | nothing failed | none |
+
+#### supervisor ([supervisor.py](../services/orchestrator/src/orchestrator/supervisor.py))
+Code lists the **options** (`supervisor.options`): `diagnose:<table>` for each table whose mismatch route is
+diagnose and that was not diagnosed yet (needs a model); `ask_owner` when the run is interactive and owner questions
+are open; `publish` (always). Then:
+
+- one option only → it is taken (`by: rules`, "the only option");
+- step limit reached (`Deps.max_steps`, default 6) → publish;
+- policy `llm` → route `plan_next` (prompt [plan_next/v1.md](../prompts/plan_next/v1.md), output `NextAction`):
+  the model sees each table's level, mismatch and detail (aggregates only, tables keyed by name), the options, the
+  steps left and the budget used, and picks one with a reason. An answer outside the options, or no answer,
+  falls back to the rules, and the fallback is recorded;
+- policy `rules` → diagnose in table order, then ask, then publish.
+
+`auto` (the default) uses `llm` when the gateway calls a model (modes live and record) and `rules` otherwise, so
+replayed runs and tests are deterministic. Every choice goes into `decisions` with `by` (`rules` or
+`llm:<model>`), the reason and the options it had.
+
+#### diagnose → agent 26 (route `diagnose_mismatch`)
+`ReconcilerAgent.diagnose(job, ctx, result, [table])` → `ai_loop.diagnose_table`: the model sees the table's
+statements and failed comparisons and replaces one statement's SQL; `judge_fix` accepts it only when every
+comparison then passes (at most 3 answers). An accepted fix is remembered as a rule correction
+(`translation_memory`, `replaces_rule`), a new translation artifact is written (status `ai_repaired`), and the graph
+goes back to `synthesize` → check → reconcile with the fix. Each table is diagnosed at most once per run.
+
+#### ask_owner (interrupt)
+`interrupt({app_id, run_id, questions})` pauses the run; `run_pipeline` returns the state with `__interrupt__`. The
+API records each answer as a review decision (a confirmed `variable_value` fact) and calls `resume_pipeline(...,
+answer={"answered": [...]})`; the node then routes to `extract`, which reads the script again with the answers. Only
+with `Deps.interactive` and a checkpointer; otherwise owner questions stay review items (Ask) and the run goes on.
+
+#### record → agent 26 `ReconcilerAgent.record`
+The final results only: one `report_sql` fact per table (the review Gate), V5 figure checks against exported
+reports (`figures_validated`), `validation.json`, `figures.json`, levels; emits `report_sql.validated`. Recording
+once at the end keeps one Gate item per table, whatever the loops did.
 
 #### publish → agent 20 `Publisher`
 Writes the pack under `apps/<app>/packs/<run>/`: `sql/<table>.sql`, `sql/charts/*.sql`, `lineage.json`
 (OpenLineage-shaped), `validation.md`, `review.md`, `manifest.json`. Fact `pack_published`.
 
 #### summarize
-Writes `runs/<run>/summary.json` and the final `status`.
+Writes `runs/<run>/summary.json` (status, artifact keys, levels, pending sources, events, metrics, decisions,
+trace) and `apps/<app>/latest.json` (the pointer re-runs use), and sets the final `status`.
+
+### 4.5 Re-entry, budgets, bounds
+
+- **Re-entry**: `run_pipeline(start_at=..., previous=<last summary>, reuse_translation=...)` enters at `extract`,
+  `resolve` or `translate` with the previous run's classified files, BI IR, translation, tables and sources. The
+  event consumer uses it (section 10). Without a previous summary the run starts at `intake`.
+- **Budget**: `RunGateway` counts the run's model calls and cost; past `budget_usd` or `max_calls` it raises
+  `BudgetExceeded`, which agents treat like an unavailable provider (`skipped`). The supervisor sees the spend.
+- **Bounds**: 5 translation rounds, 4 answers per statement, 1 repair pass (2 answers per table), 1 diagnosis per
+  table (3 answers), `max_steps` supervisor decisions; LangGraph's recursion limit is set to 1000 node visits.
+- **Workers**: in a deployment the API queues runs and `orchestrator.worker` runs them (section 12).
+
+### 4.6 Adding a node
+
+Write `async def mynode(state, runtime) -> dict` returning only the keys it changes (and a `trace` entry: `_t(name,
+...)`), register it in `build_graph()`, connect it with `add_edge` or a conditional edge (a router reads the state
+and returns the next node's name, or a list of `Send` for a fan-out). Keep the state plain data; put objects that
+cannot be serialised in `Deps.work` and make them rebuildable.
 
 ---
 
 ## 5. Inside translation (agent 28)
 
-Entry point: `ScriptTranslator.run` in
-[script_translator.py](../services/agents-bi-adapters/src/agents_bi_adapters/script_translator.py). The order:
+Agent 28 is [script_translator.py](../services/agents-bi-adapters/src/agents_bi_adapters/script_translator.py)
+with three parts: `prepare` (rules, reviewer SQL, memory, validator, reviewer decisions → a `TranslateWork`), the AI
+steps in [ai_loop.py](../packages/adce-reversesql/src/adce_reversesql/ai_loop.py), and `finish` (record what was
+learned, explain gaps, write the artifact and facts). `run()` does all three in one call (the bench, the CLI); the
+orchestrator runs the AI steps as subgraph nodes (4.2). The order:
 
 ```
 1 rules           compose(app, {})                         → SQL for everything the rules can translate
 2 reviewer SQL    translation_override facts for this app  → overrides
-3 memory          _memory(): translation_memory facts + reviewer SQL from any app
-4 translate_with_ai   untranslated root statements → memory or LLM (translate_statement) → verified → overrides
-5 repair_with_ai      tables that run but contradict the data → LLM (diagnose_mismatch) → verified → overrides
-6 record          memory_check facts, new translation_memory facts
+3 memory          learned.load_memory: translation_memory facts + reviewer SQL from any app
+4 rule fixes      apply_rule_fixes: learned corrections of rule output, re-checked on this app's data
+5 statements      per untranslated root: from_memory → (statement_request → call_model → judge_statement)×≤4
+6 record          learned.record_memory: new answers, re-checks, disproved answers
 7 explain_gaps    what is still untranslated → LLM (explain_gap) → gap_analysis facts (review "Ask" items)
 8 artifact + bi_transform facts
 ```
+
+Correcting rule output that the data contradicts is **agent 26's** job (diagnose, 4.4), and repairing SQL that fails
+a blocking rule is **agent 25's** (repair, 4.3); both use the same kind of steps (5.4, 5.7).
 
 ### 5.1 The rules: compose.py and expressions.py
 
@@ -330,38 +459,45 @@ columns (`memory_key`).
 - `exact()` gives the answer for the same statement with the same columns; `similar()` gives examples for the
   prompt; `rule_fix()` gives a learned correction of a rule translation.
 - Status: `ai_validated` (data confirmed it), `ai_checked` (checks passed, no data), `reviewer` (a person wrote it).
-- In agents, the memory is rebuilt from facts each run (`ScriptTranslator._memory`). An entry is **proven** when
+- In agents, the memory is rebuilt from facts each run
+  ([learned.py](../packages/adce-reversesql/src/adce_reversesql/learned.py) `load_memory`; agents 26 and 28 both
+  record into it with `record_memory`). An entry is **proven** when
   re-checks passed on 2+ apps and never failed, and **disproved** (no longer used) as soon as one app's data
   contradicts it.
 
-### 5.3 translate_with_ai (route translate_statement)
+### 5.3 The statement steps (route translate_statement)
 
-1. Apply learned rule corrections (`rule_fix`), each re-checked on this app's data first.
-2. Up to `max_rounds` rounds: compose, take the root untranslated statements, and for each one call `_one()`.
-3. `_one()`: memory hit → verify → use. Otherwise build the prompt inputs: `statement`, `why_rules_failed`,
-   `input_relation: "src"`, `input_columns`, `settings` (date formats, MonthNames ...), `examples` (similar
-   memory entries), `previous_attempts` (earlier SQL with its problems), and `other_relations` when the statement
-   names other tables. Call the gateway. Outcome:
-   - output invalid → try again;
-   - `PrivacyViolation` → `withheld`;
-   - provider/quota/replay miss → `skipped` (stops the round; the next run retries);
-   - model says not translatable → `declined`;
-   - otherwise `_verify()`: `static_problems` (parses as Dremio, reads only `src`, known columns), compose
-     again, `check_table` blocking rules, then the **validator** (local data, section 6). Any problem goes
-     back as `previous_attempts` for the next try (up to `max_attempts`).
-   - pass → `ai_validated` (V3+) or `ai_checked`; stored in memory; becomes an override.
+The loop is a set of step functions in `ai_loop.py`; `translate_with_ai` runs them in a plain loop, the orchestrator
+runs each as a node:
 
-### 5.4 repair_with_ai (route diagnose_mismatch)
+1. `apply_rule_fixes`: learned corrections (`rule_fix`), each re-checked on this app's data first.
+2. `next_statements`: compose with the current overrides, take the root untranslated statements not tried yet (a
+   round; at most `max_rounds`).
+3. `from_memory(u)`: an accepted gap → `gap_accepted`; a memory hit → verified on this app's data → `memory`;
+   a hit a reviewer rejected later is dropped and its SQL goes into `previous_attempts`; no model → `no_model`.
+4. `statement_request(u)`: the prompt inputs: `statement`, `why_rules_failed`, `input_relation: "src"`,
+   `input_columns`, `settings` (date formats, MonthNames ...), `examples` (similar memory entries),
+   `previous_attempts` (earlier SQL with its problems), and `other_relations` when the statement names other
+   tables; tools when on.
+5. `call_model`: output invalid → try again; `PrivacyViolation` → `withheld`; provider/quota/replay miss/budget →
+   `skipped` (stops; the next run retries); `GatewayRefusal` → `failed`.
+6. `judge_statement`: model says not translatable → `declined`; otherwise `_verify()`: `static_problems` (parses as
+   Dremio, reads only `src`, known columns), compose again, `check_table` blocking rules, then the **validator**
+   (local data, section 6). Problems go back as `previous_attempts` (up to `max_attempts`). Pass →
+   `ai_validated` (V3+) or `ai_checked`; stored in memory; becomes an override.
 
-For tables that are fully translated (often by the rules) but whose validator reports problems: wrong row counts,
-different value sets, or SQL that fails to execute. The model sees each statement of the table with its SQL and
-the failed comparisons, names the statement to replace and gives new SQL. The same verify-and-retry loop runs (max
-3). An accepted fix is stored with `replaces_rule=True`; that is a learned rule correction.
+### 5.4 Diagnosis steps (agent 26, route diagnose_mismatch)
 
-**Since 2026-10-16:** sources with no local data (`execution: no local data for: ...`) are **not** problems. They
-mean the check could not run; they say nothing about the SQL. Before this, those errors went to the model, which
-then "fixed" correct SQL. See [local.py](../packages/adce-reversesql/src/adce_reversesql/local.py) `MissingData` and
-`make_validator` in [runtime.py](../packages/adce-reversesql/src/adce_reversesql/runtime.py).
+`mismatch(app, table, overrides, validator)` gives the level and failed comparisons of a table whose SQL is complete
+but contradicted; `table_statements` the statements as the model sees them (text, input columns, SQL reading
+`src`); `diagnosis_request` the inputs; `judge_fix` accepts a fix only when every comparison then passes, and
+remembers it with `replaces_rule=True`. `diagnose_table` runs them (at most 3 answers); `repair_with_ai` runs it for
+several tables (the CLI, tests).
+
+**Sources with no local data** (`execution: no local data for: ...`) are not problems: they mean the check could
+not run. The validator drops them ([local.py](../packages/adce-reversesql/src/adce_reversesql/local.py)
+`MissingData`, `make_validator` in [runtime.py](../packages/adce-reversesql/src/adce_reversesql/runtime.py)), and the
+classification says `no_data`, so such a table is never sent to the model.
 
 ### 5.5 explain_gaps (route explain_gap)
 
@@ -376,6 +512,20 @@ on the next run (`answers`).
 `_decisions()`: spans a reviewer accepted as untranslated are skipped (`gap_accepted`). For tables whose SQL a
 reviewer rejected, memory answers learned before the rejection are dropped, and the rejected SQL plus the reason
 go into `previous_attempts`.
+
+### 5.7 Repair steps (agent 25, route repair_sql)
+
+`failed_rules(t, table)` lists the blocking rules a table fails (not `translated` or `composed`: those are the
+translator's); `repair_request` the inputs (statements, failed rules, settings, earlier attempts); `judge_repair`
+accepts a replacement only when the table then passes every blocking rule. `repair_table` runs them (at most 2
+answers). The repaired SQL is still validated against the data by agent 26 afterwards.
+
+### 5.8 The translation artifact
+
+[runtime.py](../packages/adce-reversesql/src/adce_reversesql/runtime.py) `save_translation` / `translation_doc`:
+`{bi_ir_key, overrides, ai_notes, ai_outcomes, gaps}`, keyed by the BI IR and the overrides. Agents 28, 25 and 26
+each write the next version (25 and 26 add their outcomes to the list), so the latest `translation_key` in the
+state always has every override that produced the SQL.
 
 ---
 
@@ -422,7 +572,9 @@ user = inputs as JSON) → provider (primary, then fallbacks) → validate again
 ```
 
 - **Routes** ([routes.py](../packages/adce-gateway/src/adce_gateway/routes.py)) name a tier
-  (`strong/standard/light`), effort, max tokens and prompt version. Agents name a route, never a model.
+  (`strong/standard/light`), effort, max tokens and prompt version. Agents name a route, never a model. In use:
+  `translate_statement` (v3), `explain_gap`, `repair_sql` (v2), `diagnose_mismatch` (v2), `plan_next`,
+  `translate_expression`, `map_metric`; declared but not called: `classify_file`, `parse_export`.
 - **Config** ([config.py](../packages/adce-gateway/src/adce_gateway/config.py), `deploy/gateway/*.toml`) maps tiers
   to `provider:model`, with fallbacks, prices and rate limits. The bench "Model" picker chooses one of these files.
 - **Providers** ([providers.py](../packages/adce-gateway/src/adce_gateway/providers.py)): Anthropic API, Vertex,
@@ -466,8 +618,8 @@ Fact kinds you will see, by writer:
 | 27 extract | `bi_table`, `contains`, `reads_source`, `stores_qvd`, `reads_qvd`, `uses_mapping`, `variable_value`, `bi_issue`, row counts |
 | 28 translate | `bi_transform`, `translation_memory`, `memory_check`, `gap_analysis` |
 | 24 synthesize | `sql_candidate`, `chart_sql` |
-| 25 check | `sql_checked` |
-| 26 reconcile | `report_sql`, `figures_validated` |
+| 25 check / repair | `sql_checked` |
+| 26 reconcile / diagnose / record | `report_sql`, `figures_validated`, `translation_memory` and `memory_check` (diagnosis) |
 | 20 publish | `pack_published` |
 | reviewers | decisions on `report_sql`; `translation_override`, `bi_gap_accepted`, `variable_value`, `resolves_to`, `gap_answer`, `bi_issue_acknowledged` |
 
@@ -501,6 +653,10 @@ in the outbox and triggers re-runs (section 10).
   saved position (`event_cursor` table), works out which apps an event affects (`affected()`; the table at the top
   of the file lists the triggers), and re-runs each affected app once per batch. Because fact ids are content
   hashes, a re-run that proposes the same facts emits nothing new, so events do not loop.
+- **Re-runs enter at the node the change affects** (`events.start_for`): a variable's value → `extract`; a source
+  mapping only → `resolve` with the translation reused; reviewer SQL, a gap answer, a rejection, a disproved
+  answer → `translate`. `rerun_all(start_at=...)` loads the last run's summary (`learning.latest_summary`, from
+  `apps/<app>/latest.json`); without one it runs from the start.
 
 ---
 
@@ -528,8 +684,9 @@ TOTAL).
 | Endpoint | Does |
 |----------|------|
 | `POST /apps/{app}/files` | upload files to `uploads/<app>/<sha>/<name>` |
-| `POST /apps/{app}/runs` | run the LangGraph pipeline on the uploads (through kg-mcp when configured), then refresh review |
-| `GET /apps/{app}/runs/{run}` | the run summary |
+| `POST /apps/{app}/runs` | run the LangGraph pipeline on the uploads (through kg-mcp when configured), then refresh review; with `ADCE_ORCHESTRATOR_MODE=worker` it queues the run instead (`status: queued`) |
+| `GET /apps/{app}/runs/{run}` | the run summary; for a queued run its request status (queued, running, waiting_for_owner, error) |
+| `POST /apps/{app}/runs/{run}/answers` | answers to a paused run's owner questions (`{answers: {review item id: value}}`): recorded as review decisions, then the run resumes (or a resume is queued) |
 | `GET /apps`, `/apps/{app}/overview`, `/lineage`, `/tables`, `/packs/{run}/files/...`, `/facts` | reads |
 | `/review/...` | hitl-service router ([api.py](../services/hitl-service/src/hitl_service/api.py)): items, decisions |
 
@@ -537,6 +694,16 @@ The **review workbench** ([apps/workbench](../apps/workbench/src)) is the produc
 overview (inputs, coverage, level per table), the review queue (Ask, Queue, Gate, Seed items and decisions) and a lineage
 graph. Its `/api/...` route proxies to the API gateway. The test bench (section 13) is an internal debugging tool, not
 the product UI.
+
+A run paused by `ask_owner` answers `status: waiting_for_owner` with `questions` (`run_view`). Settings:
+`ADCE_INTERACTIVE_RUNS` (pause for owner questions), `ADCE_RUN_BUDGET_USD`, `ADCE_RUN_MAX_CALLS`, `ADCE_SUPERVISOR`
+(`auto`/`llm`/`rules`), `ADCE_ORCHESTRATOR_MODE` (`inline`/`worker`).
+
+**The orchestrator worker** ([worker.py](../services/orchestrator/src/orchestrator/worker.py)): `python -m
+orchestrator.worker` takes queued requests from table `run_request` (migration 0004; `FOR UPDATE SKIP LOCKED`, so
+several workers share the queue), runs or resumes the pipeline with the Postgres checkpointer, refreshes the review
+queue, and stores the outcome on the request. A request left running by a crash is taken again after 30 minutes and
+continues from its checkpoint. Helm: `worker` (Deployment `orchestrator-worker`); the API is set to queue.
 
 Auth: Keycloak bearer tokens with roles viewer / reviewer / approver / admin ([auth.py](../services/api-gateway/src/api_gateway/auth.py)).
 
@@ -567,6 +734,10 @@ Two things to know about checks:
 - **A playground or newly saved case has no expectations** until you click "Approve result". Until then there is
   nothing to compare, so the run is `unchecked`.
 
+**Orchestrator mode shows the run timeline**: on the Agents tab, the orchestrator step lists the supervisor's
+decisions (action, table, who decided, why, the options it had) and every node the run visited with what it found
+(the `trace`). Live runs use the LLM supervisor (`auto`); replay and AI off use the rules.
+
 "Model calls" lists every gateway call with route, source (`live`, `memo` = answered from a recording, `replay`),
 tokens, latency and error.
 
@@ -588,7 +759,12 @@ tokens, latency and error.
 | `withheld` | The privacy guard saw something row-like in the inputs | the PrivacyViolation message |
 | `"__file__"."..."`, `"__generated__"."..."`, bare table names in SQL | Source not mapped to a Dremio dataset | SQL header comment; Dremio sources panel; review "map source" items |
 | `$(vSomething)` in a path | Variable unresolved (only known at reload time) | `unresolved_variable` issue; give a reload log, or answer the Ask item |
-| Translate takes minutes | Live calls through a slow provider (the bridge) | Model calls latency; use replay or a faster config |
+| Translate takes minutes | Live calls through a slow provider (the bridge) | Model calls latency; trace `translate.propose` rows; use replay or a faster config |
+| A table was not fixed | The supervisor did not choose diagnose for it, or the fix was rejected | Supervisor decisions (options, by, reason); trace `diagnose` (status, notes); `ai_outcomes` in the translation |
+| `fallback: ...` in a decision | The LLM supervisor's answer could not be used | the fallback text (no recording, provider error, or a choice outside the options) |
+| Run status `waiting_for_owner` | An interactive run asked owner questions | `questions` in the run; answer with `POST .../answers` |
+| `sql_repaired` in AI outcomes | Agent 25 replaced a statement that failed a blocking rule | trace `repair`; the outcome's notes |
+| Status `queued` for long | No orchestrator worker is running | `orchestrator-worker` pod / `python -m orchestrator.worker` |
 
 ### Worked example: the run on 2026-10-16 (playground case, orchestrator, claude-code-sonnet)
 
@@ -615,13 +791,15 @@ check that script for real, add sample data for those Atlas tables to the case (
 
 Be aware of these when you read specs:
 
-- Route `repair_sql` is declared on agent 25, but `QueryChecker` makes no model calls.
-- Agent 26 declares `diagnose_mismatch`, but the diagnosis runs inside agent 28 (`repair_with_ai`), so corrected SQL
-  flows to synthesis, checks and the pack in the same run.
 - Routes `classify_file` and `parse_export` have prompts but no callers; intake and report parsing are
   deterministic.
 - Agents 21, 22, 23 and 29 are not in the LangGraph graph (bench chain mode only).
 - `DremioSource` is a stub; every validation is local until phase PD.
+- Re-runs restart at a node for the whole application, not only the affected tables.
+- A crash in the middle of translation keeps the overrides and outcomes (state), but answers learned earlier in that
+  run and not yet recorded are rebuilt from the facts, so their examples may differ in the resumed run.
+
+See [design-review.md](design-review.md) for the full list of gaps against the design and the plan.
 
 ---
 
@@ -638,3 +816,9 @@ Be aware of these when you read specs:
 - **Recording / memo**: a saved model answer keyed by the exact request; used for replay and to avoid paying twice.
 - **Outbox**: the ordered event list written with each fact; what re-runs and the graph projection follow.
 - **Trust**: documented / validated / inferred / confirmed (only people confirm).
+- **Supervisor**: the graph node that picks the next action after reconciliation (diagnose, ask the owner, publish).
+- **Options**: the actions code allows at that point; the supervisor (model or rules) chooses among them.
+- **Fan-out (`Send`)**: one graph branch per table, joined before the next node.
+- **Interrupt / resume**: a run paused for the data owner (`ask_owner`) and continued with the answers.
+- **Re-entry**: a re-run that starts at a later node with the previous run's results.
+- **Trace**: the run timeline, one entry per node visited.

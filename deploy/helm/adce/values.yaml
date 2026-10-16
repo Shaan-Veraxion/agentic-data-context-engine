@@ -48,8 +48,8 @@ services:
     port: 8700
     replicas: 2
     health: /health
-    # agents read and write knowledge only through kg-mcp (ADR-2)
-    env: { ADCE_KG_TRANSPORT: mcp, ADCE_KG_MCP_URL: "http://adce-kg-mcp:8701/mcp" }
+    # agents read and write knowledge only through kg-mcp (ADR-2); runs are queued for the orchestrator worker
+    env: { ADCE_KG_TRANSPORT: mcp, ADCE_KG_MCP_URL: "http://adce-kg-mcp:8701/mcp", ADCE_ORCHESTRATOR_MODE: worker }
     resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { memory: 2Gi } }
   kg-mcp:
     enabled: true
@@ -91,6 +91,14 @@ events:
   command: ["python", "-m", "orchestrator.events", "run", "--interval", "15"]
   env: { ADCE_KG_TRANSPORT: mcp, ADCE_KG_MCP_URL: "http://adce-kg-mcp:8701/mcp" }
   resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { memory: 2Gi } }
+
+# orchestrator worker: runs queued by the API gateway (set api env ADCE_ORCHESTRATOR_MODE: worker to queue)
+worker:
+  enabled: true
+  replicas: 1
+  command: ["python", "-m", "orchestrator.worker"]
+  env: { ADCE_KG_TRANSPORT: mcp, ADCE_KG_MCP_URL: "http://adce-kg-mcp:8701/mcp" }
+  resources: { requests: { cpu: 500m, memory: 1Gi }, limits: { memory: 4Gi } }
 
 migrations:
   enabled: true

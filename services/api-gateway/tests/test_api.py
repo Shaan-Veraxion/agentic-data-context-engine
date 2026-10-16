@@ -62,3 +62,46 @@ async def test_roles_are_enforced_when_auth_is_on(client):
     assert (await c.get("/facts")).status_code == 200
     assert (await c.post("/apps/a/runs", json={})).status_code == 403
     app.dependency_overrides.clear()
+
+
+async def test_runs_are_queued_for_the_orchestrator_worker(tmp_path):
+    from orchestrator.pipeline import Deps
+    from orchestrator.worker import MemoryRunQueue, Worker
+
+    kg, store, queue = MemoryKG(), LocalArtifactStore(tmp_path), MemoryRunQueue()
+    review = ReviewService(MemoryReviewStore(), kg)
+    app = create_app(Services(kg=kg, artifacts=store, review=review, queue=queue))
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
+            files = [("files", (n, (APP / n).read_bytes(), "text/plain")) for n in ("script.qvs", "reload.log")]
+            await c.post("/apps/sales_overview/files", files=files)
+            run = (await c.post("/apps/sales_overview/runs", json={})).json()
+            assert run["status"] == "queued"
+            assert (await c.get(f"/apps/sales_overview/runs/{run['run_id']}")).json()["status"] == "queued"
+            done = await Worker(queue, Deps(kg=kg, artifacts=store), review=review).drain()
+            assert [r.status for r in done] == ["done"] and done[0].result["status"] == "waiting_for_dremio"
+            summary = (await c.get(f"/apps/sales_overview/runs/{run['run_id']}")).json()
+            assert summary["status"] == "waiting_for_dremio" and summary["decisions"][-1]["action"] == "publish"
+
+
+async def test_a_run_paused_for_owner_questions_continues_with_the_answers(tmp_path):
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    kg, store = MemoryKG(), LocalArtifactStore(tmp_path)
+    review = ReviewService(MemoryReviewStore(), kg)
+    app = create_app(Services(kg=kg, artifacts=store, review=review, checkpointer=InMemorySaver(), interactive=True))
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
+            files = [("files", ("script.qvs", (APP / "script.qvs").read_bytes(), "text/plain"))]  # no reload log
+            await c.post("/apps/sales_overview/files", files=files)
+            run = (await c.post("/apps/sales_overview/runs", json={})).json()
+            assert run["status"] == "waiting_for_owner" and any("vReloadDate" in q for q in run["questions"])
+            items = (await c.get("/review/items", params={"app_id": "sales_overview"})).json()
+            item = next(i for i in items if i["kind"] == "unresolved_variable" and "vReloadDate" in i["title"])
+            done = await c.post(f"/apps/sales_overview/runs/{run['run_id']}/answers",
+                                json={"answers": {item["id"]: "2026-10-16"}})
+            body = done.json()
+            assert done.status_code == 200 and body["status"] == "waiting_for_dremio"
+            assert body["decisions"][-1]["action"] == "publish"
+            facts = await kg.facts(kind="variable_value", subject="app:sales_overview/var:vReloadDate")
+            assert any(f.trust.value == "confirmed" for f in facts)

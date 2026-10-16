@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from adce_core.artifacts import ArtifactStore, get_json
+from adce_core.artifacts import ArtifactStore, content_key, get_json, put_json
 from adce_core.bi_ir import BIApp
 from pydantic import BaseModel, field_validator
 
@@ -34,6 +34,15 @@ class MismatchFix(BaseModel):
     sql: str
     cause: str
     explanation: str = ""
+
+
+class SqlRepair(BaseModel):
+    """Structured output of the model-gateway route repair_sql (agent 25): one statement's SQL replaced so the
+    table passes the checks it failed."""
+
+    statement: int | None  # statement whose SQL to replace, or None when no single statement can fix it
+    sql: str
+    notes: str = ""
 
 
 _FIELD_TAGS = r"</?(summary|pattern|dremio_approach|questions|proposed_sql|confidence)>"
@@ -186,3 +195,26 @@ def make_validator(venue: LocalVenue, log: Any, headers: dict[str, Any], content
         return (tv.level.name if tv.level >= 0 else "none"), problems
 
     return validate
+
+
+def translation_doc(store: ArtifactStore, translation_key: str | None) -> dict[str, Any]:
+    """The translation artifact: overrides (statement -> SQL), ai_notes, ai_outcomes, gaps."""
+    return get_json(store, translation_key) if translation_key else {}
+
+
+def save_translation(store: ArtifactStore, app_id: str, bi_ir_key: str, overrides: dict[int, str],
+                     ai_notes: dict[int, str], ai_outcomes: list[dict[str, Any]],
+                     gaps: list[dict[str, Any]] | None = None) -> str:
+    """Write a translation artifact; its key depends on the BI IR and the overrides, so the same SQL has one key.
+    Agents 28 (translation), 25 (repair) and 26 (diagnosis) each write the next version."""
+    return put_json(store, content_key(f"apps/{app_id}/translation",
+                                       repr(sorted(overrides.items())).encode() + bi_ir_key.encode(), ".json"),
+                    {"bi_ir_key": bi_ir_key, "overrides": {str(k): v for k, v in overrides.items()},
+                     "ai_notes": {str(k): v for k, v in ai_notes.items()}, "ai_outcomes": ai_outcomes,
+                     "gaps": gaps or []})
+
+
+def outcome_record(o: Any) -> dict[str, Any]:
+    """An ai_loop.Outcome as the translation artifact lists it."""
+    return {"statement": o.statement, "table": o.table, "status": o.status, "attempts": len(o.attempts),
+            "model_calls": o.model_calls, "tool_calls": o.tool_calls, "notes": o.notes}

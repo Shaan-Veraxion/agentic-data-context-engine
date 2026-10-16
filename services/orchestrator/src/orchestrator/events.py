@@ -16,6 +16,11 @@ after its saved position, works out which applications each event affects, and r
 | fact.proposed translation_memory        | the applications that relied on the answer (learned or passed    |
 |   with status disproved                 | there): they stop using it                                       |
 
+Each re-run enters the graph at the first node the change affects, with the last run's summary (orchestrator
+pipeline, re-entry): a variable's value at extract (the script is read again), a source mapping at resolve (the
+translation is reused: only the SQL's source names change), everything else at translate. Without an earlier
+run the application runs from the start.
+
 Re-runs do not loop: facts are content-addressed, so a re-run that reaches the same conclusions writes nothing new
 and raises no event. Re-runs reuse memoized model answers, so they cost no model calls unless something changed.
 
@@ -126,6 +131,18 @@ async def affected(kg: KGPort, events: list[dict[str, Any]]) -> dict[str, list[s
     return out
 
 
+# why an application re-runs -> where the graph is entered (pipeline order: extract < resolve < translate)
+ENTRY_FOR = {"variable value": "extract", "source mapped": "resolve"}
+ORDER = ["extract", "resolve", "translate"]
+
+
+def start_for(reasons: list[str]) -> tuple[str, bool]:
+    """The earliest node the reasons need, and whether the translation can be reused (only source mappings)."""
+    nodes = [next((v for k, v in ENTRY_FOR.items() if r.startswith(k)), "translate") for r in reasons]
+    first = min(nodes, key=ORDER.index) if nodes else "translate"
+    return first, all(n == "resolve" for n in nodes)
+
+
 class EventConsumer:
     def __init__(self, deps: Any, cursor: Cursor | None = None, name: str = "orchestrator",
                  batch: int = 500) -> None:
@@ -142,7 +159,8 @@ class EventConsumer:
         results = []
         if apps:
             log.info("events %s-%s: re-running %s", events[0]["seq"], events[-1]["seq"], sorted(apps))
-            for r in await rerun_all(self.deps, apps=sorted(apps), run_prefix="event"):
+            entries = {a: start_for(why) for a, why in apps.items()}
+            for r in await rerun_all(self.deps, apps=sorted(apps), run_prefix="event", start_at=entries):
                 results.append(r | {"because": apps[r["app_id"]]})
         self.cursor.set(self.name, events[-1]["seq"])
         return results

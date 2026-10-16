@@ -40,16 +40,35 @@ async def uploads_by_app(kg: KGPort) -> dict[str, list[dict[str, Any]]]:
     return {a: list(files.values()) for a, files in apps.items()}
 
 
-async def rerun_all(deps: Deps, *, apps: list[str] | None = None,
-                    run_prefix: str = "scheduled") -> list[dict[str, Any]]:
+def latest_summary(store: Any, app_id: str) -> dict[str, Any] | None:
+    """The summary of the application's last finished run (pipeline summarize writes apps/<app>/latest.json)."""
+    from adce_core.artifacts import get_json
+
+    try:
+        return get_json(store, get_json(store, f"apps/{app_id}/latest.json")["summary_key"])
+    except Exception:  # noqa: BLE001 - no earlier run, or its artifacts are gone: run from the start
+        return None
+
+
+async def rerun_all(deps: Deps, *, apps: list[str] | None = None, run_prefix: str = "scheduled",
+                    start_at: dict[str, tuple[str, bool]] | None = None) -> list[dict[str, Any]]:
+    """Re-run applications from their stored uploads. start_at: app -> (node, reuse_translation) to enter the
+    graph at a later node with the last run's summary (event-driven re-runs); without a summary the run starts
+    from the beginning."""
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S")
     out = []
     for app_id, files in sorted((await uploads_by_app(deps.kg)).items()):
         if apps and app_id not in apps:
             continue
+        node, reuse = (start_at or {}).get(app_id, ("intake", False))
+        previous = latest_summary(deps.artifacts, app_id) if node != "intake" else None
+        if previous is None:
+            node, reuse = "intake", False
         try:
-            st = dict(await run_pipeline(app_id=app_id, run_id=f"{run_prefix}-{stamp}", files=files, deps=deps))
-            out.append({"app_id": app_id, "status": st.get("status"), "levels": st.get("levels", {})})
+            st = dict(await run_pipeline(app_id=app_id, run_id=f"{run_prefix}-{stamp}", files=files, deps=deps,
+                                         start_at=node, previous=previous, reuse_translation=reuse))
+            out.append({"app_id": app_id, "status": st.get("status"), "levels": st.get("levels", {}),
+                        "started_at": node})
         except Exception as e:  # noqa: BLE001 - one application failing does not stop the others
             out.append({"app_id": app_id, "status": "error", "error": f"{type(e).__name__}: {e}"})
     return out
