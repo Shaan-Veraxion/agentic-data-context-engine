@@ -390,7 +390,7 @@ function sourcesPanel(r) {
   if (!rows.length) return "";
   const canSave = S.view === "case" && S.detail && S.detail.id === r.case;
   return `<div class="card"><h2>Dremio sources</h2><div class="muted" style="margin-bottom:8px">The SQL reads each source as the script names it. Give the Dremio dataset of each one (e.g. <code>space.folder.table</code>, or <code>"My Source".dbo.tblX</code>); the generated SQL then reads it. Files with variables in their path (<code>$(vLoadfile)</code>) usually map to one folder dataset. In a deployment the same answers come from the review queue (map source).</div>
-    ${table(["source (as the SQL comment lists it)", "Dremio dataset"], rows.map(k => [k, `<input data-src="${esc(k)}" value="${esc(mapped[k] || "")}" placeholder="space.folder.table" size="48" ${canSave ? "" : "disabled"}>`]))}
+    <div class="scroll"><table><thead><tr><th>source (as the SQL comment lists it)</th><th>Dremio dataset</th></tr></thead><tbody>${rows.map(k => `<tr><td><code>${esc(k)}</code></td><td><input data-src="${esc(k)}" value="${esc(mapped[k] || "")}" placeholder="space.folder.table" style="width:100%;min-width:220px" ${canSave ? "" : "disabled"}></td></tr>`).join("")}</tbody></table></div>
     ${canSave ? '<button class="primary" onclick="saveSources()">Save and run again</button>' : '<div class="muted">Save the playground run as a case to map its sources.</div>'}</div>`;
 }
 async function saveSources() {
