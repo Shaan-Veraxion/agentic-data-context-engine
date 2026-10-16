@@ -41,12 +41,13 @@ class Services:
     budget_usd: float | None = None
     max_calls: int | None = None
     supervisor: str = "auto"
+    tolerance: float = 0.0
     queue: Any | None = None  # orchestrator.worker.RunQueue: runs are queued for the worker instead of run here
 
     def deps(self, kg: Any) -> Deps:
         return Deps(kg=kg, artifacts=self.artifacts, gateway=self.gateway, llm_tools=self.llm_tools,
                     supervisor=self.supervisor, interactive=self.interactive and self.checkpointer is not None,
-                    budget_usd=self.budget_usd, max_calls=self.max_calls)
+                    budget_usd=self.budget_usd, max_calls=self.max_calls, tolerance=self.tolerance)
 
 
 def services(request: Request) -> Services:
@@ -143,7 +144,7 @@ def create_app(svc: Services | None = None, cors_origins: list[str] | None = Non
                                           kg_mcp_url=s.kg_mcp_url if s.kg_transport == "mcp" else None,
                                           llm_tools=s.llm_tools, interactive=s.interactive_runs,
                                           budget_usd=s.run_budget_usd, max_calls=s.run_max_calls,
-                                          supervisor=s.supervisor)
+                                          supervisor=s.supervisor, tolerance=s.validation_tolerance)
             try:
                 yield
             finally:

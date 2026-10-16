@@ -59,6 +59,10 @@ SQL_ORDERS2 = 'SQL SELECT OrderID, CustomerID, Qty FROM "shop"."raw"."orders2";\
 SQL_CUSTOMERS = 'SQL SELECT CustomerID, CustomerName, Region FROM "shop"."raw"."customers";\n'
 
 
+# llm cases the rules now translate on their own (they stay in the llm suite: with a model, nothing is asked)
+RULES_TRANSLATE = {"llm/previous_change_flag"}  # Previous() over ORDER BY -> LAG (2026-10-16)
+
+
 def _store(*names: str) -> str:
     return "".join(f"STORE {n} INTO [lib://QVD/{n}.qvd] (qvd);\n" for n in names)
 
@@ -615,6 +619,8 @@ def llm_specs() -> list[Spec]:
         fetched=[2, 4], variants=off,
         oracle_note="Lookup gives the first match in load order; no match gives NULL (order 12)"))
     for sp in yield_specs:  # with AI off the rules leave the table untranslated: nothing to run or compare
+        if sp.id in RULES_TRANSLATE:
+            continue
         table = next(iter(sp.outputs))
         sp.when = [{"if": {"ai": "off"}, "levels": {table: "V0"},
                     "expect": {"check": {"failing": {table: ["translated", "composed"]}}, "rows": False}}]

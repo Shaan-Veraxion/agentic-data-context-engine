@@ -129,6 +129,7 @@ class Deps:
     max_steps: int = 6  # supervisor decisions per run
     budget_usd: float | None = None  # model spend per run (None: no limit)
     max_calls: int | None = None  # model calls per run (None: no limit)
+    tolerance: float = 0.0  # relative drift accepted by validation when evidence and data are not aligned
     work: dict[str, Any] = field(default_factory=dict)  # per-run working objects, rebuilt when missing
 
 
@@ -386,16 +387,23 @@ async def check_one(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, A
     t = _need(state, "table")
     loaded = load_translation(runtime.context.artifacts, _need(state, "bi_ir_key"), state.get("translation_key"))
     c = await QueryChecker().check_one(_ctx(state, runtime), AgentResult(), loaded, t)
-    return {"checks": {t: c}, "trace": _t("check", table=t, ok=c["ok"], failing=c["failing"][:3])}
+    return {"checks": {t: c}, "trace": _t("check", table=t, ok=c["ok"], failing=c["failing"][:3],
+                                          warnings=c.get("warnings", [])[:3])}
 
 
 async def check_join(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
     tables = _tables(state)
     checks = state.get("checks", {})
     passed = sum(1 for t in tables if checks.get(t, {}).get("ok"))
-    a = QueryChecker().spec
-    return {"events": ["sql.checked"], "metrics": {"check": {"passed": passed, "agent": f"{a.name}@{a.version}"}},
-            "trace": _t("check.join", passed=passed, tables=len(tables))}
+    agent = QueryChecker()
+    loaded = load_translation(runtime.context.artifacts, _need(state, "bi_ir_key"), state.get("translation_key"))
+    charts = await agent.check_charts(_ctx(state, runtime), AgentResult(), loaded)
+    m: dict[str, Any] = {"passed": passed, "agent": f"{agent.spec.name}@{agent.spec.version}"}
+    if charts:
+        m["charts_passed"] = sum(c["ok"] for c in charts.values())
+    return {"events": ["sql.checked"], "metrics": {"check": m},
+            "trace": _t("check.join", passed=passed, tables=len(tables),
+                        charts={v: c["failing"][:2] or "ok" for v, c in charts.items()})}
 
 
 def _failing(state: PipelineState) -> list[str]:
@@ -435,7 +443,8 @@ def _after_repair(state: PipelineState) -> Any:
 # ---------------------------------------------------------------- reconcile (per table), supervisor, diagnose, ask
 async def reconcile_one(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
     t = _need(state, "table")
-    e = ReconcilerAgent().validate(_job(state), _ctx(state, runtime), t)
+    job = {**_job(state), "tolerance": runtime.context.tolerance}
+    e = ReconcilerAgent().validate(job, _ctx(state, runtime), t)
     return {"validations": {t: e}, "trace": _t("reconcile", table=t, level=e["level"],
                                                mismatch=e["mismatch"]["category"],
                                                detail=e["mismatch"]["detail"][:200])}

@@ -67,6 +67,10 @@ other` statements to a model remain open.
 
 ### 1.3 Query checker: the BI semantic rules are missing
 
+**Status: step 2 (2026-10-16)** added `fan_out` and `set_fields` (blocking), `distinct_across_tables`, `totals` and
+`join_fields` (warnings) in `semantics.py`. Still open: grain facts (so pre-aggregated many-to-one joins pass),
+dual-value and units rules, `EXPLAIN` in Dremio (PD).
+
 The design names these rules as the reason agent 25 exists (Arch §5.5, TD §6.2, CP-001 §3). The code checks syntax, known
 fields, determinism and inputs only ([check.py](../packages/adce-reversesql/src/adce_reversesql/check.py)).
 
@@ -132,6 +136,10 @@ The design's `fact_log` (TD §11.1, ADR-Q5) has `tenant_id`, `scope_id`, `versio
 
 ### 1.8 Qlik coverage the stage commits to
 
+**Status: step 2** translated IntervalMatch (keyed too), Previous()/Peek() over the load's ORDER BY, Above() and
+RangeSum(Above()) in charts, unrolled file-list loops from the reload log, recorded Section Access as an RLS
+requirement, and applied QUALIFY. Still open: QlikView `-prj` reading; GENERIC, Hierarchy and recursive Peek stay T3.
+
 | Construct | Commitment | Code |
 |---|---|---|
 | **IntervalMatch** | T2, committed | Classified and flagged T2; **no translation** (range join) |
@@ -153,6 +161,9 @@ The design's `fact_log` (TD §11.1, ADR-Q5) has `tenant_id`, `scope_id`, `versio
   one source at a time (`resolves_to`), and from 2026-10-16 in the bench's Dremio sources panel.
 
 ### 1.10 Validation
+
+**Status: step 2** added the V2 column check, null counts in V4, the drift tolerance with its labels, and a result
+cache. Still open: grouped comparisons per dimension member, hash of a sorted key sample.
 
 | Design | Code |
 |---|---|
@@ -232,6 +243,8 @@ answers endpoint, re-entry at extract/resolve/translate, per-run budgets (`RunGa
 - The orchestrator as its own worker. A run timeline view showing nodes, decisions and model calls.
 
 ### Step 2. Correctness rules
+
+**Done 2026-10-16** (see the status notes in 1.3, 1.8 and 1.10 for what stays open).
 - Query-checker rules (1) to (6), with grain facts computed from QVD and extract data now, and from Dremio in PD.
 - V2 schema check; drift tolerance labels; null counts and key-sample hash in V4; result cache.
 - IntervalMatch, Peek/Previous with an ordering key, Above/RangeSum, file-list loops from reload-log iterations,

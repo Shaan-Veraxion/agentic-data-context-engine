@@ -245,8 +245,11 @@ The Qlik reader, in order:
    (`LEFT JOIN (X)`, `NOCONCATENATE`, `MAPPING`, `CROSSTABLE`) and statement kind.
 3. [interpreter.py](../packages/adce-qlik/src/adce_qlik/interpreter.py) "runs" the control flow statically:
    splices `$(Include=...)`, expands `SUB`/`CALL`, unrolls `FOR` loops with constant bounds (max 200),
-   evaluates constant `IF`s and keeps both branches otherwise (`branch_not_evaluated`). `DO ... LOOP` runs
-   once and is flagged `loop_not_unrolled`. Calls into known libraries (QlikView Components `Qvc.*`) are replaced
+   evaluates constant `IF`s and keeps both branches otherwise (`branch_not_evaluated`). A loop whose items are
+   not constant (`FOR EACH f IN FileList(...)`, bounds from data) is **unrolled with the values the reload log
+   shows**: Qlik echoes the body once per iteration with the variable expanded, so each echo gives one value
+   (`_items_from_log`, issue `loop_unrolled_from_log`). Without a log, and for `DO ... LOOP`, the body runs once
+   and is flagged `loop_not_unrolled`. Calls into known libraries (QlikView Components `Qvc.*`) are replaced
    by modelled statements from [libraries.py](../packages/adce-qlik/src/adce_qlik/libraries.py); that is where
    `"__generated__"."Qvc.Calendar(...)"` comes from.
 4. [variables.py](../packages/adce-qlik/src/adce_qlik/variables.py) resolves `SET`/`LET` and `$(var)`.
@@ -258,13 +261,18 @@ The Qlik reader, in order:
    (expressions as a small AST, `Expr`), source, WHERE, GROUP BY, INLINE rows.
 6. [model.py](../packages/adce-qlik/src/adce_qlik/model.py) `build_app` builds the **BI IR** (`BIApp`): Qlik
    tables as a sequence of steps (create, concatenate, auto-concatenate, join, keep), preceding loads, mapping
-   tables, drops, renames, stores, logical sources. Embedded `SQL SELECT` is parsed in the source database's
+   tables, drops, renames, stores, logical sources. **QUALIFY / UNQUALIFY** rules rename matching fields to
+   `Table.Field` (`_qualify`; recorded on the step as `qualify`, applied by compose), so qualified tables no
+   longer associate or auto-concatenate. Tables loaded between `Section Access` and `Section Application` are
+   **not data tables**: they become `BIApp.section_access` (`AccessTable`: fields, reduction fields), an
+   `rls_requirement` fact and a section of the pack's review record (CP-001: Section Access is never translated).
+   A RESIDENT load's `ORDER BY` is kept (`LoadOp.order_by`), for Peek()/Previous(). Embedded `SQL SELECT` is parsed in the source database's
    dialect ([sql_dialect.py](../packages/adce-qlik/src/adce_qlik/sql_dialect.py)).
 7. [reload_log.py](../packages/adce-qlik/src/adce_qlik/reload_log.py) and
    [qvd.py](../packages/adce-qlik/src/adce_qlik/qvd.py) read row counts and QVD headers.
 
 - Writes: the BI IR artifact (`bi_ir_key`); facts `bi_table`, `contains`, `reads_source`, `stores_qvd`,
-  `reads_qvd`, `uses_mapping`, `variable_value`, `bi_issue`, row counts. Metrics: `statements`, `coverage`
+  `reads_qvd`, `uses_mapping`, `variable_value`, `bi_issue`, `rls_requirement`, row counts. Metrics: `statements`, `coverage`
   (share of statements understood), `tables`, `issues`.
 - Fails: coverage < 1.0 means some statements are `OTHER` (not understood). No script: the run ends with status
   `needs_inputs`.
@@ -315,8 +323,22 @@ answering, budget used) stops translation; the next run tries again.
 `Send` gives each table its own `check_one` branch: `QueryChecker.check_one` runs
 [check.py](../packages/adce-reversesql/src/adce_reversesql/check.py) `check_table`: `translated`, `composed`,
 `dremio_syntax`, `transpiles_for_local_run`, `known_fields` (blocking), and `deterministic`, `inputs_in_dremio`,
-`rules_only` (warnings). It proposes a `sql_checked` fact and returns `{ok, failing}` (`failing`: blocking rules a
-repair can fix, `ai_loop.failed_rules`). `check_join` counts the passes and emits `sql.checked`.
+`rules_only` (warnings), plus the script rule of
+[semantics.py](../packages/adce-reversesql/src/adce_reversesql/semantics.py) `script_rules`: `join_fields` (warning: a
+JOIN or KEEP whose sides share no field is a cartesian product). It proposes a `sql_checked` fact and returns
+`{ok, failing, warnings}` (`failing`: blocking rules a repair can fix, `ai_loop.failed_rules`). `check_join` counts
+the passes, runs the **chart rules** on every chart's SQL (`QueryChecker.check_charts` → `semantics.chart_rules`,
+one `sql_checked` fact per visual) and emits `sql.checked`:
+
+| Chart rule | Blocking | Checks |
+|---|---|---|
+| `fan_out` | yes | no aggregate is computed over a join that can repeat its records; allowed: one relation, or rows joined to a DISTINCT row-id bridge (`semantics.fan_out`, checked on the SQL itself, whoever wrote it) |
+| `set_fields` | yes | every field a set modifier names is in the data model |
+| `distinct_across_tables` | no | Count(DISTINCT F) where several tables hold F (Qlik counts across all of them) |
+| `totals` | no | TOTAL / Aggr scope to review |
+
+`fan_out` accepts a join only through the row-id bridge; a pre-aggregated many-to-one join is safe too but needs
+key-uniqueness (grain) facts, which come with Dremio (phase PD).
 
 #### repair → agent 25 (route `repair_sql`)
 When a table fails a blocking rule (other than an untranslated statement) and the run has a model, `repair` runs
@@ -437,6 +459,20 @@ CTE: create = the chain's output; concatenate = `UNION ALL` with columns aligned
 field names (Qlik semantics); keep = semi-join; `RESIDENT X` reads X's version current at that point.
 `Translation.table_sql(T)` returns `WITH ... SELECT * FROM <final cte>`.
 
+Constructs translated by the rules (beyond plain loads, joins, keeps, concatenation, mapping):
+
+| Qlik | SQL | Where |
+|---|---|---|
+| `CROSSTABLE(attr, data[, n])` | `UNION ALL` of one SELECT per unpivoted column | `Composer._construct` |
+| `IntervalMatch(F [, keys])` | values of F (from the tables loaded so far that hold F and the keys) `JOIN` the intervals `ON F BETWEEN Start AND End` (bounds included), `DISTINCT` | `Composer._intervalmatch` |
+| `QUALIFY` | a projection renaming the step's fields to `Table.Field` | `Composer._step` |
+| `Previous(x)` | `LAG(x) OVER (ORDER BY <the load's ORDER BY>)`; not in a load with WHERE (it reads rows the WHERE drops) | `Translator._lookback` |
+| `Peek('F'[, -n / 0])` | `LAG(<F's expression>, n)` / `FIRST_VALUE(...)` over the load's ORDER BY | `Translator._lookback` |
+| `Above(x[, n])`, `RangeSum(Above(x, 0, n))` (charts) | `LAG` / `SUM(...) OVER (ORDER BY dims ROWS BETWEEN n-1 PRECEDING AND CURRENT ROW)` over the chart's rows, in dimension order (the chart's sort is not known: tier T2, noted) | `ChartTranslator._value` |
+
+Not translated, on purpose (T3): Previous()/Peek() without an ORDER BY (SQL has no load order), Peek() of a field
+computed from Peek() (a running total: recursive), GENERIC, Hierarchy, Aggr().
+
 When a step cannot be translated, compose does not guess. It records an `Untranslated` with `reason`, `tier`
 (T1 = rules should handle, T2/T3 = harder), the statement `text`, its `input_columns` and `relations` (other tables
 the statement names). Steps that depend on it are untranslated too (knock-on failures). `_roots()` in ai_loop
@@ -537,12 +573,23 @@ state always has every override that produced the SQL.
 |-------|-------|-----|
 | V0 | parses | no "does not parse" untranslated |
 | V1 | checked | `check_table` passes |
-| V2 | runs | the full SQL executes in the venue |
+| V2 | runs, with the right columns | the full SQL executes in the venue **and returns exactly the Qlik table's fields** (`fields` from the BI IR; tables whose fields are unknown, `["*"]`, skip the column check) |
 | V3 | row counts match | each step vs the reload log's "lines fetched"; stored tables vs the QVD header |
-| V4 | data matches | per-field aggregates (count, distinct, min/max, value shapes, value fingerprints) vs the stored QVD's rows |
+| V4 | data matches | per-field aggregates (count, **nulls**, distinct, min/max, sum, value shapes, value fingerprints) vs the stored QVD's rows |
 | V5 | figures match | chart SQL result vs an exported report (in `_figures`, [exports.py](../packages/adce-reversesql/src/adce_reversesql/exports.py)) |
 
 The level reached is the last one passed. A failure at V2 stops the ladder there.
+
+**Drift tolerance** (`Reconciler(tolerance=...)`, setting `ADCE_VALIDATION_TOLERANCE`, `Deps.tolerance`): when the
+evidence (reload log, QVDs) and the data are not from the same moment, counts and sums within the relative
+tolerance pass with basis `within tolerance (drift)`; the table is then **not exact** (`TableValidation.exact`,
+`report_sql.exact`, "(within tolerance, drift)" in validation.md). Locally the tolerance is 0: the QVDs and the log
+come from the same reload. Phase PD sets it (0.5% by default in the design) for Dremio data.
+
+**Result cache**: `LocalVenue.run` caches results (up to 5,000 rows) by the data's fingerprint (the bytes of every
+file loaded, plus today's date for generated inputs) and the SQL, so the graph's re-validation after a fix does not
+run the same queries again. **Temporary files**: `local_evidence` extracts the uploads to a temp folder, loads them
+into DuckDB (which copies them) and removes the folder; the bench removes its run folder after each run.
 
 **The local venue** ([local.py](../packages/adce-reversesql/src/adce_reversesql/local.py), `LocalVenue`) is
 DuckDB with:
@@ -764,6 +811,12 @@ tokens, latency and error.
 | `fallback: ...` in a decision | The LLM supervisor's answer could not be used | the fallback text (no recording, provider error, or a choice outside the options) |
 | Run status `waiting_for_owner` | An interactive run asked owner questions | `questions` in the run; answer with `POST .../answers` |
 | `sql_repaired` in AI outcomes | Agent 25 replaced a statement that failed a blocking rule | trace `repair`; the outcome's notes |
+| Level V1 with a `schema` comparison | The SQL runs but its columns differ from the Qlik table's fields | the comparison's expected vs got (missing / extra columns) |
+| `fan_out` failing on a chart | an aggregate over a join that can repeat records | the rule message; the chart's SQL (`sql/charts/<visual>.sql`) |
+| `join_fields` warning | a JOIN/KEEP with no shared field (cartesian product in Qlik too) | the script lines named in the warning |
+| `loop_unrolled_from_log` issue | a file-list loop was unrolled with the values the reload log showed | the issue message lists them; check they are all the files |
+| `section_access` issue | the script has Section Access; it is a requirement, not SQL | review.md "Row-level security"; `rls_requirement` facts |
+| Level shown "(within tolerance, drift)" | counts or sums differ within the tolerance | the comparisons with basis `within tolerance (drift)` |
 | Status `queued` for long | No orchestrator worker is running | `orchestrator-worker` pod / `python -m orchestrator.worker` |
 
 ### Worked example: the run on 2026-10-16 (playground case, orchestrator, claude-code-sonnet)
@@ -796,6 +849,9 @@ Be aware of these when you read specs:
 - Agents 21, 22, 23 and 29 are not in the LangGraph graph (bench chain mode only).
 - `DremioSource` is a stub; every validation is local until phase PD.
 - Re-runs restart at a node for the whole application, not only the affected tables.
+- No grain (key uniqueness) facts yet, so `fan_out` cannot accept pre-aggregated many-to-one joins (phase PD).
+- Grouped comparisons per dimension member (to pinpoint mismatching rows) are not built; the diagnosis gets
+  per-field aggregates.
 - A crash in the middle of translation keeps the overrides and outcomes (state), but answers learned earlier in that
   run and not yet recorded are rebuilt from the facts, so their examples may differ in the resumed run.
 
@@ -822,3 +878,6 @@ See [design-review.md](design-review.md) for the full list of gaps against the d
 - **Interrupt / resume**: a run paused for the data owner (`ask_owner`) and continued with the answers.
 - **Re-entry**: a re-run that starts at a later node with the previous run's results.
 - **Trace**: the run timeline, one entry per node visited.
+- **Fan-out (double counting)**: an aggregate over a join that repeats the aggregated records; Qlik never does it.
+- **Drift**: evidence and data from different moments; small differences within the tolerance are not mismatches.
+- **QUALIFY**: Qlik's renaming of fields to `Table.Field`.

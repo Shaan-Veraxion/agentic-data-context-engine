@@ -27,6 +27,8 @@ class ParsedLoad:
     where: Expr | None = None
     while_: Expr | None = None
     group_by: list[Expr] = field(default_factory=list)
+    order_by: list[Expr] = field(default_factory=list)
+    order_desc: list[bool] = field(default_factory=list)
 
 
 class LoadParseError(ValueError):
@@ -150,7 +152,7 @@ def parse_load(text: str) -> ParsedLoad:
     except LarkError as e:
         raise LoadParseError(str(e).splitlines()[0]) from e
     b = _Builder(text)
-    _load, distinct, fields, source, filt, group, _order = cast(list[Tree | None], tree.children)
+    _load, distinct, fields, source, filt, group, order = cast(list[Tree | None], tree.children)
     parsed = ParsedLoad(fields=b.fields(cast(Tree, fields)), source=b.source(source),
                         distinct=distinct is not None)
     if filt is not None:
@@ -161,6 +163,12 @@ def parse_load(text: str) -> ParsedLoad:
             parsed.while_ = e
     if group is not None:
         parsed.group_by = [b.expr(c) for c in group.children[2:]]
+    if order is not None:
+        for item in order.children:
+            if isinstance(item, Tree) and item.data == "order_item":
+                parsed.order_by.append(b.expr(item.children[0]))
+                d = item.children[1] if len(item.children) > 1 else None
+                parsed.order_desc.append(d is not None and str(d).lower() == "desc")
     return parsed
 
 

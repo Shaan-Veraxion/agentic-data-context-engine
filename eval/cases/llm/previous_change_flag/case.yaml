@@ -25,15 +25,3 @@ levels:
   Flags: V4
 expect: {}
 oracle_note: rows in EventID order; the first row has no previous row, so it is flagged
-when:
-- if:
-    ai: 'off'
-  levels:
-    Flags: V0
-  expect:
-    check:
-      failing:
-        Flags:
-        - translated
-        - composed
-    rows: false

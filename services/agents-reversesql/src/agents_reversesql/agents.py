@@ -32,9 +32,11 @@ from adce_reversesql.runtime import (
     local_evidence,
     outcome_record,
     save_translation,
+    table_fields,
     translation_doc,
     validator_from_files,
 )
+from adce_reversesql.semantics import chart_rules, script_rules
 
 
 def table_key(app_id: str, name: str) -> str:
@@ -129,7 +131,11 @@ class QueryChecker(BaseAgent):
                         checked[o["table"]] = await self.check_one(ctx, result, loaded, o["table"])
             result.outputs["repairs"] = outcomes
         result.outputs["checks"] = checked
+        charts = await self.check_charts(ctx, result, loaded)
+        result.outputs["chart_checks"] = charts
         result.metrics["passed"] = sum(c["ok"] for c in checked.values())
+        if charts:
+            result.metrics["charts_passed"] = sum(c["ok"] for c in charts.values())
         result.events.append("sql.checked")
         return result
 
@@ -137,13 +143,32 @@ class QueryChecker(BaseAgent):
         """The rule checks of one table, proposed as a sql_checked fact. Returns {ok, failing}: failing are the
         blocking rules a repair can fix (not untranslated statements)."""
         chk = check_table(loaded.translation, name)
+        rules = [{"name": r.name, "ok": r.ok, "message": r.message, "blocking": r.blocking} for r in chk.rules]
+        rules += [r.__dict__ for r in script_rules(loaded.app, name)]  # Qlik semantics (warnings for tables)
         await self.propose(ctx, Fact(
             kind="sql_checked", subject=table_key(ctx.app_id, name),
-            trust=Trust.VALIDATED if chk.ok else Trust.INFERRED,
-            value={"ok": chk.ok, "rules": [{"name": r.name, "ok": r.ok, "message": r.message,
-                                            "blocking": r.blocking} for r in chk.rules]},
+            trust=Trust.VALIDATED if chk.ok else Trust.INFERRED, value={"ok": chk.ok, "rules": rules},
             evidence=[Evidence(kind="rule_check", ref=f"{ctx.app_id}/{name}")]), result)
-        return {"ok": chk.ok, "failing": failed_rules(loaded.translation, name)}
+        return {"ok": chk.ok, "failing": failed_rules(loaded.translation, name),
+                "warnings": [f"{r['name']}: {r['message']}" for r in rules if not r["ok"] and not r["blocking"]]}
+
+    async def check_charts(self, ctx: AgentContext, result: AgentResult, loaded: Any) -> dict[str, Any]:
+        """The BI semantics rules on each chart's SQL (fan-out, set-modifier fields, DISTINCT across tables, TOTAL /
+        Aggr scope), proposed as sql_checked facts about the visual. Returns visual -> {ok, failing}."""
+        out = {}
+        for c in translate_charts(loaded.app, loaded.translation):
+            if c.sql is None:
+                continue
+            rules = chart_rules(loaded.app, loaded.translation, c.visual_id, c.sql)
+            ok = all(r.ok for r in rules if r.blocking)
+            await self.propose(ctx, Fact(
+                kind="sql_checked", subject=f"app:{ctx.app_id}/visual:{c.visual_id}",
+                trust=Trust.VALIDATED if ok else Trust.INFERRED,
+                value={"ok": ok, "rules": [r.__dict__ for r in rules]},
+                evidence=[Evidence(kind="rule_check", ref=f"{ctx.app_id}/visual:{c.visual_id}")]), result)
+            out[c.visual_id] = {"ok": ok, "failing": [f"{r.name}: {r.message}" for r in rules
+                                                       if r.blocking and not r.ok]}
+        return out
 
     async def repair(self, job: dict[str, Any], ctx: AgentContext,
                      tables: list[str]) -> tuple[str | None, list[dict[str, Any]]]:
@@ -202,7 +227,8 @@ class ReconcilerAgent(BaseAgent):
         errors, the evidence used, and what kind of mismatch it is (adce_reversesql.diagnose)."""
         loaded = load_translation(ctx.artifacts, job["bi_ir_key"], job.get("translation_key"))
         ev = local_evidence(ctx.artifacts, job.get("files", []), loaded.app)
-        tv = Reconciler(loaded.translation, ev.venue, ev.log, ev.headers, ev.contents).validate(name)
+        tv = Reconciler(loaded.translation, ev.venue, ev.log, ev.headers, ev.contents, table_fields(loaded.app),
+                        tolerance=float(job.get("tolerance") or 0.0)).validate(name)
         failed = [c.__dict__ for c in tv.comparisons if not c.ok]
         evidence = [{"kind": "query_result", "ref": f"{tv.venue}:{ctx.run_id}:{name}",
                      "detail": {"comparisons": len(tv.comparisons)}}]
@@ -211,6 +237,7 @@ class ReconcilerAgent(BaseAgent):
         evidence += [{"kind": "qvd_header", "ref": t, "detail": {}} for t, _ in loaded.translation.tables[name].stores
                      if t in ev.headers]
         return {"table": name, "summary": tv.summary(), "level": tv.level.name if tv.level >= 0 else "none",
+                "exact": tv.exact,
                 "validated": tv.level >= Level.V3, "venue": tv.venue, "failed": failed, "errors": tv.errors,
                 "comparisons_ok": sum(c.ok for c in tv.comparisons), "comparisons": len(tv.comparisons),
                 "sql_sha256": hashlib.sha256((tv.sql or "").encode()).hexdigest(), "evidence": evidence,
@@ -261,7 +288,8 @@ class ReconcilerAgent(BaseAgent):
             await self.propose(ctx, Fact(
                 kind="report_sql", subject=table_key(ctx.app_id, e["table"]),
                 trust=Trust.VALIDATED if e["validated"] else Trust.INFERRED,
-                value={"level": e["level"], "venue": e["venue"], "comparisons_ok": e["comparisons_ok"],
+                value={"level": e["level"], "venue": e["venue"], "exact": e.get("exact", True),
+                       "comparisons_ok": e["comparisons_ok"],
                        "comparisons": e["comparisons"], "failed": e["failed"][:20], "errors": e["errors"],
                        "sql_sha256": e["sql_sha256"]},
                 evidence=[Evidence(**x) for x in e["evidence"]]), result)
@@ -386,7 +414,8 @@ def _validation_md(report: list[dict[str, Any]], figures: list[dict[str, Any]] |
     for r in report:
         comps = r["comparisons"]
         bad = [c for c in comps if not c["ok"]]
-        lines.append(f"| {r['table']} | {r['level']} | {r['venue']} | {len(comps)} | {len(bad)} |")
+        level = r["level"] if r.get("exact", True) else f"{r['level']} (within tolerance, drift)"
+        lines.append(f"| {r['table']} | {level} | {r['venue']} | {len(comps)} | {len(bad)} |")
     for r in report:
         bad = [c for c in r["comparisons"] if not c["ok"]]
         failed_rules = [x for x in r["rules"] if not x["ok"]]
@@ -419,6 +448,10 @@ def _review_md(loaded: Any, charts: list[Any] | None = None) -> str:
         lines += ["", "## Charts not translated", ""]
         lines += [f"- {c.visual_id} {c.title!r}: {'; '.join(c.untranslated)} [{c.tier}]" for c in charts
                   if c.untranslated] or ["- none"]
+    if loaded.app.section_access:
+        lines += ["", "## Row-level security (Section Access): requirements, not translated", ""]
+        lines += [f"- {a.name}: data reduced on {', '.join(a.reduction_fields) or 'no field'} "
+                  f"(access fields: {', '.join(a.fields)})" for a in loaded.app.section_access]
     lines += ["", "## Issues found while reading the script", ""]
     lines += [f"- {i.code}: {i.message}" for i in loaded.app.issues] or ["- none"]
     inputs = sorted({i for r in loaded.translation.tables.values() for i in r.inputs})

@@ -54,6 +54,11 @@ class ExprContext:
     # fields the current load itself adds (then Exists also sees the rows of this load: order-dependent)
     field_sources: dict[str, list[str]] = field(default_factory=dict)
     loading: set[str] = field(default_factory=set)
+    # Peek() / Previous(): the load's row order (ORDER BY, translated) and its output fields; windows only in fields
+    order: list[tuple[SqlExpr, bool]] | None = None
+    outputs: dict[str, Expr] = field(default_factory=dict)
+    windows: bool = False  # True while translating the load's fields (not WHERE, not an aggregating load)
+    filtered: bool = False  # the load has a WHERE (Previous() reads input rows, before it)
 
 
 BOOLEAN_OPS = {"=", "<>", "<", ">", "<=", ">=", "AND", "OR", "XOR", "NOT", "LIKE", "PRECEDES", "FOLLOWS"}
@@ -218,6 +223,49 @@ class Translator:
             q = exp.union(q, exp.select(exp.column(f, quoted=True)).from_(r), distinct=False)
         return exp.In(this=probe, query=exp.Subquery(this=q))
 
+    def _lookback(self, e: Expr) -> SqlExpr:
+        """Previous(expr): expr on the previous input row; Peek('F'[, row]): output field F on an earlier output
+        row (row -1 = the previous one, -n = n rows back, 0 = the first). Rows are in the load's ORDER BY order
+        (a SQL table has no load order, so without ORDER BY they are not translated: T3). Peek of a field the
+        load computes from Peek itself (running totals) is recursive and stays T3."""
+        name = (e.name or "").lower()
+        if not self.ctx.order:
+            raise Untranslatable(f"{e.name}() needs the load's ORDER BY to fix the row order (SQL has no load order)",
+                                 "T3")
+        if not self.ctx.windows:
+            raise Untranslatable(f"{e.name}() outside the load's fields (in WHERE or an aggregating load)", "T3")
+        order = exp.Order(expressions=[exp.Ordered(this=x.copy(), desc=d) for x, d in self.ctx.order])
+        if name == "previous":
+            if len(e.args) != 1:
+                raise Untranslatable("Previous() with more than one argument", "T2")
+            if self.ctx.filtered:
+                raise Untranslatable("Previous() in a load with WHERE (it reads rows the WHERE drops)", "T3")
+            return exp.Window(this=exp.Lag(this=self._val(e.args[0])), order=order)
+        if not e.args or e.args[0].kind != "string" or len(e.args) > 2:
+            raise Untranslatable("Peek() with a field that is not a literal, or with a table name", "T3")
+        f = str(e.args[0].value)
+        row = -1
+        if len(e.args) == 2:
+            r = e.args[1]
+            neg = r.kind == "unop" and r.name == "-" and r.args and r.args[0].kind == "number"
+            if r.kind == "number" or neg:
+                row = -int(r.args[0].value) if neg else int(r.value)  # type: ignore[arg-type]
+            else:
+                raise Untranslatable("Peek() with a row number that is not a literal", "T3")
+        src = self.ctx.outputs.get(f)
+        if src is None:
+            raise Untranslatable(f"Peek('{f}'): {f} is not a field of this load", "T3")
+        if "peek(" in src.text.lower():
+            raise Untranslatable(f"Peek('{f}') of a field computed from Peek() (recursive, e.g. a running total)",
+                                 "T3")
+        val = self._val(src)
+        if row == 0:
+            return exp.Window(this=exp.FirstValue(this=val), order=order)
+        if row > 0:
+            raise Untranslatable("Peek() with a positive row number (a row counted from the start)", "T3")
+        return exp.Window(this=exp.Lag(this=val, offset=exp.Literal.number(-row)) if row != -1
+                          else exp.Lag(this=val), order=order)
+
     def _round(self, args: list[Expr]) -> SqlExpr:
         """Qlik Round(x [, step [, offset]]) rounds half up to a multiple of step: Floor((x - o) / s + 0.5) * s + o.
         SQL ROUND rounds half away from zero, so Round(-2.5) would give -3 instead of Qlik's -2."""
@@ -239,6 +287,8 @@ class Translator:
             return exp.column(self.ctx.row_column, table=self.ctx.alias, quoted=True)
         if name in FILE_FUNCTIONS:
             raise Untranslatable(f"{e.name}() reads file metadata at reload time", "T3")
+        if name in ("previous", "peek"):
+            return self._lookback(e)
         if name in ("date#", "timestamp#") and len(args) == 2:
             if args[1].kind != "string":
                 raise Untranslatable(f"{e.name}() with a non-literal format")

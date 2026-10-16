@@ -295,13 +295,19 @@ class ChartTranslator:
         values = []
         funcs = {a.name: a.func for a in aggs}
         for e, lbl in zip(rewritten, out.measures, strict=True):
-            v = self._value(e, funcs)
+            v = self._value(e, funcs, dim_cols if dims else None)
             values.append(v)
             sel.append(exp.alias_(v, lbl, quoted=True))
         q = q.select(*sel)
-        if dims:
+        if any(v.find(exp.Window) for v in values):
+            out.notes.append("Above(): rows in dimension order, ascending (the chart's sort is not known); measures "
+                             "over earlier rows do not hide a row when they are zero")
+            out.tier = "T2"
+        if dims and not all(v.find(exp.Window) for v in values):
             empties = []
             for v, num in zip(values, numeric, strict=True):
+                if v.find(exp.Window):
+                    continue  # a window cannot be filtered on in the same query; Qlik hides on the others too
                 c = v.copy()
                 empties.append(exp.or_(exp.Is(this=c, expression=exp.Null()),
                                        exp.EQ(this=v.copy(), expression=exp.Literal.number(0))) if num
@@ -339,12 +345,41 @@ class ChartTranslator:
     def _is_numeric(e: Expr) -> bool:
         if e.kind == "call":
             fn = (e.name or "").lower()
-            return fn in NUMERIC_AGGS or fn in ("if", "round", "fabs", "rangesum", "num")
+            return fn in NUMERIC_AGGS or fn in ("if", "round", "fabs", "rangesum", "num", "above")
         return e.kind in ("binop", "unop", "number")
 
-    def _value(self, e: Expr, funcs: dict[str, str]) -> SqlExpr:
-        tr = Translator(ExprContext(alias="__x", columns=None, mappings={}, variables=self.variables))
-        v = tr.value(e)
+    def _value(self, e: Expr, funcs: dict[str, str], dim_cols: list[str] | None = None) -> SqlExpr:
+        """The measure's SQL over the chart's rows. Above(x [, n]) and RangeSum(Above(x, 0, n)) become window
+        functions over the rows in dimension order (ascending: the export's sort is not known)."""
+        order = exp.Order(expressions=[exp.Ordered(this=exp.column(c, table="r", quoted=True))
+                                       for c in (dim_cols or [])])
+        windows: dict[str, SqlExpr] = {}
+
+        def lift(x: Expr) -> Expr:
+            name = (x.name or "").lower() if x.kind == "call" else ""
+            if name == "rangesum" and len(x.args) == 1 and (x.args[0].name or "").lower() == "above":
+                inner, off, n = _above_args(x.args[0])
+                if off != 0 or n is None:
+                    raise Untranslatable("RangeSum(Above()) that does not start at the current row", "T2")
+                key = f"__w{len(windows) + 1}"
+                windows[key] = exp.Window(this=exp.Sum(this=plain(lift(inner))), order=order.copy(),
+                                          spec=exp.WindowSpec(kind="ROWS", start=exp.Literal.number(n - 1),
+                                                              start_side="PRECEDING", end="CURRENT ROW"))
+                return Expr(kind="field", name=key, text=x.text)
+            if name == "above":
+                inner, off, n = _above_args(x)
+                if n not in (None, 1):
+                    raise Untranslatable("Above() over a range of rows outside RangeSum()", "T2")
+                key = f"__w{len(windows) + 1}"
+                lag = exp.Lag(this=plain(lift(inner)), offset=exp.Literal.number(off)) if off != 1 else \
+                    exp.Lag(this=plain(lift(inner)))
+                windows[key] = exp.Window(this=lag, order=order.copy())
+                return Expr(kind="field", name=key, text=x.text)
+            return x.model_copy(update={"args": [lift(a) for a in x.args]})
+
+        def plain(x: Expr) -> SqlExpr:
+            tr = Translator(ExprContext(alias="__x", columns=None, mappings={}, variables=self.variables))
+            return tr.value(x).transform(fix)
 
         def fix(n: SqlExpr) -> SqlExpr:
             if isinstance(n, exp.Column) and n.table == "__x" and n.name.startswith("__agg_"):
@@ -353,9 +388,11 @@ class ChartTranslator:
                 if funcs[n.name[2:]] in ("sum", "count"):
                     return exp.Coalesce(this=col, expressions=[exp.Literal.number(0)])
                 return col
+            if isinstance(n, exp.Column) and n.table == "__x" and n.name in windows:
+                return windows[n.name].copy()
             return n
 
-        return v.transform(fix)
+        return plain(lift(e))
 
     def _agg_cte(self, a: _Agg, dims: list[str]) -> tuple[exp.Select, set[str]]:
         root = a.table
@@ -462,6 +499,18 @@ class ChartTranslator:
                                        expression=exp.Literal.string(pat)))
         cond = exp.or_(*parts) if len(parts) > 1 else parts[0] if parts else exp.false()
         return exp.Not(this=exp.Paren(this=cond)) if op == "-=" else cond
+
+
+def _above_args(e: Expr) -> tuple[Expr, int, int | None]:
+    """Above(expr [, offset [, count]]): (expr, offset, count); offset and count must be literal numbers."""
+    if not e.args or len(e.args) > 3:
+        raise Untranslatable("Above() with no or too many arguments", "T2")
+    nums = []
+    for a in e.args[1:]:
+        if a.kind != "number" or not isinstance(a.value, int):
+            raise Untranslatable("Above() with a non-literal offset or count", "T2")
+        nums.append(a.value)
+    return e.args[0], (nums[0] if nums else 1), (nums[1] if len(nums) > 1 else None)
 
 
 def _indent(s: str) -> str:

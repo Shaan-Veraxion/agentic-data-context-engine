@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     run_budget_usd: float | None = None
     run_max_calls: int | None = None
     supervisor: str = "auto"  # auto | llm | rules
+    validation_tolerance: float = 0.0  # relative drift accepted when evidence and data are not aligned (PD: 0.005)
     orchestrator_mode: str = "inline"  # inline: the API runs the pipeline | worker: queued for orchestrator.worker
     # how agents reach the knowledge service: in-process (tests, CLI) or the kg-mcp service (ADR-2)
     kg_transport: Literal["inprocess", "mcp"] = "inprocess"

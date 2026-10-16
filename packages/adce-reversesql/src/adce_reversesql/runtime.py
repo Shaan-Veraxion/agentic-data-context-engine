@@ -6,6 +6,7 @@ recomputes the same SQL deterministically.
 from __future__ import annotations
 
 import re
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -92,7 +93,8 @@ def load_translation(store: ArtifactStore, bi_ir_key: str, translation_key: str 
     return Loaded(app=app, overrides=overrides, translation=compose(app, overrides))
 
 
-def local_venue_from_files(store: ArtifactStore, files: list[dict[str, Any]], workdir: str | None = None
+def local_venue_from_files(store: ArtifactStore, files: list[dict[str, Any]],
+                           workdir: str | Path | None = None
                            ) -> tuple[LocalVenue, dict[str, Path]]:
     """Load uploaded source extracts (class source_extract) and QVD files into a DuckDB local venue.
 
@@ -134,11 +136,19 @@ class LocalEvidence:
 def local_evidence(store: ArtifactStore, files: list[dict[str, Any]], app: BIApp) -> LocalEvidence:
     """Input QVDs are registered under their file name; QVDs the app stores also under the store target, so a
     table that reads a stored QVD back runs locally. Header-only QVDs still give row counts (V3)."""
+    tmp = Path(tempfile.mkdtemp(prefix="adce-local-"))
+    try:
+        return _local_evidence(store, files, app, tmp)
+    finally:  # DuckDB copied what it needs (CREATE TABLE AS): the extracted files are not needed any more
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _local_evidence(store: ArtifactStore, files: list[dict[str, Any]], app: BIApp, tmp: Path) -> LocalEvidence:
     from adce_qlik import parse_reload_log, read_qvd_header
 
     from .local import read_qvd
 
-    venue, qvd_paths = local_venue_from_files(store, files)
+    venue, qvd_paths = local_venue_from_files(store, files, tmp)
     logs = [f for f in files if f["class"] == "reload_log"]
     log = parse_reload_log(store.get(logs[-1]["key"]).decode("utf-8", errors="replace")) if logs else None
     targets = {PurePosixPath(s.target.replace("\\", "/")).name.lower(): s.target for s in app.stores}
@@ -167,10 +177,18 @@ def validator_from_files(store: ArtifactStore, files: list[dict[str, Any]], app:
     """A validator for the LLM pathway (ai_loop.Validator) built from uploaded files. With no data it still runs
     the SQL (V2) and reports no comparisons."""
     ev = local_evidence(store, files, app)
-    return make_validator(ev.venue, ev.log, ev.headers, ev.contents)
+    return make_validator(ev.venue, ev.log, ev.headers, ev.contents, table_fields(app))
 
 
-def make_validator(venue: LocalVenue, log: Any, headers: dict[str, Any], contents: dict[str, Any]) -> Any:
+def table_fields(app: BIApp) -> dict[str, list[str]]:
+    """Each Qlik table's fields, which V2 compares with the SQL's columns. Tables whose fields are not known (a
+    LOAD * with no QVD header or source columns: fields ["*"]) are left out."""
+    return {name: list(t.fields) for name, t in app.tables.items()
+            if t.fields and "*" not in t.fields and not t.mapping}
+
+
+def make_validator(venue: LocalVenue, log: Any, headers: dict[str, Any], contents: dict[str, Any],
+                   fields: dict[str, list[str]] | None = None) -> Any:
     """ai_loop.Validator over a local venue: the level reached and every failed comparison, worded the same way
     everywhere (the wording is part of the retry prompt, so recordings replay only if it is stable)."""
     from .local import NO_DATA
@@ -178,6 +196,9 @@ def make_validator(venue: LocalVenue, log: Any, headers: dict[str, Any], content
 
     def describe(c: Any) -> str:
         agg = c.subject.rsplit(".", 1)[-1]
+        if c.check == "schema":
+            return (f"columns differ from the Qlik table's fields: missing {sorted(set(c.expected) - set(c.actual))}, "
+                    f"extra {sorted(set(c.actual) - set(c.expected))}")
         if agg == "shapes":
             return (f"{c.subject}: value formats differ (a = a varying word, 9 = a number, other characters and "
                     f"words common to all values shown as they are): "
@@ -189,7 +210,7 @@ def make_validator(venue: LocalVenue, log: Any, headers: dict[str, Any], content
         return f"{c.check} {c.subject}: expected {c.expected}, got {c.actual}"
 
     def validate(t: Translation, table: str) -> tuple[str, list[str]]:
-        tv = Reconciler(t, venue, log, headers, contents).validate(table)
+        tv = Reconciler(t, venue, log, headers, contents, fields).validate(table)
         # sources with no local data stop the check, they do not contradict it: the model is not asked to fix them
         problems = [describe(c) for c in tv.comparisons if not c.ok] + [e for e in tv.errors if NO_DATA not in e]
         return (tv.level.name if tv.level >= 0 else "none"), problems

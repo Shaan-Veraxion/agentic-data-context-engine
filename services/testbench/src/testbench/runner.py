@@ -211,10 +211,16 @@ class Runner:
         self.variant = variant
         self.selected = selected or case.chain
         self.kg = kg or MemoryKG()  # pass a shared one to test memory across runs
-        self.tmp = Path(tempfile.mkdtemp(prefix="adce-bench-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="adce-bench-"))  # removed by close()
         self.store = LocalArtifactStore(self.tmp / "artifacts")
         self.state: dict[str, Any] = {}
         self.recordings: Path | None = None  # live runs: where answers are recorded (evaluation: a fresh folder)
+
+    def close(self) -> None:
+        """Remove the run's temporary store (the result already holds what the page shows)."""
+        import shutil
+
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def upload(self) -> list[dict[str, Any]]:
         files = []
@@ -564,7 +570,11 @@ def _diff(expected: list[tuple[Any, ...]], actual: list[tuple[Any, ...]]) -> tup
 
 async def run_case(case: Case, variant: Variant, selected: list[int] | None = None,
                    kg: MemoryKG | None = None) -> RunResult:
-    return await Runner(case, variant, selected, kg).run()
+    runner = Runner(case, variant, selected, kg)
+    try:
+        return await runner.run()
+    finally:
+        runner.close()
 
 
 def default_variants(case: Case) -> list[Variant]:

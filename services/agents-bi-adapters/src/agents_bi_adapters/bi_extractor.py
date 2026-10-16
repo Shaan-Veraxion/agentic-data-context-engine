@@ -36,7 +36,8 @@ class BIExtractor(BaseAgent):
         number=27, name="bi_extractor", version="0.1.0", kind=AgentKind.DETERMINISTIC,
         triggers=["upload.classified[bi_app]", "bi_inputs.received"], emits=["bi_ir.ready"],
         writes=["bi_table", "contains", "reads_source", "stores_qvd", "reads_qvd", "uses_mapping", "variable_value",
-                "loaded_rows", "qvd_header", "bi_coverage", "bi_issue", "bi_measure", "bi_visual"])
+                "loaded_rows", "qvd_header", "bi_coverage", "bi_issue", "bi_measure", "bi_visual",
+                "rls_requirement"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
         """job: {"files": [{"name", "key", "class"}]} as produced by the intake router."""
@@ -152,6 +153,13 @@ class BIExtractor(BaseAgent):
                                      value=app.coverage.model_dump() | {"ratio": round(app.coverage.ratio, 4)},
                                      evidence=[Evidence(kind="script_span", ref=f"{a}/{f}") for f in doc.files]),
                            result)
+        for at in app.section_access:  # Section Access: a row-level security requirement, never translated
+            await self.propose(ctx, Fact(kind="rls_requirement", subject=f"{app_key}/access:{at.name}",
+                                         trust=Trust.DOCUMENTED,
+                                         value={"table": at.name, "fields": at.fields,
+                                                "reduction_fields": at.reduction_fields},
+                                         evidence=ev(at.span) if at.span else
+                                         [Evidence(kind="script_span", ref=f"{a}/script")]), result)
         for i in app.issues:
             await self.propose(ctx, Fact(kind="bi_issue", subject=app_key, trust=Trust.DOCUMENTED,
                                          value={"code": i.code, "message": i.message, "statement": i.statement},

@@ -9,7 +9,10 @@ The SQL is rewritten on its syntax tree (sqlglot) and transpiled to DuckDB; resu
 """
 from __future__ import annotations
 
+import datetime as dt
+import hashlib
 import re
+from collections import OrderedDict
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -35,6 +38,10 @@ class MissingData(LookupError):
         super().__init__(f"{NO_DATA}{', '.join(self.sources)}")
 
 
+CACHE_SIZE, CACHE_ROWS = 4000, 5000
+_CACHE: OrderedDict[tuple[str, str, int], QueryResult] = OrderedDict()
+
+
 def _local(name: str) -> str:
     return re.sub(r"[^0-9a-zA-Z]+", "_", name).strip("_").lower()
 
@@ -58,6 +65,7 @@ class LocalVenue:
     def __init__(self) -> None:
         self.db = DuckDBSource()
         self.tables: dict[str, str] = {}  # logical key -> local table name
+        self._fp = hashlib.sha256()  # fingerprint of the data loaded (file contents), for the result cache
 
     # ------------------------------------------------------------------ loading
     def add_source_dir(self, root: str | Path) -> None:
@@ -72,11 +80,13 @@ class LocalVenue:
             else:
                 key = "sql:" + ".".join(parts).lower()
             name = "src__" + _local(".".join(parts))
+            self._fp.update(key.encode() + hashlib.sha256(f.read_bytes()).digest())
             self.db.load_file(name, f)
             self.tables[key] = name
 
     def add_qvd(self, qvd_path: str, file: str | Path) -> None:
         """qvd_path: the path as the script names it (lib://QVD/Orders.qvd); file: the local QVD file."""
+        self._fp.update(qvd_path.encode() + hashlib.sha256(Path(file).read_bytes()).digest())
         cols, rows = read_qvd(file)
         name = "qvd__" + _local(PurePosixPath(qvd_path.replace("\\", "/")).stem)
         self.db.load_rows(name, cols, rows)
@@ -121,8 +131,24 @@ class LocalVenue:
             raise MissingData(missing)
         return out.sql(dialect="duckdb")
 
+    def fingerprint(self) -> str:
+        """The data loaded, plus today's date (generated inputs such as a calendar run to today)."""
+        return self._fp.hexdigest()[:24] + ":" + dt.date.today().isoformat()
+
     def run(self, dremio_sql: str, label: str, max_rows: int = 100_000) -> QueryResult:
-        return self.db.run_query(self.to_local(dremio_sql), label=label, max_rows=max_rows)
+        """Results are cached by (data fingerprint, SQL): the graph validates tables again after every fix, and
+        the same query on the same data gives the same rows (small results only)."""
+        key = (self.fingerprint(), dremio_sql, max_rows)
+        hit = _CACHE.get(key)
+        if hit is not None:
+            _CACHE.move_to_end(key)
+            return hit
+        r = self.db.run_query(self.to_local(dremio_sql), label=label, max_rows=max_rows)
+        if len(r.rows) <= CACHE_ROWS:
+            _CACHE[key] = r
+            if len(_CACHE) > CACHE_SIZE:
+                _CACHE.popitem(last=False)
+        return r
 
     def scalar(self, dremio_sql: str, label: str) -> Any:
         return self.run(dremio_sql, label).rows[0][0]

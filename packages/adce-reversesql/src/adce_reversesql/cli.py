@@ -31,6 +31,7 @@ from adce_qlik.reload_log import ReloadLog
 from .compose import Translation, compose
 from .local import LocalVenue, read_qvd
 from .reconcile import Reconciler
+from .runtime import table_fields
 
 
 def _load(app_dir: Path) -> tuple[ReloadLog | None, BIApp]:
@@ -161,7 +162,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
     log, app = _load(d)
     t = _with_ai(d, app, log)[0] if args.ai else compose(app)  # type: ignore[arg-type]
     venue, heads, conts = _venue(d, app)
-    rec = Reconciler(t, venue, log, heads, conts)
+    rec = Reconciler(t, venue, log, heads, conts, table_fields(app))
     worst = 0
     for name, qt in app.tables.items():  # type: ignore[attr-defined]
         if qt.mapping or (qt.dropped_at is not None and not t.tables[name].stores):

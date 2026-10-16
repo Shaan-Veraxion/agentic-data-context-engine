@@ -51,7 +51,8 @@ def classify(failed: list[dict[str, Any]], errors: list[str]) -> dict[str, Any]:
             c = hits[0]
             return {"category": want, "route": ROUTES[want],
                     "detail": f"{c.get('subject')}: expected {c.get('expected')}, got {c.get('actual')}"}
-    for check, category in (("fields", "fields"), ("field_aggregate", "values"), ("mapping_keys", "mapping_keys")):
+    for check, category in (("schema", "fields"), ("fields", "fields"), ("field_aggregate", "values"),
+                            ("mapping_keys", "mapping_keys")):
         hits = [c for c in failed if c.get("check") == check]
         if hits:
             return {"category": category, "route": ROUTES[category],

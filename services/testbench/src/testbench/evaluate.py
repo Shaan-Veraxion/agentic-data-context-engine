@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,8 @@ async def run_trial(case: Case, arm: str, model: str = "") -> dict[str, Any]:
     outcomes = []
     if tr is not None and runner.state.get("translation_key"):
         outcomes = json.loads(runner.store.get(runner.state["translation_key"])).get("ai_outcomes", [])
+    runner.close()
+    shutil.rmtree(runner.recordings, ignore_errors=True)
     errors = [c["error"] for c in calls if c.get("error")]
     quota = any(s in e for e in errors for s in ("RateLimit", "rate_limit", "429", "every provider failed"))
     return {"case": case.id, "arm": arm, "status": r.status, "valid": not quota or r.status == "pass",

@@ -80,3 +80,38 @@ def test_a_failure_after_v2_is_reported_not_raised():
     r.venue = Failing(r.venue, "scalar")  # type: ignore[assignment]
     tv = r.validate("Orders")
     assert tv.level == Level.V2 and tv.errors == ["execution: Binder Error: column not found"]
+
+
+def test_v2_needs_the_qlik_tables_columns():
+    r = reconciler()
+    r.fields = {"Orders": ["OrderID", "NotThere"]}
+    tv = r.validate("Orders")
+    assert tv.level == Level.V1
+    schema = next(c for c in tv.comparisons if c.check == "schema")
+    assert not schema.ok and "NotThere" in schema.expected
+
+
+def test_counts_within_the_drift_tolerance_pass_but_are_never_exact():
+    from adce_reversesql.reconcile import DRIFT
+
+    r = reconciler()
+    h = next(iter(r.headers.values()))
+    off = next(k for k, v in r.headers.items() if v is h)
+    r.headers[off] = h.model_copy(update={"records": (h.records or 0) + 1})  # one row more than the SQL returns
+    assert not any(c.ok for c in r.validate("Orders").comparisons if c.check == "rows_store")
+    r.tolerance = 0.5
+    tv = r.validate("Orders")
+    store = [c for c in tv.comparisons if c.check == "rows_store"]
+    assert store and all(c.ok and c.basis == DRIFT for c in store) and not tv.exact
+    assert tv.summary()["exact"] is False
+    assert reconciler().validate("Orders").exact
+
+
+def test_null_counts_are_compared_and_results_are_cached():
+    from adce_reversesql import local
+
+    tv = reconciler().validate("Orders")
+    assert any(c.subject.endswith(".nulls") for c in tv.comparisons)
+    before = len(local._CACHE)
+    reconciler().validate("Orders")  # the same SQL on the same data: answered from the cache
+    assert len(local._CACHE) == before

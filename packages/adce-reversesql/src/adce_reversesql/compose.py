@@ -316,6 +316,15 @@ class Composer:
                 self.broken.add(target)
                 self.cur.pop(target, None)
                 return self._note_untranslated(r, step, str(e), e.tier)
+        if step.qualify:
+            if chain_cols is None:
+                self.broken.add(target)
+                self.cur.pop(target, None)
+                return self._note_untranslated(r, step, "QUALIFY over a load whose fields are not known", "T1")
+            sel = [exp.alias_(exp.column(c, quoted=True), step.qualify.get(c, c), quoted=True) for c in chain_cols]
+            chain_cols = [step.qualify.get(c, c) for c in chain_cols]
+            chain_cte = self._add(Cte(self._name(target, "_qualify"), exp.select(*sel).from_(exp.to_table(chain_cte)),
+                                      chain_cols, stmts, spans, "fields"))
         result = chain_cte
         if step.action == TableAction.MAPPING:
             self.mappings[target] = chain_cte
@@ -336,6 +345,8 @@ class Composer:
                    ) -> tuple[str, list[str] | None]:
         """Prefixes that reshape the loaded rows. CROSSTABLE(attribute, data[, n]) unpivots every column after the
         first n into (attribute = column name, data = value) rows; the others are not translated yet."""
+        if step.constructs == ["intervalmatch"]:
+            return self._intervalmatch(table, step, cte, cols)
         if step.constructs != ["crosstable"]:
             raise Untranslatable(f"{', '.join(step.constructs)} prefix", "T2")
         args = step.construct_args.get("crosstable", [])
@@ -358,6 +369,55 @@ class Composer:
         name = self._add(Cte(self._name(table, "_crosstable"), body, [*keep, args[0], args[1]], stmts,
                              [self._span(o) for o in step.ops], "crosstable"))
         return name, [*keep, args[0], args[1]]
+
+    def _intervalmatch(self, table: str, step: TableStep, cte: str, cols: list[str] | None
+                       ) -> tuple[str, list[str] | None]:
+        """IntervalMatch(F [, K1, ...]) LOAD Start, End [, K1, ...]: each value of F loaded so far (with its keys)
+        paired with every interval [Start, End] that contains it (bounds included, as in Qlik); the result has F,
+        then the loaded fields. Values come from the tables loaded before this statement that hold F (and the keys)."""
+        args = step.construct_args.get("intervalmatch", [])
+        if not args:
+            raise Untranslatable("IntervalMatch without a field", "T1")
+        field, keys = args[0], args[1:]
+        if cols is None or len(cols) < 2 + len(keys) or any(k not in cols for k in keys):
+            raise Untranslatable("IntervalMatch over a load whose start, end (and key) fields are not known", "T1")
+        start, end = [c for c in cols if c not in keys][:2]
+        holders = [c for c, _ in self._tables_holding([field, *keys])]
+        if not holders:
+            raise Untranslatable(f"IntervalMatch({field}): no table loaded before it holds {field}"
+                                 + (f" with {', '.join(keys)}" if keys else ""), "T2")
+        vals: SqlExpr = exp.select(*[exp.column(c, quoted=True) for c in (field, *keys)]).from_(
+            exp.to_table(holders[0]))
+        for h in holders[1:]:
+            vals = exp.union(vals, exp.select(*[exp.column(c, quoted=True) for c in (field, *keys)]).from_(
+                exp.to_table(h)), distinct=True)
+        v, i = "v", "i"
+        cond = exp.and_(exp.GTE(this=exp.column(field, table=v, quoted=True),
+                                expression=exp.column(start, table=i, quoted=True)),
+                        exp.LTE(this=exp.column(field, table=v, quoted=True),
+                                expression=exp.column(end, table=i, quoted=True)),
+                        *[exp.EQ(this=exp.column(k, table=v, quoted=True),
+                                 expression=exp.column(k, table=i, quoted=True)) for k in keys])
+        out_cols = [field, *cols]
+        body = exp.select(exp.column(field, table=v, quoted=True),
+                          *[exp.column(c, table=i, quoted=True) for c in cols]).distinct().from_(
+            exp.Subquery(this=vals, alias=exp.TableAlias(this=exp.to_identifier(v)))).join(
+            exp.Table(this=exp.to_identifier(cte), alias=exp.TableAlias(this=exp.to_identifier(i))),
+            on=cond, join_type="inner")
+        stmts = [o.statement for o in step.ops]
+        name = self._add(Cte(self._name(table, "_intervalmatch"), body, out_cols, stmts,
+                             [self._span(o) for o in step.ops], "intervalmatch"))
+        return name, out_cols
+
+    def _tables_holding(self, fields: list[str]) -> list[tuple[str, list[str]]]:
+        """Current versions of the data tables that hold every one of `fields`."""
+        out = []
+        for live, (cte, cols) in self.cur.items():
+            if live in self.mappings or live in self.broken or not cols:
+                continue
+            if all(f in cols for f in fields):
+                out.append((cte, cols))
+        return out
 
     def _note_untranslated(self, r: TableResult, step: TableStep, reason: str, tier: str) -> None:
         op = self._cur_op if self._cur_op is not None and self._cur_op in step.ops else step.ops[-1]
@@ -480,6 +540,18 @@ class Composer:
                           row_column="__row" if in_cte in self._generated else None,
                           field_sources=self._field_sources(), loading={f.name for f in op.fields if not f.star})
         tr = Translator(ctx)
+        if op.order_by:
+            ctx.order = [(tr.value(o), d) for o, d in zip(op.order_by, op.order_desc or [False] * len(op.order_by),
+                                                       strict=False)]
+        ctx.outputs = {f.name: f.expr for f in op.fields if f.expr is not None}
+        for f in op.fields:  # Peek() of a field computed from Peek() (running totals): recursive, not a window
+            for peeked in re.findall(r"(?i)\bpeek\s*\(\s*'([^']+)'", f.expr.text if f.expr else ""):
+                src = ctx.outputs.get(peeked)
+                if src is not None and re.search(r"(?i)\bpeek\s*\(", src.text):
+                    raise Untranslatable(f"Peek('{peeked}') of a field computed from Peek() (recursive, e.g. a "
+                                         "running total)", "T3")
+        ctx.filtered = op.where is not None
+        ctx.windows = not op.group_by
         proj: list[SqlExpr] = []
         out_cols: list[str] | None = []
         for f in op.fields:
@@ -497,6 +569,7 @@ class Composer:
                     out_cols.append(f.name)
         src = exp.Table(this=exp.to_identifier(in_cte), alias=exp.TableAlias(this=exp.to_identifier("src")))
         sel = exp.select(*proj).from_(src)
+        ctx.windows = False  # no Peek() / Previous() in WHERE or GROUP BY
         if op.distinct:
             sel = sel.distinct()
         if op.where is not None:

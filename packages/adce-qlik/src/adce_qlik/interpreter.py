@@ -5,6 +5,8 @@
 - FOR i = a TO b [STEP s] and FOR EACH v IN list: unrolled when the bounds/items are constants (max 200 iterations)
 - IF / ELSEIF / ELSE and SWITCH / CASE: the condition is evaluated when it is constant after expansion; otherwise
   every branch is kept, tagged with its condition, and flagged branch_not_evaluated
+- loops whose items are not constant (FOR EACH f IN FileList(...), bounds from data) are unrolled with the values
+  the reload log shows, one per echoed iteration (flagged loop_unrolled_from_log)
 - DO … LOOP: the body runs once and is flagged loop_not_unrolled
 - EXIT SCRIPT: stops execution (when reached unconditionally)
 Variables are expanded statement by statement; values Qlik computes at reload time are recovered from the log.
@@ -20,9 +22,9 @@ from adce_core.bi_ir import Issue, Statement, StatementKind as K, Variable, Vari
 from .classify import classify
 from .evaluate import NotEvaluable, as_text, evaluate_text, truthy
 from .libraries import library_call, library_of_include
-from .reload_log import ReloadLog
+from .reload_log import ReloadLog, strip_label
 from .splitter import RawStatement, split_script
-from .variables import ASSIGN, _candidates, _eval_let, _recover_from_log, _strip_set, expand
+from .variables import ASSIGN, _candidates, _eval_let, _norm, _recover_from_log, _strip_set, expand
 
 MAX_ITER = 200
 MAX_INCLUDE_DEPTH = 10
@@ -294,6 +296,12 @@ class _Runner:
                         x += step
                 except (NotEvaluable, ValueError):
                     items = None
+        if items is None and var is not None and self.log is not None and self.log.echo:
+            items = self._items_from_log(n, var)  # e.g. FOR EACH f IN FileList(...): the log shows each iteration
+            if items:
+                self.issues.append(Issue(statement=n.head.index, code="loop_unrolled_from_log", span=n.head.span,
+                                         message=f"loop unrolled with the {len(items)} values of {var} the reload log "
+                                                 f"shows: {', '.join(items[:5])}{' ...' if len(items) > 5 else ''}"))
         if items is None or var is None or len(items) > MAX_ITER:
             self.issues.append(Issue(statement=n.head.index, code="loop_not_unrolled", span=n.head.span,
                                      message=f"loop body modelled once: {text[:80]}"))
@@ -306,6 +314,31 @@ class _Runner:
             if self.stopped:
                 break
         self.env[var] = saved
+
+    def _items_from_log(self, n: LoopNode, var: str) -> list[str] | None:
+        """The values a loop variable took, read from the reload log: Qlik echoes the loop's body once per
+        iteration with the variable expanded, so each echo of a body statement that uses $(var) gives one value
+        (in the order the iterations ran). None when the log shows none."""
+        assert self.log is not None
+        target = next((b.st for b in n.body if isinstance(b, Simple) and f"$({var})" in b.st.text), None)
+        if target is None:
+            return None
+        start, end = target.span.start_line, target.span.end_line
+        runs: list[list[str]] = []  # one run of echo lines per iteration
+        for e in self.log.echo:
+            if not start <= e.line_no <= end:
+                continue
+            if e.line_no == start or not runs:
+                runs.append([])
+            runs[-1].append(e.text)
+        others = {k: v for k, v in self.env.items() if k != var}
+        template, _ = expand(target.text, others)
+        values: list[str] = []
+        for run in runs:
+            got = _recover_from_log(template, [_norm(strip_label("\n".join(run)))]).get(var)
+            if got is not None and got not in values:
+                values.append(got)
+        return values or None
 
     def _branches(self, n: IfNode, context: list[str], conditional: bool) -> None:
         subject = None

@@ -201,7 +201,7 @@ async def _main(argv: list[str] | None = None) -> int:
             await saver.setup()
             deps = Deps(kg=akg, artifacts=artifacts_from_settings(s), gateway=gateway_from_settings(s),
                         llm_tools=s.llm_tools, supervisor=s.supervisor, interactive=s.interactive_runs,
-                        budget_usd=s.run_budget_usd, max_calls=s.run_max_calls)
+                        budget_usd=s.run_budget_usd, max_calls=s.run_max_calls, tolerance=s.validation_tolerance)
             worker = Worker(queue, deps, saver, ReviewService(store, kg))
             if args.once:
                 print(json.dumps([{"id": r.id, "status": r.status} for r in await worker.drain()]))

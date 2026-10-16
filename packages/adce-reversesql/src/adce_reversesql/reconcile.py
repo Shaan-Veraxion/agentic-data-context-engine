@@ -1,4 +1,5 @@
-"""Validation ladder (agent 26, rule part): V0 parsed, V1 checked, V2 executes, V3 row counts, V4 data.
+"""Validation ladder (agent 26, rule part): V0 parsed, V1 checked, V2 executes with the Qlik table's columns, V3 row
+counts, V4 data.
 
 Row counts (V3): every load step with a reload-log count is compared, and stored tables are compared with the QVD
 header. Qlik's "lines fetched" is the number of rows read for the statement; when a preceding LOAD filters, the
@@ -6,6 +7,9 @@ rows kept can differ, so both the rows read (source) and the rows produced (chai
 matched is recorded.
 Data (V4): when the stored QVD's contents are available, per-field aggregates of the SQL result (computed by the
 venue's engine) are compared with the same aggregates of the QVD rows.
+Null counts are compared too (NULL and empty text both count as null, as Qlik shows them).
+Drift: when the evidence and the data are not from the same moment, counts and sums within a relative tolerance
+pass, labelled "within tolerance (drift)", and the table is not exact (TableValidation.exact).
 Every result names its venue; local results are never presented as Dremio results.
 """
 from __future__ import annotations
@@ -59,10 +63,29 @@ class TableValidation:
     comparisons: list[Comparison] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
+    @property
+    def exact(self) -> bool:
+        """No comparison passed only within the drift tolerance."""
+        return not any(c.basis == DRIFT for c in self.comparisons)
+
     def summary(self) -> dict[str, Any]:
         return {"table": self.table, "level": self.level.name if self.level >= 0 else "none", "venue": self.venue,
+                "exact": self.exact,
                 "rules": [{"name": r.name, "ok": r.ok, "message": r.message} for r in self.check.rules],
                 "comparisons": [c.__dict__ for c in self.comparisons], "errors": self.errors}
+
+
+DRIFT = "within tolerance (drift)"
+
+
+def within(expected: Any, actual: Any, tolerance: float) -> bool:
+    """Numbers that differ by at most `tolerance` (relative), used when the evidence and the data are not aligned in
+    time. Never true for an exact match (that is not drift) or when the tolerance is 0."""
+    if tolerance <= 0 or not isinstance(expected, int | float) or not isinstance(actual, int | float):
+        return False
+    if expected == actual:
+        return False
+    return abs(actual - expected) <= tolerance * max(abs(expected), 1)
 
 
 def _norm(v: Any) -> Any:
@@ -124,7 +147,7 @@ def _aggregates(cols: list[str], rows: list[tuple[Any, ...]],
         # shapes: distinct formats of text values, so a mismatch can be explained without showing data
         fingerprint = hashlib.sha256("\x1f".join(sorted(repr(v) for v in vals)).encode()).hexdigest()[:16]
         words = (keep or {}).get(c, frozenset())
-        out[c] = {"count": len(vals), "distinct": len(set(vals)),
+        out[c] = {"count": len(vals), "nulls": len(rows) - len(vals), "distinct": len(set(vals)),
                   "min": min(vals) if vals else None, "max": max(vals) if vals else None,
                   "sum": round(sum(vals), 6) if numeric else None,
                   "shapes": None if numeric else sorted({_shape(v, words) for v in vals})[:10],
@@ -135,8 +158,15 @@ def _aggregates(cols: list[str], rows: list[tuple[Any, ...]],
 class Reconciler:
     def __init__(self, t: Translation, venue: LocalVenue, log: ReloadLog | None = None,
                  qvd_headers: dict[str, QvdHeader] | None = None,
-                 qvd_contents: dict[str, tuple[list[str], list[tuple[Any, ...]]]] | None = None) -> None:
+                 qvd_contents: dict[str, tuple[list[str], list[tuple[Any, ...]]]] | None = None,
+                 fields: dict[str, list[str]] | None = None, tolerance: float = 0.0) -> None:
+        """fields: each Qlik table's fields (BI IR): V2 also needs the SQL to return exactly these columns.
+        tolerance: relative difference accepted for counts and sums when the evidence (reload log, QVDs) and the data
+        are not from the same moment (0 locally: the QVDs and the log come from the same reload); such results are
+        labelled within tolerance (drift), never exact."""
         self.t = t
+        self.fields = fields or {}
+        self.tolerance = tolerance
         self.venue = venue
         self.log = log
         self.headers = {self._k(k): v for k, v in (qvd_headers or {}).items()}
@@ -163,9 +193,14 @@ class Reconciler:
         try:
             # the whole result, not COUNT(*): an engine may skip computing columns a count does not need, and a
             # failing expression (e.g. a date that does not parse) must fail here
-            self.venue.run(self.t.render(r.final_cte or "", comments=False), f"v2:{table}")
+            res = self.venue.run(self.t.render(r.final_cte or "", comments=False), f"v2:{table}")
         except Exception as e:  # noqa: BLE001 - an execution failure is the V2 result
             tv.errors.append(f"execution: {str(e).splitlines()[0]}")
+            return tv
+        want = self.fields.get(table)
+        if want and set(res.columns) != set(want):  # V2: the columns the Qlik table has, no more, no fewer
+            tv.comparisons.append(Comparison("schema", table, sorted(want), sorted(res.columns), False, "bi_ir",
+                                             "the Qlik table's fields (BI IR)"))
             return tv
         tv.level = Level.V2
 
@@ -192,6 +227,9 @@ class Reconciler:
                     produced = self._count(step.chain_cte, f"v3:{tv.table}:chain") if step.chain_cte else None
                     read = self._count(step.source_cte, f"v3:{tv.table}:source") if step.source_cte else None
                     basis = "rows_read" if read == f.lines else "rows_produced" if produced == f.lines else ""
+                    if not basis and (within(f.lines, read, self.tolerance) or
+                                      within(f.lines, produced, self.tolerance)):
+                        basis = DRIFT
                     out.append(Comparison("rows_step", f"{step.action} {step.spans[0]}", f.lines,
                                           {"read": read, "produced": produced}, bool(basis), basis,
                                           f"reload log line {f.line_no}"))
@@ -199,8 +237,9 @@ class Reconciler:
             h = self.headers.get(self._k(target))
             if h is not None and h.records is not None:
                 n = self._count(cte, f"v3:{tv.table}:store")
-                out.append(Comparison("rows_store", target, h.records, n, n == h.records, "qvd_header",
-                                      f"QVD header of {target}"))
+                drift = within(h.records, n, self.tolerance)
+                out.append(Comparison("rows_store", target, h.records, n, n == h.records or drift,
+                                      DRIFT if drift else "qvd_header", f"QVD header of {target}"))
         tv.comparisons += out
         return out
 
@@ -220,12 +259,13 @@ class Reconciler:
             mine = _aggregates(res.columns, res.rows, keep)
             theirs = _aggregates(q_cols, q_rows, keep)
             for c in q_cols:
-                for agg in ("count", "distinct", "min", "max", "sum", "shapes", "values"):
+                for agg in ("count", "nulls", "distinct", "min", "max", "sum", "shapes", "values"):
                     e, a = theirs[c][agg], mine[c][agg]
                     if e is None and a is None:
                         continue
-                    out.append(Comparison("field_aggregate", f"{target}.{c}.{agg}", e, a, _same(e, a),
-                                          "qvd_contents", f"QVD contents of {target}"))
+                    drift = agg in ("count", "nulls", "distinct", "sum") and within(e, a, self.tolerance)
+                    out.append(Comparison("field_aggregate", f"{target}.{c}.{agg}", e, a, _same(e, a) or drift,
+                                          DRIFT if drift else "qvd_contents", f"QVD contents of {target}"))
         tv.comparisons += out
         return out
 

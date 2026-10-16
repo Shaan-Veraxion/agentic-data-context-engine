@@ -11,11 +11,13 @@ Qlik semantics implemented here:
 """
 from __future__ import annotations
 
+import fnmatch
 import re
 from pathlib import PurePosixPath
 
 import sqlglot
 from adce_core.bi_ir import (
+    AccessTable,
     BIApp,
     Coverage,
     FieldOp,
@@ -57,6 +59,11 @@ def _names(text: str) -> list[str]:
     return [unquote_name(n.strip()) for n in re.split(r",(?![^\[]*\])", text) if n.strip()]
 
 
+# Section Access system fields: everything else in an access table reduces the data model
+ACCESS_SYSTEM_FIELDS = {"ACCESS", "USERID", "PASSWORD", "NTNAME", "NTDOMAINSID", "NTSID", "SERIAL", "GROUP", "OMIT",
+                        "USER.EMAIL", "EMAIL"}
+
+
 class _Builder:
     def __init__(self, doc: ScriptDocument, sql_dialect: str | None, qvd_columns: dict[str, list[str]] | None = None,
                  connection_dialects: dict[str, str] | None = None) -> None:
@@ -71,6 +78,8 @@ class _Builder:
         self.stack: list[Statement] = []
         self.inferred_counter: dict[str, int] = {}
         self.failed_sources: set[int] = set()
+        self.section_access = False  # between Section Access and Section Application
+        self.qualify_rules: list[tuple[str, bool]] = []  # (field pattern, qualified?) in script order; last wins
 
     # ------------------------------------------------------------------ helpers
     def issue(self, st: Statement | None, code: str, message: str) -> None:
@@ -146,6 +155,12 @@ class _Builder:
             self._rename(st, text)
         elif k == K.CALL:
             self.issue(st, "call_not_expanded", "CALL of a SUB is not expanded yet (P1.4)")
+        elif k in (K.QUALIFY, K.UNQUALIFY):
+            body = re.sub(r"(?is)^\s*(un)?qualify\b", "", text).strip()
+            for name in _split_names(body):
+                self.qualify_rules.append((name, k == K.QUALIFY))
+        elif k == K.SECTION:
+            self.section_access = bool(re.match(r"(?i)\s*section\s+access\b", text))
 
     # ------------------------------------------------------------------ loads
     def _load(self, st: Statement, text: str) -> None:
@@ -218,11 +233,20 @@ class _Builder:
                     p.source.columns = known  # LOAD * RESIDENT T: T's fields at this point
             ops.append(LoadOp(statement=st.index, span=st.span, kind="sql" if is_sql else "load", fields=p.fields,
                               distinct=p.distinct, where=p.where, while_=p.while_, group_by=p.group_by,
+                              order_by=p.order_by, order_desc=p.order_desc,
                               source=p.source, text=st.expanded_text or st.text,
                               parse_error=parse_error if i == len(chain) - 1 else None))
             if p.source.kind in ("qvd", "file") and p.source.ref:
                 self.add_source(LogicalSource(connection=None, path=p.source.ref, kind=p.source.kind))
         fields = self._chain_fields(head, ops)
+        if self.section_access:  # an access table: a row-level security requirement, not a data table
+            name = head.label or f"access_{len(self.app.section_access) + 1}"
+            reduction = [f for f in fields if f.upper() not in ACCESS_SYSTEM_FIELDS and f != "*"]
+            self.app.section_access.append(AccessTable(name=name, fields=fields, reduction_fields=reduction,
+                                                       span=head.span))
+            self.issue(head, "section_access", f"Section Access table {name}: row-level security on "
+                       f"{', '.join(reduction) or 'no reduction field'}; recorded as a requirement, not translated")
+            return
         action, join_kind, target, constructs, noconcat, cargs = self._prefixes(head)
         if "crosstable" in constructs and "*" not in fields:
             fields = _crosstable_fields(fields, cargs.get("crosstable", []))
@@ -236,6 +260,7 @@ class _Builder:
 
         if action in (TableAction.JOIN, TableAction.CONCATENATE):
             name = target or self.last_table
+            fields = self._qualify(step, name or self._new_name(head, ops[-1].source))
             if name is None or name not in self.app.tables or self.app.tables[name].dropped_at is not None:
                 self.issue(head, "unknown_target", f"{action.value} target {name!r} not found")
                 name = self._new_name(head, ops[-1].source)
@@ -252,6 +277,7 @@ class _Builder:
             self.app.tables[name] = QlikTable(name=name, name_inferred=head.label is None, mapping=True,
                                               steps=[step], fields=fields)
             return
+        fields = self._qualify(step, name)
         if action == TableAction.KEEP:
             step.other_table = target or self.last_table
         elif not noconcat and not constructs and "*" not in fields:  # tiered prefixes reshape fields
@@ -280,6 +306,23 @@ class _Builder:
             name = f"{name}-{n}"
         self.app.tables[name] = QlikTable(name=name, name_inferred=head.label is None, steps=[step], fields=fields)
         self.last_table = name
+
+    def _qualify(self, step: TableStep, table: str) -> list[str]:
+        """QUALIFY: fields matching the rules in force are renamed Table.Field (UNQUALIFY exempts; the last rule that
+        matches a field wins). Records the renaming on the step (compose applies it) and returns the new fields."""
+        if not self.qualify_rules:
+            return step.fields
+        renamed = {}
+        for f in step.fields:
+            decision = None
+            for pattern, q in self.qualify_rules:
+                if fnmatch.fnmatchcase(f.lower(), pattern.lower()):
+                    decision = q
+            if decision and f != "*":
+                renamed[f] = f"{table}.{f}"
+        step.qualify = renamed
+        step.fields = [renamed.get(f, f) for f in step.fields]
+        return step.fields
 
     def _chain_fields(self, head: Statement, ops: list[LoadOp]) -> list[str]:
         below: list[str] = list(ops[-1].source.columns)
@@ -406,6 +449,16 @@ class _Builder:
                 if hit and t.dropped_at is None and not t.mapping:
                     t.field_ops.append(FieldOp(statement=st.index, kind="rename", renames=hit))
                 t.fields = [mapping.get(f, f) for f in t.fields]
+
+
+def _split_names(text: str) -> list[str]:
+    """QUALIFY / UNQUALIFY lists: names separated by commas, quoted or bracketed, '*' and '?' as wildcards."""
+    out = []
+    for part in re.split(r",(?=(?:[^\"']*[\"'][^\"']*[\"'])*[^\"']*$)", text):
+        p = part.strip().strip(";").strip()
+        if p:
+            out.append(unquote_name(p))
+    return out
 
 
 def _table_path(t: exp.Table) -> str:

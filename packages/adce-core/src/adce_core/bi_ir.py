@@ -175,6 +175,8 @@ class LoadOp(BaseModel):
     where: Expr | None = None
     while_: Expr | None = None
     group_by: list[Expr] = Field(default_factory=list)
+    order_by: list[Expr] = Field(default_factory=list)  # ORDER BY of a RESIDENT load: the row order Peek()
+    order_desc: list[bool] = Field(default_factory=list)  # and Previous() see
     source: LoadSource
     parse_error: str | None = None
     text: str = ""
@@ -200,6 +202,7 @@ class TableStep(BaseModel):
     constructs: list[str] = Field(default_factory=list)  # e.g. crosstable, generic (tier T2/T3)
     construct_args: dict[str, list[str]] = Field(default_factory=dict)  # crosstable -> [attribute, data, n]
     context: list[str] = Field(default_factory=list)  # enclosing IF / FOR / SUB headers
+    qualify: dict[str, str] = Field(default_factory=dict)  # QUALIFY: field -> Table.field (renamed after the load)
 
 
 class FieldOp(BaseModel):
@@ -285,6 +288,16 @@ class Visual(BaseModel):
     measures: list[VisualMeasure] = Field(default_factory=list)
 
 
+class AccessTable(BaseModel):
+    """A table loaded in Section Access: who may see which rows. Not data: it becomes a row-level security
+    requirement (CP-001 non-goal: never translated into SQL)."""
+
+    name: str
+    fields: list[str]
+    reduction_fields: list[str]  # fields that reduce the data model (the access fields other than USERID, ...)
+    span: SourceSpan | None = None
+
+
 class BIApp(BaseModel):
     """The BI IR for one application."""
 
@@ -302,6 +315,7 @@ class BIApp(BaseModel):
     measures: list[MasterMeasure] = Field(default_factory=list)
     dimensions: list[MasterDimension] = Field(default_factory=list)
     visuals: list[Visual] = Field(default_factory=list)
+    section_access: list[AccessTable] = Field(default_factory=list)  # row-level security requirements
 
     def data_tables(self) -> list[QlikTable]:
         return [t for t in self.tables.values() if not t.mapping and t.dropped_at is None]
