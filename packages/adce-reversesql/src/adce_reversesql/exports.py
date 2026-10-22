@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from adce_core.bi_ir import Visual
+from pydantic import BaseModel
 
 from .formats import FormatError, dremio_to_strftime, qlik_to_dremio
 
@@ -98,6 +99,55 @@ def read_export(path: str | Path, data: bytes | None = None) -> list[ExportTable
         t = _rows_to_table(p.name, p.stem, [list(r) for r in csv.reader(io.StringIO(text), delimiter=delim)])
         return [t] if t is not None else []
     raise ValueError(f"export format {suffix} is read by the parse_export AI route, not here")
+
+
+# ---------------------------------------------------------------------------------------------- agent 21: PDF
+MAX_PDF_PAGES = 20
+MAX_PDF_CHARS = 60_000  # what the parse_export route is given; a longer export is cut and flagged
+
+
+def pdf_pages(data: bytes) -> list[str]:
+    """The text of each page of a PDF export (layout kept where the PDF has it). Scanned PDFs have no text."""
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(data))
+    pages = []
+    for page in reader.pages[:MAX_PDF_PAGES]:
+        try:
+            pages.append(page.extract_text(extraction_mode="layout") or "")
+        except Exception:  # noqa: BLE001 - some PDFs fail in layout mode; plain extraction still works
+            pages.append(page.extract_text() or "")
+    return pages
+
+
+class ParsedTable(BaseModel):
+    """One table of figures the model read from a PDF export (route parse_export)."""
+
+    title: str = ""
+    page: int = 1
+    headers: list[str]
+    rows: list[list[str]]  # cells exactly as shown (numbers as text, in the report's format)
+    totals: list[str] | None = None  # the totals row, when the report shows one
+
+
+class ParsedExport(BaseModel):
+    """Structured output of the route parse_export."""
+
+    tables: list[ParsedTable] = []
+    notes: str = ""
+
+
+def tables_from_parsed(file: str, parsed: ParsedExport) -> list[ExportTable]:
+    """The model's tables as ExportTables; a table whose rows do not fit its headers is dropped."""
+    out = []
+    for i, t in enumerate(parsed.tables):
+        width = len(t.headers)
+        if not width or any(len(r) != width for r in t.rows) or (t.totals is not None and len(t.totals) != width):
+            continue
+        sheet = t.title.strip() or f"page {t.page} table {i + 1}"
+        out.append(ExportTable(file=file, sheet=sheet, headers=[h.strip() for h in t.headers],
+                               rows=[list(r) for r in t.rows], totals=list(t.totals) if t.totals else None))
+    return out
 
 
 # ---------------------------------------------------------------------------------------------- agent 22: map

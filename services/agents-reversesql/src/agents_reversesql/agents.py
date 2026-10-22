@@ -34,7 +34,8 @@ from adce_reversesql.chains import Inlined, choose, inline_producers, known_prod
 from adce_reversesql.charts import translate_charts
 from adce_reversesql.check import check_table
 from adce_reversesql.diagnose import classify
-from adce_reversesql.figures import check_exports
+from adce_reversesql.exports import ExportTable
+from adce_reversesql.figures import check_exports, check_tables
 from adce_reversesql.learned import load_memory, record_memory
 from adce_reversesql.reconcile import Level, Reconciler
 from adce_reversesql.resolve import Resolved, apply_mappings, known_mappings, mapping_key
@@ -362,7 +363,7 @@ class ReconcilerAgent(BaseAgent):
                        "sql_sha256": e["sql_sha256"]},
                 evidence=[Evidence(**x) for x in e["evidence"]]), result)
         venue = local_evidence(ctx.artifacts, files, loaded.app).venue
-        figures = await self._figures(ctx, result, loaded, venue, files)
+        figures = await self._figures(ctx, result, loaded, venue, files, job.get("exports"))
         report = [e["summary"] for e in entries]
         key = put_json(ctx.artifacts, f"apps/{ctx.app_id}/runs/{ctx.run_id}/validation.json", report)
         result.artifacts.append(key)
@@ -376,19 +377,29 @@ class ReconcilerAgent(BaseAgent):
         result.events.append("report_sql.validated")
 
     async def _figures(self, ctx: AgentContext, result: AgentResult, loaded: Any, venue: Any,
-                       files: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """V5: compare each exported report with the SQL of the chart it came from (local venue until phase PD)."""
-        exports = {f["name"]: ctx.artifacts.get(f["key"]) for f in files if f["class"] == "report_export"}
-        if not exports or not loaded.app.visuals:
+                       files: list[dict[str, Any]], parsed: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+        """V5: compare each exported report with the SQL of the chart it came from (local venue until phase PD).
+        parsed: agent 21's tables (in the graph; PDFs read by the model among them), else the files are read here."""
+        if not loaded.app.visuals:
             return []
+        if parsed is not None:
+            tables = [ExportTable(**json.loads(ctx.artifacts.get(e["key"]))) for e in parsed]
+            via = {(e["file"], e["sheet"]): e.get("via", "file") for e in parsed}
+            results = check_tables(loaded.app, loaded.translation, venue, tables)
+        else:
+            exports = {f["name"]: ctx.artifacts.get(f["key"]) for f in files if f["class"] == "report_export"}
+            if not exports:
+                return []
+            via, results = {}, check_exports(loaded.app, loaded.translation, venue, exports)
         out = []
         keys = {f["name"]: f["key"] for f in files}
-        for r in check_exports(loaded.app, loaded.translation, venue, exports):
+        for r in results:
             c = r.check
             entry: dict[str, Any] = {"export": r.file, "sheet": r.sheet,
                                      "visual": r.match.visual_id if r.match else None,
                                      "level": "V5" if r.level_v5 else ("compared" if c else "not compared"),
-                                     "venue": "local", "problems": r.problems}
+                                     "venue": "local", "problems": r.problems,
+                                     "read_by": via.get((r.file, r.sheet), "file")}
             if c is not None:
                 entry.update({"figures": c.figures, "matched": c.matched, "totals": c.totals_checked,
                               "totals_matched": c.totals_matched, "rows_expected": c.rows_expected,

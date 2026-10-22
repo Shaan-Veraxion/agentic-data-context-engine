@@ -2,7 +2,8 @@
 
 23 Join planner    associations between the final tables (shared field names), synthetic keys, circular references,
                    and the join tree each chart needs
-21 Report parser   reads exported reports (Excel, CSV) into tables of figures; other formats go to review
+21 Report parser   reads exported reports into tables of figures: Excel and CSV directly, PDF through the parse_export
+                   model route (its text; the figures are aggregates); images and scans go to review
 22 Metric mapper   matches each exported table to the chart that produced it, column by column; labels decide, the
                    map_metric AI route helps only when labels do not, and only with labels and expressions
 """
@@ -16,7 +17,15 @@ from adce_core.agent import AgentBudget, AgentContext, AgentKind, AgentResult, A
 from adce_core.artifacts import put_json
 from adce_core.facts import Evidence, Fact, Trust
 from adce_reversesql.charts import ChartTranslator, DataModel
-from adce_reversesql.exports import ExportTable, map_export, read_export
+from adce_reversesql.exports import (
+    MAX_PDF_CHARS,
+    ExportTable,
+    ParsedExport,
+    map_export,
+    pdf_pages,
+    read_export,
+    tables_from_parsed,
+)
 from adce_reversesql.expressions import Untranslatable
 from adce_reversesql.runtime import load_translation
 from pydantic import BaseModel
@@ -96,9 +105,14 @@ class ReportParser(BaseAgent):
         for f in job.get("files", []):
             if f["class"] != "report_export":
                 continue
+            data = ctx.artifacts.get(f["key"])
+            via = "file"
             try:
-                tables = read_export(f["name"], ctx.artifacts.get(f["key"]))
-            except ValueError as e:  # PDF, images: not read deterministically
+                if f["name"].lower().endswith(".pdf"):
+                    tables, via = await self._pdf(ctx, f["name"], data), "model"
+                else:
+                    tables = read_export(f["name"], data)
+            except ValueError as e:  # images, a PDF without a model or without text: a person reads it
                 await self.propose(ctx, Fact(kind="export_unreadable", subject=f"app:{ctx.app_id}",
                                              value={"file": f["name"], "reason": str(e)}, trust=Trust.DOCUMENTED,
                                              evidence=[Evidence(kind="export", ref=f["key"])]), result)
@@ -106,15 +120,43 @@ class ReportParser(BaseAgent):
             for t in tables:
                 key = put_json(ctx.artifacts, f"apps/{ctx.app_id}/runs/{ctx.run_id}/exports/"
                                f"{_safe(f['name'])}.{_safe(t.sheet)}.json", t.__dict__)
-                parsed.append({"file": f["name"], "sheet": t.sheet, "key": key})
+                parsed.append({"file": f["name"], "sheet": t.sheet, "key": key, "via": via})
                 await self.propose(ctx, Fact(
-                    kind="report_export", subject=export_key(ctx.app_id, f["name"], t.sheet), trust=Trust.DOCUMENTED,
-                    value={"headers": t.headers, "rows": len(t.rows), "totals": t.totals is not None},
+                    kind="report_export", subject=export_key(ctx.app_id, f["name"], t.sheet),
+                    trust=Trust.DOCUMENTED if via == "file" else Trust.INFERRED,
+                    value={"headers": t.headers, "rows": len(t.rows), "totals": t.totals is not None, "read_by": via},
                     evidence=[Evidence(kind="export", ref=f["key"], detail={"sheet": t.sheet})]), result)
         result.outputs["exports"] = parsed
-        result.metrics["tables"] = len(parsed)
+        result.metrics.update({"tables": len(parsed), "read_by_model": sum(1 for p in parsed if p["via"] == "model")})
         result.events.append("exports.parsed")
         return result
+
+    async def _pdf(self, ctx: AgentContext, name: str, data: bytes) -> list[ExportTable]:
+        """A PDF export: its text, read into tables of figures by the route parse_export (the figures are
+        aggregates, ADR-Q6). The model copies, never computes; a table whose rows do not fit its headers is
+        dropped (exports.tables_from_parsed)."""
+        from adce_gateway.gateway import BudgetExceeded, GatewayRefusal, OutputInvalid, ProviderError, ReplayMiss
+
+        if ctx.gateway is None:
+            raise ValueError("a PDF export is read by the parse_export model route; this run has no model")
+        pages = pdf_pages(data)
+        if not any(p.strip() for p in pages):
+            raise ValueError("the PDF has no text (a scan or an image): a person enters its figures")
+        text, used = [], 0
+        for p in pages:  # keep within what the route is given
+            text.append(p[: max(0, MAX_PDF_CHARS - used)])
+            used += len(text[-1])
+        try:
+            r = await ctx.gateway.call("parse_export", {"file": name, "pages": text}, ParsedExport,
+                                       task=f"{ctx.run_id}:export:{name}")
+        except (ReplayMiss, GatewayRefusal, OutputInvalid, ProviderError, BudgetExceeded) as e:
+            raise ValueError(f"the parse_export route could not read it: {type(e).__name__}") from e
+        out = r.output
+        assert isinstance(out, ParsedExport)
+        tables = tables_from_parsed(name, out)
+        if not tables:
+            raise ValueError(f"the model found no table of figures it could line up: {out.notes or 'no notes'}")
+        return tables
 
 
 class MetricChoice(BaseModel):

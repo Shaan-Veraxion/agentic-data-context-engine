@@ -371,7 +371,7 @@ def from_settings(settings: Any, budget: Budget | None = None, tracer: Tracer | 
     config = load_config(path) if path else default_config(getattr(settings, "vertex_region", "global"))
     if settings.gateway_mode != "replay" and not path and not settings.vertex_project:
         raise ValueError("outside replay mode set ADCE_GATEWAY_CONFIG, or ADCE_VERTEX_PROJECT for Claude on Vertex")
-    if tracer is None:
+    if tracer is None and settings.gateway_mode != "replay":  # replayed answers are not traced (no model call)
         from .tracing import langfuse_tracer
 
         tracer = langfuse_tracer()

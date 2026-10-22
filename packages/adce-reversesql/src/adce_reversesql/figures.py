@@ -7,7 +7,7 @@ from adce_core.bi_ir import BIApp
 
 from .charts import ChartSQL, ChartTranslator
 from .compose import Translation
-from .exports import ExportMatch, FigureCheck, compare, map_export, read_export
+from .exports import ExportMatch, ExportTable, FigureCheck, compare, map_export, read_export
 from .local import LocalVenue
 
 
@@ -27,9 +27,6 @@ class ExportResult:
 
 def check_exports(app: BIApp, t: Translation, venue: LocalVenue, exports: dict[str, bytes]) -> list[ExportResult]:
     """exports: file name -> content (.xlsx / .csv)."""
-    tr = ChartTranslator(app, t)
-    seps = {k: (app.variables[k].value or "") for k in ("ThousandSep", "DecimalSep", "DateFormat")
-            if k in app.variables}
     out: list[ExportResult] = []
     for name, data in sorted(exports.items()):
         try:
@@ -37,31 +34,43 @@ def check_exports(app: BIApp, t: Translation, venue: LocalVenue, exports: dict[s
         except ValueError as e:
             out.append(ExportResult(name, "", None, problems=[str(e)]))
             continue
-        for et in tables:
-            m = map_export(et, app.visuals)
-            res = ExportResult(name, et.sheet, m)
-            out.append(res)
-            if m.visual_id is None:
-                res.problems.append(f"not matched to a visual: {m.reason}")
-                continue
-            v = next(x for x in app.visuals if x.id == m.visual_id)
-            chart = tr.visual(v)
-            res.chart = chart
-            if not chart.complete or chart.sql is None:
-                res.problems += chart.untranslated or ["chart SQL not produced"]
-                continue
-            try:
-                result = venue.run(chart.sql, f"chart:{v.id}")
-                totals = None
-                if et.totals is not None:
-                    kpi = tr.visual(v, dims_override=[])
-                    if kpi.sql is not None and kpi.complete:
-                        rows = venue.run(kpi.sql, f"chart-totals:{v.id}").rows
-                        totals = rows[0] if rows else None
-            except Exception as e:  # noqa: BLE001 - reported as the export's problem, the run goes on
-                res.problems.append(f"chart SQL did not run locally: {type(e).__name__}: {str(e).splitlines()[0]}")
-                continue
-            res.check = compare(m, result.columns, [tuple(r) for r in result.rows], totals,
-                                thousand_sep=seps.get("ThousandSep") or ",", decimal_sep=seps.get("DecimalSep") or ".",
-                                date_format=seps.get("DateFormat"))
+        out += check_tables(app, t, venue, tables, name)
+    return out
+
+
+def check_tables(app: BIApp, t: Translation, venue: LocalVenue, tables: list[ExportTable],
+                 name: str | None = None) -> list[ExportResult]:
+    """Exported tables already read (agent 21: Excel, CSV, or a PDF read by the parse_export route), each compared
+    with the SQL of the chart it came from. name: the export's upload name (default: each table's file)."""
+    tr = ChartTranslator(app, t)
+    seps = {k: (app.variables[k].value or "") for k in ("ThousandSep", "DecimalSep", "DateFormat")
+            if k in app.variables}
+    out: list[ExportResult] = []
+    for et in tables:
+        m = map_export(et, app.visuals)
+        res = ExportResult(name or et.file, et.sheet, m)
+        out.append(res)
+        if m.visual_id is None:
+            res.problems.append(f"not matched to a visual: {m.reason}")
+            continue
+        v = next(x for x in app.visuals if x.id == m.visual_id)
+        chart = tr.visual(v)
+        res.chart = chart
+        if not chart.complete or chart.sql is None:
+            res.problems += chart.untranslated or ["chart SQL not produced"]
+            continue
+        try:
+            result = venue.run(chart.sql, f"chart:{v.id}")
+            totals = None
+            if et.totals is not None:
+                kpi = tr.visual(v, dims_override=[])
+                if kpi.sql is not None and kpi.complete:
+                    rows = venue.run(kpi.sql, f"chart-totals:{v.id}").rows
+                    totals = rows[0] if rows else None
+        except Exception as e:  # noqa: BLE001 - reported as the export's problem, the run goes on
+            res.problems.append(f"chart SQL did not run locally: {type(e).__name__}: {str(e).splitlines()[0]}")
+            continue
+        res.check = compare(m, result.columns, [tuple(r) for r in result.rows], totals,
+                            thousand_sep=seps.get("ThousandSep") or ",", decimal_sep=seps.get("DecimalSep") or ".",
+                            date_format=seps.get("DateFormat"))
     return out

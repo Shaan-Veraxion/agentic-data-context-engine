@@ -124,7 +124,9 @@ async def test_a_rerun_enters_at_translate_with_the_previous_runs_results(tmp_pa
     mapped: dict = dict(await run_pipeline(app_id="orders_local", run_id="r3", files=files,
                                             deps=Deps(kg=kg, artifacts=store), start_at="resolve", previous=previous,
                                             reuse_translation=True))
-    assert _nodes(mapped)[:4] == ["enter", "resolve", "scope", "synthesize"]
+    n = _nodes(mapped)  # translation reused: straight to the front-end agents (in parallel), then synthesize
+    assert n[:3] == ["enter", "resolve", "scope"] and "translate.prepare" not in n
+    assert sorted(n[3:6]) == ["measures", "plan_joins", "read_reports"] and n[6:8] == ["map_metrics", "synthesize"]
 
 
 def test_events_choose_the_earliest_node_they_need():

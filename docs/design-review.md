@@ -54,8 +54,8 @@ added the same day). See [code-guide.md](code-guide.md) section 4.
 ### 1.2 Agent responsibilities moved or not done
 
 **Status: fixed in step 1** for agents 25 (repair, route `repair_sql`) and 26 (diagnosis from classified
-mismatches; per-member grouped comparisons come with step 2). `classify_file`, `parse_export` and sending `kind:
-other` statements to a model remain open.
+mismatches; per-member grouped comparisons come with step 2). `parse_export` is called for PDF exports since step
+5d. `classify_file` and sending `kind: other` statements to a model remain open.
 
 | Design | Code |
 |---|---|
@@ -328,8 +328,13 @@ answers endpoint, re-entry at extract/resolve/translate, per-run budgets (`RunGa
 
 ### Step 5. Pack, evaluation, operations
 
-**In progress.** 5a (pack layout, versions, reproducibility), 5b (CI evaluation, Langfuse, OpenTelemetry) and 5c
-(cross-application QVD chains) are done on 2026-10-22; 5d (PDF exports, front-end agents in the graph) follows.
+**Done 2026-10-22.**
+- 5a: pack layout, versions, reproducibility.
+- 5b: CI evaluation, Langfuse, OpenTelemetry.
+- 5c: cross-application QVD chains.
+- 5d: PDF exports through `parse_export`; agents 21, 22, 23 and 29 as graph nodes, with V5 reading agent 21's tables.
+- The `-prj` reading was done earlier (2026-10-16).
+- Still open from this list: the real gold applications in CI (private), trace context over MCP.
 - Pack layout as in ADR-Q7, with model and prompt versions in the manifest, and a test that it regenerates identically.
 - CI runs the bench and a replayed gold-set evaluation; results into Langfuse; Langfuse and OpenTelemetry wired in
   every service.

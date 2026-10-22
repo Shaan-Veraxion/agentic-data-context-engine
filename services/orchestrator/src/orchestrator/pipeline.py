@@ -61,9 +61,11 @@ from adce_reversesql.ai_loop import (
 from adce_reversesql.compose import Untranslated
 from adce_reversesql.runtime import StatementTranslation, load_translation
 from agents_bi_adapters.bi_extractor import BIExtractor
+from agents_bi_adapters.expression_translator import ExpressionTranslator
 from agents_bi_adapters.script_translator import ScriptTranslator, TranslateWork
 from agents_ingestion.intake_router import IntakeRouter
 from agents_reversesql.agents import Publisher, QueryChecker, ReconcilerAgent, Synthesizer, output_tables
+from agents_reversesql.frontend_agents import JoinPlanner, MetricMapper, ReportParser
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
@@ -115,6 +117,7 @@ class PipelineState(_Required, total=False):
     questions: list[str]  # owner questions the supervisor may ask
     table: str  # set on a per-table branch (Send)
     out_tables: list[str]  # the tables the pack covers (agents.output_tables), set by synthesize
+    exports: list[dict[str, Any]]  # agent 21's tables of figures {file, sheet, key, via}; V5 compares them
     scope: dict[str, Any]  # a re-run's hints: what changed (orchestrator.scope.Hints)
     scope_tables: list[str]  # the tables this run validates (absent: every table)
     previous_validations_key: str  # the previous run's validation entries, reused for the other tables
@@ -166,7 +169,7 @@ def _t(node: str, **kw: Any) -> list[dict[str, Any]]:
 def _job(state: PipelineState) -> dict[str, Any]:
     return {"bi_ir_key": state.get("bi_ir_key"), "translation_key": state.get("translation_key"),
             "files": state.get("classified", []), "validation_key": state.get("validation_key"),
-            "figures_key": state.get("figures_key"),
+            "figures_key": state.get("figures_key"), "exports": state.get("exports"),
             "inputs": [{"name": f["name"], "sha256": f.get("sha256"), "class": f["class"]}
                        for f in state.get("classified", [])]}
 
@@ -229,8 +232,11 @@ async def resolve(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any
             "trace": _t("resolve", pending=len(pending))}
 
 
-def _after_scope(state: PipelineState) -> str:
-    return "synthesize" if state.get("reuse_translation") and state.get("translation_key") else "translate"
+FRONTEND = ["plan_joins", "measures", "read_reports"]  # agents 23, 29, 21 in parallel; then 22 (map_metrics)
+
+
+def _after_scope(state: PipelineState) -> Any:
+    return FRONTEND if state.get("reuse_translation") and state.get("translation_key") else "translate"
 
 
 async def scope(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
@@ -424,6 +430,37 @@ def build_translate_graph() -> StateGraph[PipelineState, Deps, TranslateIn, Pipe
 
 
 # ---------------------------------------------------------------- synthesize, check (per table), repair
+# ---------------------------------------------------------------- the front end: charts and exported reports
+async def _frontend(agent: BaseAgent, name: str, state: PipelineState, runtime: Runtime[Deps],
+                    job: dict[str, Any]) -> tuple[AgentResult, dict[str, Any]]:
+    r = await agent(job, _ctx(state, runtime))
+    m = {k: v for k, v in r.metrics.items() if k not in ("agent", "latency_ms")}
+    return r, {"events": r.events, "metrics": {name: r.metrics}, "trace": _t(name, **m)}
+
+
+async def plan_joins(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
+    """Agent 23: the data model behind the charts (associations, synthetic keys, cycles) and each chart's joins."""
+    return (await _frontend(JoinPlanner(), "plan_joins", state, runtime, _job(state)))[1]
+
+
+async def measures(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
+    """Agent 29: each chart measure as SQL; the route translate_expression for what the rules cannot do."""
+    return (await _frontend(ExpressionTranslator(), "measures", state, runtime, _job(state)))[1]
+
+
+async def read_reports(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
+    """Agent 21: exported reports into tables of figures (Excel, CSV; PDF through the route parse_export)."""
+    r, out = await _frontend(ReportParser(), "read_reports", state, runtime, _job(state))
+    return out | {"exports": r.outputs.get("exports", [])}
+
+
+async def map_metrics(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
+    """Agent 22, after 21 and 23: each exported table matched to the chart that produced it (labels; the route
+    map_metric when labels do not decide). The figure check (V5, record) then reads agent 21's tables."""
+    return (await _frontend(MetricMapper(), "map_metrics", state, runtime,
+                            _job(state) | {"exports": state.get("exports", [])}))[1]
+
+
 async def synthesize(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, Any]:
     r = await Synthesizer()(_job(state), _ctx(state, runtime))
     loaded = load_translation(runtime.context.artifacts, _need(state, "bi_ir_key"),
@@ -620,7 +657,9 @@ async def summarize(state: PipelineState, runtime: Runtime[Deps]) -> dict[str, A
 def build_graph() -> StateGraph[PipelineState, Deps, PipelineState, PipelineState]:
     g = StateGraph(PipelineState, context_schema=Deps)
     for name, fn in (("enter", enter), ("intake", intake), ("extract", extract), ("resolve", resolve),
-                     ("scope", scope), ("synthesize", synthesize), ("check_one", check_one), ("check_join", check_join),
+                     ("scope", scope), ("plan_joins", plan_joins), ("measures", measures),
+                     ("read_reports", read_reports), ("map_metrics", map_metrics),
+                     ("synthesize", synthesize), ("check_one", check_one), ("check_join", check_join),
                      ("repair", repair), ("reconcile_one", reconcile_one), ("supervisor", supervisor),
                      ("diagnose", diagnose), ("ask_owner", ask_owner), ("record", record), ("publish", publish),
                      ("summarize", summarize)):
@@ -631,8 +670,11 @@ def build_graph() -> StateGraph[PipelineState, Deps, PipelineState, PipelineStat
     g.add_edge("intake", "extract")
     g.add_conditional_edges("extract", _after_extract, ["resolve", END])
     g.add_edge("resolve", "scope")
-    g.add_conditional_edges("scope", _after_scope, ["translate", "synthesize"])
-    g.add_edge("translate", "synthesize")
+    g.add_conditional_edges("scope", _after_scope, ["translate", *FRONTEND])
+    for n in FRONTEND:  # after translation the front-end agents run in parallel, then agent 22 joins them
+        g.add_edge("translate", n)
+    g.add_edge(FRONTEND, "map_metrics")
+    g.add_edge("map_metrics", "synthesize")
     g.add_conditional_edges("synthesize", _fan_check, ["check_one", "check_join"])
     g.add_edge("check_one", "check_join")
     g.add_conditional_edges("check_join", _after_check, ["repair", "reconcile_one", "supervisor"])

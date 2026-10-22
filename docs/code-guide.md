@@ -41,12 +41,16 @@ a **supervisor** decides what to do next (fix a table, ask the owner, or publish
 more can be improved:
 
 ```
-files ─▶ intake (1) ─▶ extract (27) ─▶ resolve ─▶ translate (28) ─▶ synthesize (24) ─▶ check (25) per table
-                                                     subgraph                   ▲                │
-                                                                                │       repair (25) once
-                                                       correction ──────────────┤                ▼
-                                                                                │      reconcile (26) per table
-                                                     ask_owner ◀── supervisor ◀─┘◀───────────────┘
+files ─▶ intake (1) ─▶ extract (27) ─▶ resolve ─▶ translate (28) ─┬▶ plan_joins (23) ──┐
+                                                     subgraph      ├▶ measures (29) ────┼▶ map_metrics (22)
+                                                                   └▶ read_reports (21) ┘        │
+                                                                                                 ▼
+                                                                  ┌──────────────────────▶ synthesize (24)
+                                                                  │                              │
+                                                       correction │                    check (25) per table
+                                                                  │                     repair (25) once
+                                                                  │                    reconcile (26) per table
+                                                     ask_owner ◀── supervisor ◀──────────────────┘
                                                      (pauses)        │  └──▶ diagnose (26) ──▶ back to synthesize
                                                                      ▼
                                                 record (26) ─▶ publish (20) ─▶ summarize
@@ -58,6 +62,10 @@ files ─▶ intake (1) ─▶ extract (27) ─▶ resolve ─▶ translate (28)
 | 27 | extract | `BIExtractor` | Parses the script into the BI IR: tables, load steps, fields, sources, variables. |
 | – | resolve | (function) | Lists the database sources that still need a Dremio dataset. |
 | 28 | translate | `ScriptTranslator` | Turns every load statement into SQL: rules first, then memory, then the LLM (a subgraph, one node per step). |
+| 23 | plan_joins | `JoinPlanner` | The data model behind the charts (associations, synthetic keys, cycles) and each chart's joins. |
+| 29 | measures | `ExpressionTranslator` | Each chart measure as SQL; the LLM for what the rules cannot do. |
+| 21 | read_reports | `ReportParser` | Exported reports into tables of figures: Excel and CSV directly, PDF through the LLM. |
+| 22 | map_metrics | `MetricMapper` | Matches each exported table to the chart that produced it (labels; the LLM when labels do not decide). |
 | 24 | synthesize | `Synthesizer` | Writes one `.sql` file per table, with sources mapped to Dremio names. |
 | 25 | check, repair | `QueryChecker` | Rule checks per table; with a model, repairs a table that fails a blocking rule. |
 | 26 | reconcile, diagnose, record | `ReconcilerAgent` | Runs each table's SQL on local data, compares with the reload log and QVDs (V0 to V5), classifies each mismatch, corrects a contradicted statement with a model, records the results. |
@@ -223,6 +231,7 @@ The graph lives in [pipeline.py](../services/orchestrator/src/orchestrator/pipel
 | **Subgraph** | `build_translate_graph()`, added as node `translate` | agent 28's steps as their own nodes |
 | **Conditional edges** | `_route_start`, `_after_check`, `_after_supervisor`, `_tr_next`, ... | loops and branches decided from the state |
 | **`Send` fan-out** | `_fan_check`, `_fan_reconcile` | one `check_one` and one `reconcile_one` branch per table, joined before the next node |
+| **Parallel branches with a join** | `FRONTEND` edges after `translate` (or `scope` when the translation is reused), `add_edge(FRONTEND, "map_metrics")` | agents 23, 29 and 21 run at the same step; 22 runs when all three are done |
 | **Reducers** | `events`, `trace`, `decisions` (appended), `metrics`, `checks`, `validations` (merged) | parallel branches and loops add to the state without overwriting each other |
 | **`interrupt()` / `Command(resume=...)`** | `ask_owner`, `resume_pipeline` | pause the run for the data owner, continue with the answers |
 | **Runtime context** | `Deps` (`context_schema=Deps`) | dependencies that cannot be checkpointed |
@@ -740,7 +749,8 @@ user = inputs as JSON) → provider (primary, then fallbacks) → validate again
 - **Routes** ([routes.py](../packages/adce-gateway/src/adce_gateway/routes.py)) name a tier
   (`strong/standard/light`), effort, max tokens and prompt version. Agents name a route, never a model. In use:
   `translate_statement` (v3), `explain_gap`, `repair_sql` (v2), `diagnose_mismatch` (v2), `plan_next`,
-  `translate_expression`, `map_metric`; declared but not called: `classify_file`, `parse_export`.
+  `translate_expression`, `map_metric`, `parse_export` (PDF exports, section 11); declared but not called:
+  `classify_file`.
 - **Config** ([config.py](../packages/adce-gateway/src/adce_gateway/config.py), `deploy/gateway/*.toml`) maps tiers
   to `provider:model`, with fallbacks, prices and rate limits. The bench "Model" picker chooses one of these files.
 - **Providers** ([providers.py](../packages/adce-gateway/src/adce_gateway/providers.py)): Anthropic API, Vertex,
@@ -944,14 +954,39 @@ To make the system decide more over time, do one of these and watch the reversal
 
 ## 11. Front-end agents (charts, exports)
 
-These are **not in the LangGraph pipeline yet**. They run in the bench chain mode only.
+These four run in the graph after translation (nodes in [pipeline.py](../services/orchestrator/src/orchestrator/pipeline.py),
+section "the front end"): `plan_joins` (23), `measures` (29) and `read_reports` (21) in parallel, then `map_metrics`
+(22). A re-run that reuses the translation (a source mapping) goes from `scope` straight to them. The repair and
+diagnosis loops go back to `synthesize`, so these agents run once per run. Each node puts the agent's metrics in the
+trace; idle agents say why (`idle`: no chart objects, no exports).
 
-| # | Agent | File | Does |
-|---|-------|------|------|
-| 23 | `JoinPlanner` | [frontend_agents.py](../services/agents-reversesql/src/agents_reversesql/frontend_agents.py) | The data model's associations (shared field names), synthetic keys, cycles; join plans for charts |
-| 29 | `ExpressionTranslator` | [expression_translator.py](../services/agents-bi-adapters/src/agents_bi_adapters/expression_translator.py) | Chart measures → SQL aggregations (route `translate_expression` for the rest) |
-| 21 | `ReportParser` | frontend_agents.py | Reads exported reports (xlsx/csv) |
-| 22 | `MetricMapper` | frontend_agents.py | Matches report columns to chart measures (route `map_metric` when labels differ) |
+| # | Node | Agent | File | Does |
+|---|------|-------|------|------|
+| 23 | `plan_joins` | `JoinPlanner` | [frontend_agents.py](../services/agents-reversesql/src/agents_reversesql/frontend_agents.py) | The data model's associations (shared field names), synthetic keys, cycles; join plans for charts |
+| 29 | `measures` | `ExpressionTranslator` | [expression_translator.py](../services/agents-bi-adapters/src/agents_bi_adapters/expression_translator.py) | Chart measures → SQL aggregations (route `translate_expression` for the rest) |
+| 21 | `read_reports` | `ReportParser` | frontend_agents.py | Reads exported reports into tables of figures; the state's `exports` lists them `{file, sheet, key, via}` |
+| 22 | `map_metrics` | `MetricMapper` | frontend_agents.py | Matches report columns to chart measures (route `map_metric` when labels differ) |
+
+**PDF exports** (agent 21, `ReportParser._pdf`):
+
+1. `exports.pdf_pages` extracts the text of each page with pypdf (layout mode, up to 20 pages and 60,000
+   characters).
+2. The route `parse_export` ([prompt](../prompts/parse_export/v1.md)) returns `ParsedExport`: tables with headers,
+   rows and totals, each cell copied as printed, never computed.
+3. `tables_from_parsed` drops any table whose rows do not fit its headers.
+
+The route is the only one with `rows_allowed=True`: an export's figures are aggregates, which ADR-Q6 allows. A table
+read this way is recorded with `read_by: model` (fact `report_export`, trust inferred). A PDF goes to review
+(`export_unreadable`) when:
+
+- the run has no model;
+- the PDF has no text (a scan);
+- the route fails;
+- the model finds no table.
+
+**V5 in the graph.** `record` (agent 26, `_figures`) compares the tables agent 21 read (`check_tables`) with each
+chart's SQL, so a PDF export can reach V5 too. The figure entry says `read_by` (`file` or `model`). Without agent 21's
+tables (the bench chain mode), it reads the xlsx and csv files itself as before (`check_exports`).
 
 Chart SQL itself is built by [charts.py](../packages/adce-reversesql/src/adce_reversesql/charts.py)
 (`ChartTranslator`), which handles Qlik's association semantics (no fan-out, outer association, set analysis,
@@ -1121,9 +1156,8 @@ check that script for real, add sample data for those Atlas tables to the case (
 
 Be aware of these when you read specs:
 
-- Routes `classify_file` and `parse_export` have prompts but no callers; intake and report parsing are
-  deterministic.
-- Agents 21, 22, 23 and 29 are not in the LangGraph graph (bench chain mode only).
+- Route `classify_file` has a prompt but no caller; intake is deterministic.
+- Images of exports (png, jpg) and scanned PDFs are not read: a person enters their figures.
 - `DremioSource` is a stub; every validation is local until phase PD.
 - Translation is still composed for the whole application on a scoped re-run (it is one pure function of the BI IR
   and the overrides); only the model calls, checks and validation are limited to the affected tables.

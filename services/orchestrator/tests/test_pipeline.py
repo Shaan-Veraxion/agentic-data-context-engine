@@ -35,8 +35,10 @@ async def test_pipeline_without_checkpointer(tmp_path):
     out: dict = dict(await run_pipeline(app_id="sales_overview", run_id="r1", files=_upload(store),
                                          deps=Deps(kg=kg, artifacts=store)))
     assert out["status"] == "waiting_for_dremio"
-    assert out["events"] == ["upload.classified[bi_app]", "bi_ir.ready", "bi_transform.ready", "sql.candidates",
-                             "sql.checked", "report_sql.validated", "pack.published"]
+    ev = out["events"]  # the front-end agents (23, 29, 21 in parallel, then 22) between translation and synthesis
+    assert ev[:3] == ["upload.classified[bi_app]", "bi_ir.ready", "bi_transform.ready"]
+    assert sorted(ev[3:6]) == ["exports.parsed", "joins.planned", "measures.translated"] and ev[6] == "metrics.mapped"
+    assert ev[7:] == ["sql.candidates", "sql.checked", "report_sql.validated", "pack.published"]
     assert sorted(p["source"] for p in out["pending"]) == ["source:Dremio_Sales:sales.crm.customers",
                                                            "source:Dremio_Sales:sales.erp.orders_v2"]
     summary = get_json(store, out["metrics"]["summary_key"])

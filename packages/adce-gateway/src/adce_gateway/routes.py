@@ -35,7 +35,8 @@ ROUTES: dict[str, Route] = {r.name: r for r in [
     Route(name="translate_expression", tier="standard", effort="medium", max_tokens=8000),
     Route(name="repair_sql", tier="strong", effort="medium", max_tokens=12000, prompt_version="v2"),
     Route(name="diagnose_mismatch", tier="strong", effort="high", max_tokens=16000, prompt_version="v2"),
-    Route(name="parse_export", tier="standard", effort="medium", max_tokens=16000),
+    # an exported report's text holds its figures: aggregates, which ADR-Q6 allows (never source rows)
+    Route(name="parse_export", tier="standard", effort="medium", max_tokens=16000, rows_allowed=True),
     Route(name="classify_file", tier="light", effort=None, max_tokens=1000),
     Route(name="map_metric", tier="standard", effort="medium", max_tokens=8000),
     Route(name="explain_gap", tier="standard", effort="medium", max_tokens=6000),
