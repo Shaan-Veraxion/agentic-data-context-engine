@@ -152,8 +152,9 @@ def _fixed_core(xml: bytes) -> bytes:
 
 
 # ---------------------------------------------------------------- lineage
-def lineage_md(app_id: str, lin: dict[str, Any]) -> str:
-    """Readable lineage: what each table is built from and where it is stored, then the QVD chain."""
+def lineage_md(app_id: str, lin: dict[str, Any], producers: dict[str, dict[str, Any]] | None = None) -> str:
+    """Readable lineage: what each table is built from and where it is stored, then the QVD chain (producers: QVD
+    file -> the other application whose SQL was inlined for it)."""
     lines = [f"# Lineage of {app_id}", "", "Dremio datasets → Qlik tables → QVDs. Machine-readable: lineage.json "
              "(OpenLineage-shaped).", "", "| Table | Built from | Stored to |", "|---|---|---|"]
     qvd_made: dict[str, str] = {}
@@ -171,9 +172,14 @@ def lineage_md(app_id: str, lin: dict[str, Any]) -> str:
         lines.append(f"| {table}{dropped} | {', '.join(ins) or '-'} | {', '.join(outs) or '-'} |")
     if qvd_made or qvd_read:
         lines += ["", "## QVD chain", ""]
+        from adce_reversesql.chains import qvd_key
+
         for q in sorted(set(qvd_made) | set(qvd_read)):
             producer = qvd_made.get(q)
-            by = f"made by {producer}" if producer else "made outside this application (producer not supplied)"
+            other = (producers or {}).get(qvd_key(q))
+            by = (f"made by {producer}" if producer else
+                  f"made by application {other['app_id']} (table {other['table']}; its SQL is inlined)" if other else
+                  "made outside this application (producer not supplied)")
             readers = ", ".join(sorted(qvd_read.get(q, []))) or "not read here"
             lines.append(f"- `{q}`: {by}; read by {readers}")
     return "\n".join(lines) + "\n"

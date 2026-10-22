@@ -26,6 +26,11 @@ FUNCTIONAL = {"resolves_to": "dataset", "variable_value": "value", "primary_key"
 GATED = {"report_sql", "resolves_to", "primary_key", "rls_requirement"}
 
 
+def _qvd_file(path: str) -> str:
+    """A QVD path compared by file name, case-insensitive (adce_reversesql.chains.qvd_key)."""
+    return path.replace("\\", "/").strip().strip("'\"[]").rsplit("/", 1)[-1].lower()
+
+
 def _tokens(x: Any) -> int:
     return max(1, len(json.dumps(x, default=str)) // 4)
 
@@ -46,10 +51,17 @@ async def lineage(kg: Any, key: str, direction: str = "upstream", depth: int = 5
     """Lineage facts walked from a table: upstream (what it is derived from) or downstream (what derives from it).
     Each step: the table, its inputs and outputs (OpenLineage names)."""
     facts = {f.subject: f for f in await kg.facts(kind="lineage")}
-    by_output: dict[str, list[str]] = {}
+    by_output: dict[str, list[str]] = {}  # table name -> tables that read it (same application)
+    qvd_makers: dict[str, list[str]] = {}  # QVD file -> tables that store it (any application)
+    qvd_readers: dict[str, list[str]] = {}  # QVD file -> tables that read it (any application)
     for subject, f in facts.items():
         for i in f.value.get("inputs", []):
             by_output.setdefault(i.get("name", ""), []).append(subject)
+            if i.get("namespace") == "qvd://":
+                qvd_readers.setdefault(_qvd_file(i.get("name", "")), []).append(subject)
+        for o in f.value.get("outputs", []):
+            if o.get("namespace") == "qvd://":
+                qvd_makers.setdefault(_qvd_file(o.get("name", "")), []).append(subject)
     out, seen, todo = [], {key}, deque([(key, 0)])
     while todo:
         k, d = todo.popleft()
@@ -58,11 +70,15 @@ async def lineage(kg: Any, key: str, direction: str = "upstream", depth: int = 5
             continue
         out.append({"table": k, "depth": d, "inputs": f.value.get("inputs", []), "outputs": f.value.get("outputs", [])})
         app = k.split("/table:")[0]
-        if direction == "upstream":
+        if direction == "upstream":  # the tables it reads, and through a QVD the table that stored it (any app)
             nxt = [f"{app}/table:{i['name']}" for i in f.value.get("inputs", []) if i.get("namespace", "").startswith(
                 "qlik://")]
-        else:
-            nxt = by_output.get(k.split("/table:")[-1], [])
+            nxt += [m for i in f.value.get("inputs", []) if i.get("namespace") == "qvd://"
+                    for m in qvd_makers.get(_qvd_file(i.get("name", "")), []) if m != k]
+        else:  # the tables that read it in its app, and those that read a QVD it stores (any app)
+            nxt = [n for n in by_output.get(k.split("/table:")[-1], []) if n.split("/table:")[0] == app]
+            nxt += [r for o in f.value.get("outputs", []) if o.get("namespace") == "qvd://"
+                    for r in qvd_readers.get(_qvd_file(o.get("name", "")), []) if r != k]
         for n in nxt:
             if n not in seen:
                 seen.add(n)

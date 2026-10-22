@@ -15,11 +15,13 @@ after its saved position, works out which applications each event affects, and r
 | fact.rejected report_sql                | that application (the model is asked again, with the reason)     |
 | fact.proposed translation_memory        | the applications that relied on the answer (learned or passed    |
 |   with status disproved                 | there): they stop using it                                       |
+| fact.proposed qvd_produced              | the other applications reading that QVD: the producer's SQL they |
+|                                         | inline changed (ADR-Q4 QVD chains)                               |
 
 Each re-run enters the graph at the first node the change affects, with the last run's summary (orchestrator
-pipeline, re-entry): a variable's value at extract (the script is read again), a source mapping at resolve (the
-translation is reused: only the SQL's source names change), everything else at translate. Without an earlier
-run the application runs from the start.
+pipeline, re-entry): a variable's value at extract (the script is read again), a source mapping or a producer's
+changed QVD at resolve (the translation is reused: only the SQL's sources change), everything else at translate.
+Without an earlier run the application runs from the start.
 
 Each re-run validates only the tables the change affects and those downstream (orchestrator.scope); the other
 tables keep the previous run's validation.
@@ -84,6 +86,10 @@ class PostgresCursor:
         self.con.close()
 
 
+def _qvd_file(path: str) -> str:
+    return path.removeprefix("qvd:").replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
 def _app(subject: str) -> str | None:
     return subject.removeprefix("app:").split("/")[0] if subject.startswith("app:") else None
 
@@ -123,6 +129,11 @@ async def affected(kg: KGPort, events: list[dict[str, Any]]) -> dict[str, list[s
                     add(_app(f.subject), f"source mapped: {subject}")
         elif topic == "fact.rejected" and kind == "report_sql":
             add(_app(subject), "reviewer rejected SQL")
+        elif topic == "fact.proposed" and kind == "qvd_produced":
+            qvd = subject.removeprefix("qvd:")
+            for f in await kg.facts(kind="reads_qvd"):
+                if f.object and _qvd_file(f.object) == qvd and _app(f.subject) != value.get("app_id"):
+                    add(_app(f.subject), f"producer changed: {qvd} ({value.get('app_id')})")
         elif topic == "fact.proposed" and kind == "translation_memory" and value.get("status") == "disproved":
             key = memory_key(value.get("statement", ""), value.get("input_columns"))
             users = {f.value.get("app_id") for f in await kg.facts(kind="memory_check", subject=f"memory:{key}")
@@ -136,7 +147,7 @@ async def affected(kg: KGPort, events: list[dict[str, Any]]) -> dict[str, list[s
 
 
 # why an application re-runs -> where the graph is entered (pipeline order: extract < resolve < translate)
-ENTRY_FOR = {"variable value": "extract", "source mapped": "resolve"}
+ENTRY_FOR = {"variable value": "extract", "source mapped": "resolve", "producer changed": "resolve"}
 ORDER = ["extract", "resolve", "translate"]
 
 

@@ -353,13 +353,17 @@ answering, budget used) stops translation; the next run tries again.
 #### synthesize → agent 24 `Synthesizer`
 [agents.py](../services/agents-reversesql/src/agents_reversesql/agents.py)
 
-- For each output table (still in the data model, or stored to a QVD) it renders the SQL, then
-  `apply_mappings` ([resolve.py](../packages/adce-reversesql/src/adce_reversesql/resolve.py)) swaps
-  placeholders (`__file__`, `__qvd__`, `__generated__`, bare database tables) for Dremio datasets from confirmed
-  `resolves_to` facts or the case's `dremio_sources`. The SQL starts with a comment listing what is still
-  unmapped.
-- Writes: `apps/<app>/runs/<run>/sql/<table>.sql`, `sql_candidate` facts (`unmapped`, `unqualified`, `mapped`),
-  chart SQL (`chart_sql`). Sets `out_tables` (the tables the pack covers) for the fan-out.
+- For each output table (still in the data model, or stored to a QVD) it renders the SQL and turns it into the SQL
+  that runs in Dremio with `DremioSql` (in agents.py, shared with agent 20), in two steps:
+  1. **QVD chains** (section 4.7): every `"__qvd__"."<file>"` whose producer is another application is replaced by
+     that application's CTE chain;
+  2. `apply_mappings` ([resolve.py](../packages/adce-reversesql/src/adce_reversesql/resolve.py)) swaps the
+     remaining placeholders (`__file__`, `__qvd__`, `__generated__`, bare database tables) for Dremio datasets from
+     confirmed `resolves_to` facts or the case's `dremio_sources`. The SQL starts with a comment listing what is
+     still unmapped.
+- Writes: `apps/<app>/runs/<run>/sql/<table>.sql`, `sql_candidate` facts (`unmapped`, `unqualified`, `mapped`,
+  `inlined_qvds`, `missing_producers`), chart SQL (`chart_sql`). Sets `out_tables` (the tables the pack covers) for
+  the fan-out. Metrics `qvds_inlined`, `producers_missing`.
 - Runs again after every accepted repair or diagnosis.
 
 #### check_one ×N, check_join → agent 25 `QueryChecker`
@@ -506,6 +510,41 @@ Write `async def mynode(state, runtime) -> dict` returning only the keys it chan
 ...)`), register it in `build_graph()`, connect it with `add_edge` or a conditional edge (a router reads the state
 and returns the next node's name, or a list of `Send` for a fan-out). Keep the state plain data; put objects that
 cannot be serialised in `Deps.work` and make them rebuildable.
+
+### 4.7 QVD chains across applications
+
+[chains.py](../packages/adce-reversesql/src/adce_reversesql/chains.py) (ADR-Q4 §3). Qlik applications pass data
+through QVD files: one stores a table, others load it. Dremio has no QVDs, so a consumer's SQL must compute what the
+producer stored.
+
+1. **Producers are recorded.** After each run, agent 20 proposes one `qvd_produced` fact per QVD the application
+   stores (`produced_facts`): subject `qvd:<file>` (the file name, lower case, without folder: `qvd_key`), value
+   `{app_id, table, path, sql, complete}`, where `sql` is the stored version of the table rendered before mappings.
+2. **A producer is chosen per QVD** (`known_producers`, then `choose`): another application's latest fact. With
+   several producers, the one the QVD header's `CreatorDoc` names (compared with the application ids), or the one a
+   reviewer confirmed; otherwise the QVD is **ambiguous**.
+3. **Inlined** (`inline_producers`): `"__qvd__"."<file>"` becomes a CTE `qvd__<file>` holding the producer's final
+   SELECT, preceded by the producer's CTEs renamed `<producer app>__<cte>`. A producer that reads a QVD of a third
+   application is expanded the same way (up to `MAX_DEPTH` = 5; a cycle stops), so the final SQL reads only database
+   sources. A QVD a reviewer mapped to a dataset (`resolves_to` on `qvd:<path>`) is left to the mapping.
+4. **What stays open**: a QVD with no producer, an ambiguous one, a cycle. They stay placeholders, and the pack's
+   `review/open-items.md` names them with the creator the header gives. Sources that the inlined producers read and
+   that have no dataset yet are listed as unmapped for the consumer too.
+5. **Local validation is unchanged**: a consumer is compared with the QVD contents it was given (V4). Inlining only
+   changes the SQL that runs in Dremio (agent 24's SQL and the pack).
+
+Across applications:
+
+- **Lineage and impact**: `queries.lineage` walks through QVDs. Upstream goes from a reader to the table that stores
+  the file, in any application; downstream goes from a table to every reader of a QVD it stores. The impact of an
+  SQL gate (section 9) therefore counts consumer tables in other applications.
+- **Order**: `learning.qvd_order` puts producers before consumers (`chains.order_apps`, from `stores_qvd` and
+  `reads_qvd` facts). `rerun_all` uses it.
+- **Multi-application scope**: `POST /runs {apps: [...]}` runs a set of applications in that order. The links are
+  only known after a first run, so a consumer that ran before its producer runs again from `resolve` with its
+  translation reused. With the worker, one request per application is queued in order.
+- **Re-runs**: a new `qvd_produced` fact (the producer's stored SQL changed) re-runs the other applications that
+  read that QVD, from `resolve`, validating only the tables that read it (`events.affected`, `scope.hints_from_events`).
 
 ---
 
@@ -1089,6 +1128,8 @@ Be aware of these when you read specs:
 - Translation is still composed for the whole application on a scoped re-run (it is one pure function of the BI IR
   and the overrides); only the model calls, checks and validation are limited to the affected tables.
 - The QlikView -prj reader is checked on synthetic samples only.
+- QVD chains match producers and consumers by file name. Two different folders holding files of the same name would
+  be taken for one QVD; a reviewer's mapping of the QVD (or the QVD-linkage gate's confirmation) resolves it.
 - Prompts do not include the context pack yet (agents read it; section 8). The auto-reviewer accepts only the kinds
   in `AUTO_KINDS`; other facts routed `auto` still wait in the queue.
 - Reviewer decisions are reused as examples by agent 28 only (translation memory and overrides). The other agents

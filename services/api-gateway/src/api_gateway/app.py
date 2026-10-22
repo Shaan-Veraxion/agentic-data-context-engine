@@ -104,6 +104,10 @@ def run_view(run_id: str, out: Any, new_items: int) -> dict[str, Any]:
     return view
 
 
+class ScopeRunRequest(BaseModel):
+    apps: list[str]  # applications run together, producers of QVDs first
+
+
 class RunRequest(BaseModel):
     app_name: str | None = None
     files: list[str] | None = None  # artifact keys; default: every file uploaded for the app
@@ -191,6 +195,48 @@ def create_app(svc: Services | None = None, cors_origins: list[str] | None = Non
     async def list_files(app_id: str, s: Services = Depends(services),
                          _p: Principal = Depends(require("viewer"))) -> list[dict[str, str]]:
         return [{"name": upload_name(k), "key": k} for k in s.artifacts.list(f"uploads/{check_app_id(app_id)}/")]
+
+    @app.post("/runs")
+    async def start_scope_run(req: ScopeRunRequest, s: Services = Depends(services),
+                              _p: Principal = Depends(require("reviewer"))) -> dict[str, Any]:
+        """Run several applications as one scope (ADR-Q4 QVD chains): producers of QVDs before their consumers, so
+        each consumer's SQL inlines its producers' latest SQL. Links are known after a first run; a consumer that
+        ran before its producer runs again from `resolve` (its translation reused)."""
+        from orchestrator.learning import latest_summary, qvd_order, qvd_producers
+
+        apps = [check_app_id(a) for a in dict.fromkeys(req.apps)]
+        uploads = {a: s.artifacts.list(f"uploads/{a}/") for a in apps}
+        if missing := [a for a, k in uploads.items() if not k]:
+            raise HTTPException(409, f"no files uploaded for {', '.join(missing)}")
+        order = await qvd_order(s.kg, apps)
+        if s.queue is not None:  # one request per app, in order (one worker runs them in that order)
+            runs = []
+            for a in order:
+                run_id = uuid.uuid4().hex[:12]
+                files = [{"name": upload_name(k), "key": k} for k in uploads[a]]
+                runs.append({"app_id": a, "run_id": run_id, "status": "queued",
+                             "request_id": s.queue.put("run", a, run_id, {"files": files})})
+            return {"order": order, "runs": runs}
+
+        async def run_one(a: str, start_at: str | None = None) -> dict[str, Any]:
+            run_id = uuid.uuid4().hex[:12]
+            files = [{"name": upload_name(k), "key": k} for k in uploads[a]]
+
+            async def run(kg: Any) -> Any:
+                prev = latest_summary(s.artifacts, a) if start_at else None
+                return await run_pipeline(app_id=a, run_id=run_id, files=files, deps=s.deps(kg),
+                                          checkpointer=s.checkpointer, start_at=start_at if prev else None,
+                                          previous=prev, reuse_translation=bool(prev))
+
+            out = await with_agents_kg(s, run)
+            return {"app_id": a, **run_view(run_id, out, await s.review.refresh(a))}
+
+        runs = [await run_one(a) for a in order]
+        producers = await qvd_producers(s.kg, apps)  # known now that every app has run
+        late = [a for a in order if any(order.index(p) > order.index(a) for p in producers[a])]
+        for a in late:  # ran before one of its producers: inline the producer's SQL now
+            runs.append(await run_one(a, "resolve") | {"again": "a producer ran after it"})
+        return {"order": await qvd_order(s.kg, apps), "runs": runs}
 
     @app.post("/apps/{app_id}/runs")
     async def start_run(app_id: str, req: RunRequest, s: Services = Depends(services),

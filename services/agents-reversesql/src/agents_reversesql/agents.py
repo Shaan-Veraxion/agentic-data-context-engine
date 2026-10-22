@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass, field
 from typing import Any
 
 from adce_core.agent import (
@@ -29,13 +30,14 @@ from adce_core.agent import (
 from adce_core.artifacts import put_json
 from adce_core.facts import Evidence, Fact, Trust
 from adce_reversesql.ai_loop import diagnose_table, failed_rules, repair_table
+from adce_reversesql.chains import Inlined, choose, inline_producers, known_producers, produced_facts, qvd_key
 from adce_reversesql.charts import translate_charts
 from adce_reversesql.check import check_table
 from adce_reversesql.diagnose import classify
 from adce_reversesql.figures import check_exports
 from adce_reversesql.learned import load_memory, record_memory
 from adce_reversesql.reconcile import Level, Reconciler
-from adce_reversesql.resolve import apply_mappings, known_mappings
+from adce_reversesql.resolve import Resolved, apply_mappings, known_mappings, mapping_key
 from adce_reversesql.runtime import (
     load_translation,
     local_evidence,
@@ -66,6 +68,50 @@ def output_tables(loaded: Any) -> list[str]:
     return out
 
 
+@dataclass
+class DremioSql:
+    """Turns a translation's SQL into the SQL that runs in Dremio: producer applications' QVDs inlined (ADR-Q4 §3),
+    then every source renamed to its Dremio dataset."""
+
+    mappings: dict[str, str]
+    producers: dict[str, Any]
+    ambiguous: dict[str, list[str]]
+    creators: dict[str, str]
+    inlined: dict[str, dict[str, Any]] = field(default_factory=dict)  # QVD file -> producer (over all SQL)
+    missing: set[str] = field(default_factory=set)
+    unresolved: set[str] = field(default_factory=set)  # sources the final SQL still reads by their Qlik name
+
+    @classmethod
+    async def load(cls, kg: Any, app_id: str, seeded: dict[str, str] | None = None) -> DremioSql:
+        producers = await known_producers(kg, consumer=app_id)
+        creators = {qvd_key(f.subject.removeprefix("qvd:")): str(f.value.get("creator_doc"))
+                    for f in await kg.facts(kind="qvd_header") if f.value.get("creator_doc")}
+        chosen, ambiguous = choose(producers, creators)
+        return cls(await known_mappings(kg, seeded), chosen, ambiguous, creators)
+
+    def __call__(self, sql: str) -> tuple[Resolved, Inlined]:
+        inl = inline_producers(sql, self.producers, self.ambiguous,
+                               {k for k in self.mappings if k.startswith("qvd:")})
+        for i in inl.inlined:
+            self.inlined[i["qvd"]] = i
+        self.missing |= set(inl.missing) | set(inl.ambiguous)
+        res = apply_mappings(inl.sql, self.mappings)
+        self.unresolved |= {u for u in res.unmapped if not u.startswith("qvd:")} | {f"sql:{u}" for u in res.unqualified}
+        return res, inl
+
+    def missing_report(self) -> list[str]:
+        """Each QVD read without a producer, with the creator its header names."""
+        out = []
+        for q in sorted(self.missing):
+            if q in self.ambiguous:
+                out.append(f"{q}: made by several applications ({', '.join(self.ambiguous[q])}); confirm which "
+                           "(QVD-linkage gate) or map the QVD to a dataset")
+            else:
+                who = f" (its header says it is created by {self.creators[q]})" if q in self.creators else ""
+                out.append(f"{q}{who}")
+        return out
+
+
 class Synthesizer(BaseAgent):
     spec = AgentSpec(number=24, name="sql_synthesizer", version="0.1.0", kind=AgentKind.HYBRID,
                      triggers=["bi_transform.ready", "joins.planned"], emits=["sql.candidates"],
@@ -75,15 +121,16 @@ class Synthesizer(BaseAgent):
         result = AgentResult()
         loaded = load_translation(ctx.artifacts, job["bi_ir_key"], job.get("translation_key"))
         sql_keys = {}
-        mappings = await known_mappings(ctx.kg, job.get("source_map"))
+        dremio = await DremioSql.load(ctx.kg, ctx.app_id, job.get("source_map"))
         pending: dict[str, list[str]] = {}
         mapped_all: set[str] = set()
         for name in output_tables(loaded):
             sql = loaded.translation.table_sql(name)
             if sql is None:
                 continue
-            # the Dremio names of the sources (reviewer map decisions; until then the SQL says what is missing)
-            res = apply_mappings(sql, mappings)
+            # producers' QVDs inlined, then the Dremio names of the sources (reviewer map decisions; until then the
+            # SQL says what is missing)
+            res, inl = dremio(sql)
             sql = res.sql
             pending[name] = res.unmapped + [f"sql:{u}" for u in res.unqualified]
             mapped_all |= set(res.mapped)
@@ -95,7 +142,8 @@ class Synthesizer(BaseAgent):
                 kind="sql_candidate", subject=table_key(ctx.app_id, name), trust=Trust.INFERRED,
                 value={"sql_sha256": hashlib.sha256(sql.encode()).hexdigest(), "final_cte": r.final_cte,
                        "dialect": "dremio", "unmapped": res.unmapped, "unqualified": res.unqualified,
-                       "mapped": res.mapped},
+                       "mapped": res.mapped, "inlined_qvds": inl.inlined,
+                       "missing_producers": inl.missing + sorted(inl.ambiguous)},
                 evidence=[Evidence(kind="artifact", ref=key)]), result)
         chart_keys = {}
         for c in translate_charts(loaded.app, loaded.translation):
@@ -104,7 +152,7 @@ class Synthesizer(BaseAgent):
                                      "untranslated": c.untranslated}
             evidence = [Evidence(kind="app_object", ref=f"{ctx.app_id}/visual:{c.visual_id}")]
             if c.sql:
-                chart = apply_mappings(c.sql, mappings).sql
+                chart = dremio(c.sql)[0].sql
                 key = ctx.artifacts.put(f"apps/{ctx.app_id}/runs/{ctx.run_id}/sql/charts/{c.visual_id}.sql",
                                         chart.encode(), "application/sql")
                 chart_keys[c.visual_id] = key
@@ -115,7 +163,8 @@ class Synthesizer(BaseAgent):
         result.outputs.update({"sql_keys": sql_keys, "chart_keys": chart_keys,
                                "needs_dremio_dataset": sorted({s for v in pending.values() for s in v})})
         result.metrics.update({"sources_mapped": len(mapped_all),
-                               "sources_unmapped": len({s for v in pending.values() for s in v})})
+                               "sources_unmapped": len({s for v in pending.values() for s in v}),
+                               "qvds_inlined": len(dremio.inlined), "producers_missing": len(dremio.missing)})
         result.events.append("sql.candidates")
         return result
 
@@ -386,7 +435,8 @@ def lineage(app_id: str, loaded: Any) -> dict[str, Any]:
 
 class Publisher(BaseAgent):
     spec = AgentSpec(number=20, name="publisher_lite", version="0.1.0", kind=AgentKind.DETERMINISTIC,
-                     triggers=["report_sql.validated"], emits=["pack.published"], writes=["pack_published", "lineage"],
+                     triggers=["report_sql.validated"], emits=["pack.published"],
+                     writes=["pack_published", "lineage", "qvd_produced"],
                      group="definition", hitl_modes=["gate"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
@@ -396,22 +446,25 @@ class Publisher(BaseAgent):
         loaded = load_translation(ctx.artifacts, job["bi_ir_key"], job.get("translation_key"))
         validation = json.loads(ctx.artifacts.get(job["validation_key"])) if job.get("validation_key") else []
         figures = json.loads(ctx.artifacts.get(job["figures_key"])) if job.get("figures_key") else []
-        mappings = await known_mappings(ctx.kg, job.get("source_map"))
+        dremio = await DremioSql.load(ctx.kg, ctx.app_id, job.get("source_map"))
         body: dict[str, bytes] = {}
         for name in output_tables(loaded):
             sql = loaded.translation.table_sql(name)
             if sql:
-                body[f"sql/tables/{name}.sql"] = apply_mappings(sql, mappings).sql.encode()
+                body[f"sql/tables/{name}.sql"] = dremio(sql)[0].sql.encode()
         charts = translate_charts(loaded.app, loaded.translation)
         for ch in charts:
             if ch.sql:
-                body[f"sql/measures/{ch.visual_id}.sql"] = apply_mappings(ch.sql, mappings).sql.encode()
+                body[f"sql/measures/{ch.visual_id}.sql"] = dremio(ch.sql)[0].sql.encode()
         lin = lineage(ctx.app_id, loaded)
         body["lineage/lineage.json"] = json.dumps(lin, indent=2, sort_keys=True).encode()
-        body["lineage/lineage.md"] = pack.lineage_md(ctx.app_id, lin).encode()
+        body["lineage/lineage.md"] = pack.lineage_md(ctx.app_id, lin, dremio.inlined).encode()
         body["validation/report.md"] = pack.validation_md(validation, figures).encode()
         body["validation/report.xlsx"] = pack.validation_xlsx(validation, figures)
         knowledge = await self._knowledge(ctx, loaded, lin)
+        knowledge["missing_producers"] = dremio.missing_report()
+        # what the final SQL reads that has no dataset yet, including sources of inlined producers
+        knowledge["unmapped"] = sorted({mapping_key(s) for s in knowledge["unmapped"]} | dremio.unresolved)
         body["review/untranslated.csv"] = pack.untranslated_csv(loaded, charts)
         body["review/decisions.csv"] = pack.decisions_csv(knowledge["decisions"])
         body["review/open-items.md"] = pack.open_items_md(
@@ -447,6 +500,10 @@ class Publisher(BaseAgent):
                                          value={"inputs": job_["inputs"], "outputs": job_["outputs"],
                                                 "dropped": job_["dropped"]},
                                          evidence=[Evidence(kind="bi_ir", ref=job["bi_ir_key"])]), result)
+        for q in produced_facts(ctx.app_id, loaded.translation):  # what this app stores, for its consumers (ADR-Q4)
+            ev = [Evidence(kind="bi_ir", ref=job["bi_ir_key"])]
+            await self.propose(ctx, Fact(kind="qvd_produced", subject=q["subject"], value=q["value"],
+                                         trust=Trust.DOCUMENTED, evidence=ev), result)
         await self.propose(ctx, Fact(kind="pack_published", subject=f"app:{ctx.app_id}", trust=Trust.DOCUMENTED,
                                      value={"run_id": ctx.run_id, "pack": name, "version": version,
                                             "reused": bool(same), "files": sorted(files), "prefix": base},
@@ -466,10 +523,6 @@ class Publisher(BaseAgent):
         decisions = [f for f in mine + decided if "_decided_by" in f.value or f.kind == "auto_accepted"]
         mapped = {f.subject for f in decided if f.trust == Trust.CONFIRMED}
         unmapped = sorted({s for s in read if s.startswith("source:")} - mapped)
-        made = {o["name"] for j in lin["jobs"] for o in j["outputs"] if o["namespace"] == "qvd://"}
-        read_qvds = {i["name"] for j in lin["jobs"] for i in j["inputs"] if i["namespace"] == "qvd://"}
-        linked = {f.value.get("qvd") for f in mine if f.kind == "qvd_linkage"}
-        missing = sorted(q for q in read_qvds - made if q not in linked and f"qvd:{q}" not in linked)
         not_approved = sorted(f.subject.split("/table:")[-1] for f in mine
                               if f.kind == "report_sql" and f.trust != Trust.CONFIRMED)
         models: dict[tuple[str, str], int] = {}
@@ -478,7 +531,7 @@ class Publisher(BaseAgent):
             if m:
                 k = (str(m), str(f.prompt_version or f.value.get("prompt_version") or ""))
                 models[k] = models.get(k, 0) + 1
-        return {"decisions": decisions, "unmapped": unmapped, "missing_producers": missing,
+        return {"decisions": decisions, "unmapped": unmapped,
                 "not_approved": not_approved,
                 "models": [{"model": m, "prompt_version": p, "facts": n} for (m, p), n in sorted(models.items())]}
 

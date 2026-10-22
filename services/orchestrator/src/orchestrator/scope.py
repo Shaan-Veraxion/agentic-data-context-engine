@@ -74,6 +74,10 @@ async def hints_from_events(kg: KGPort, events: list[dict[str, Any]], apps: dict
         elif topic == "fact.confirmed" and kind == "resolves_to":
             for a in out:
                 out[a].sources.add(subject)
+        elif topic == "fact.proposed" and kind == "qvd_produced":  # the tables reading that QVD
+            for a in out:
+                if a != value.get("app_id"):
+                    out[a].sources.add(subject)
         elif topic == "fact.rejected" and kind == "report_sql" and app in out and _table(subject):
             out[app].tables.add(_table(subject) or "")
         elif topic == "fact.proposed" and kind == "translation_memory" and value.get("status") == "disproved":

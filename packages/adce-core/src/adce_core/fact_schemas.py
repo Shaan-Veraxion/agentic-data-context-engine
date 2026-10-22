@@ -71,6 +71,7 @@ REQUIRED: dict[str, set[str]] = {
     "scope_confirmed": {"files", "decision"},
     "qvd_linkage": {"qvd", "decision"},
     "auto_accepted": {"fact_id"},
+    "qvd_produced": {"app_id", "table", "path", "sql"},
     # knowledge service (kg-mcp)
     "conflict": {"facts", "reason"},
     "context": {"text"},

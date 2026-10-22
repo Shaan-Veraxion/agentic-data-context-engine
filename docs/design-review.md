@@ -187,6 +187,14 @@ samples only). GENERIC, Hierarchy and recursive Peek stay T3.
 
 ### 1.9 Source resolution and QVD chains
 
+**Status 2026-10-22 (step 5c): QVD chains done.**
+- Producers are recorded as `qvd_produced` facts and inlined into their consumers' Dremio SQL, recursively.
+- A missing or ambiguous producer is named in the pack.
+- Lineage, gate impact and event re-runs cross applications.
+- `POST /runs` runs a multi-application scope with producers first.
+- See [chains.py](../packages/adce-reversesql/src/adce_reversesql/chains.py) and code-guide 4.7.
+- The connection mapping table (Seed) is still entered source by source; the Sources page edits it in bulk.
+
 - **Cross-application QVD chains are not followed.** The design inlines the producer application's CTE chain so the
   consumer's SQL reads only Dremio datasets, and names a missing producer in the pack (TD §9.3, ADR-Q4). The code
   handles QVDs stored and read **within one application**; the QVD header's `CreatorDoc` is recorded but never used to
@@ -320,8 +328,8 @@ answers endpoint, re-entry at extract/resolve/translate, per-run budgets (`RunGa
 
 ### Step 5. Pack, evaluation, operations
 
-**In progress.** 5a (pack layout, versions, reproducibility) and 5b (CI evaluation, Langfuse, OpenTelemetry) are done
-on 2026-10-22; 5c (cross-application QVD chains) and 5d (PDF exports, front-end agents in the graph) follow.
+**In progress.** 5a (pack layout, versions, reproducibility), 5b (CI evaluation, Langfuse, OpenTelemetry) and 5c
+(cross-application QVD chains) are done on 2026-10-22; 5d (PDF exports, front-end agents in the graph) follows.
 - Pack layout as in ADR-Q7, with model and prompt versions in the manifest, and a test that it regenerates identically.
 - CI runs the bench and a replayed gold-set evaluation; results into Langfuse; Langfuse and OpenTelemetry wired in
   every service.
