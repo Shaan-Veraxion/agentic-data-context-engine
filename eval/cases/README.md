@@ -75,7 +75,7 @@ expect:
   translate:  {untranslated: 0, ai_status: {T: ai_validated}}
   synthesize: {sql_contains: {T: ['"shop"."raw"."orders"']}}
   check:      {failing: {T: [rule names]}}              # blocking rule failures expected (default none)
-  publish:    {files: [..], pack_contains: {validation.md: ["..."]}}
+  publish:    {files: [..], pack_contains: {validation/report.md: ["..."]}}
   <step>:     {metrics: {name: value}}                  # any agent's metrics: joins, measures, reports, metrics, ...
 ```
 

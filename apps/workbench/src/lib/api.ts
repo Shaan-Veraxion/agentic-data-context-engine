@@ -26,7 +26,7 @@ export type Overview = {
   tables: TableRow[];
   issues: { code: string; message: string; statement: number | null }[];
   open_review_items: number;
-  latest_pack: { run_id: string; files: string[]; prefix: string } | null;
+  latest_pack: { run_id: string; pack?: string; version?: number; files: string[]; prefix: string } | null;
 };
 
 export type ReviewItem = {
@@ -170,7 +170,7 @@ export const api = {
       headers: headers(true),
       body: JSON.stringify({ app_name: appName || null }),
     }),
-  packFileUrl: (app: string, run: string, path: string) => `${API}/apps/${app}/packs/${run}/files/${path}`,
+  packFileUrl: (app: string, pack: string, path: string) => `${API}/apps/${app}/packs/${pack}/files/${path}`,
 };
 
 export const LEVELS = ["V0", "V1", "V2", "V3", "V4", "V5"];

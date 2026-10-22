@@ -13,7 +13,7 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never UV_PROJECT
 COPY pyproject.toml uv.lock ./
 COPY packages packages
 COPY services services
-RUN uv sync --frozen --no-dev --all-packages --no-editable
+RUN uv sync --frozen --no-dev --all-packages --all-extras --no-editable
 
 FROM python:3.12-slim
 RUN useradd --system --uid 10001 --home /app adce

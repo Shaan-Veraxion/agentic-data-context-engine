@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
+from adce_core import telemetry
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
@@ -146,4 +147,5 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="ADCE hitl-service", version="0.1.0", lifespan=_lifespan)
+telemetry.instrument(app, "hitl-service")
 app.include_router(create_router(_service, _reviewer))

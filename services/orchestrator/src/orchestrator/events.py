@@ -193,6 +193,9 @@ class EventConsumer:
 
 
 async def _main(argv: list[str] | None = None) -> int:
+    from adce_core import telemetry
+
+    telemetry.setup("orchestrator-events")
     p = argparse.ArgumentParser(prog="orchestrator.events", description=__doc__,
                                 formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("command", choices=["once", "run"])

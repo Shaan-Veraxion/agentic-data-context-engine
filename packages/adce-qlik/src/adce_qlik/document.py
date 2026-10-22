@@ -39,4 +39,5 @@ def read_script(app_id: str, files: dict[str, str], reload_log: ReloadLog | None
     cov = Coverage(total=len(written), understood=len(written) - other, other=other,
                    unresolved_variables=unresolved)
     return ScriptDocument(app_id=app_id, files=list(files), statements=written, executed=executed,
-                          variables=variables, coverage=cov, issues=issues)
+                          variables=variables, coverage=cov, issues=issues,
+                          reload_time=reload_log.reload_time() if reload_log else None)

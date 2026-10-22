@@ -73,7 +73,7 @@ async def test_the_supervisor_sends_a_contradicted_table_to_diagnosis_and_the_fi
     nodes = _nodes(out)
     assert nodes.count("synthesize") == 2 and nodes.count("reconcile") == 2
     assert out["levels"] == {"Products": "V4"}
-    pack_sql = store.get(f"{out['pack_prefix']}/sql/Products.sql").decode()
+    pack_sql = store.get(f"{out['pack_prefix']}/sql/tables/Products.sql").decode()
     tr = get_json(store, out["translation_key"])
     assert any(o["status"] == "ai_repaired" for o in tr["ai_outcomes"])
     assert next(iter(tr["overrides"].values())).split()[0].upper() == "SELECT" and "WITH" in pack_sql
@@ -265,6 +265,6 @@ async def test_a_qlikview_project_folder_runs_end_to_end(tmp_path):
     assert classes == {"Sales-prj/CH01.xml": "qlikview_project", "Sales-prj/DocProperties.xml": "qlikview_project",
                        "Sales-prj/LoadScript.txt": "script"}
     manifest = get_json(store, f"{out['pack_prefix']}/manifest.json")
-    assert "sql/charts/CH01.sql" in manifest["files"]
-    sql = store.get(f"{out['pack_prefix']}/sql/charts/CH01.sql").decode()
+    assert "sql/measures/CH01.sql" in manifest["files"]
+    sql = store.get(f"{out['pack_prefix']}/sql/measures/CH01.sql").decode()
     assert "2026" in sql  # the set modifier with $(vYear) expanded from the script

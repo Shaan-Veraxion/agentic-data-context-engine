@@ -209,6 +209,11 @@ cache. Still open: grouped comparisons per dimension member, hash of a sorted ke
 
 ### 1.11 Migration pack (ADR-Q7, TD §17)
 
+**Status 2026-10-22 (step 5a): done.** The layout below is the one built
+([pack.py](../services/agents-reversesql/src/agents_reversesql/pack.py)); the manifest has model, prompt and package
+versions; a pack regenerates byte-identically (tested), and a version is reused when its content is unchanged. The
+table records what was there before.
+
 | Design | Code ([agents.py](../services/agents-reversesql/src/agents_reversesql/agents.py) `Publisher`) |
 |---|---|
 | `<app>__<reload_time>__pack-v<N>/` | `apps/<app>/packs/<run_id>/` |
@@ -220,6 +225,17 @@ cache. Still open: grouped comparisons per dimension member, hash of a sorted ke
 | "Regenerates identically" verified | Not tested |
 
 ### 1.12 Gateway, evaluation and operations
+
+**Status 2026-10-22 (step 5b).**
+- CI runs the bench and the gold-set apps with replayed model answers, and sends the results to Langfuse.
+- OpenTelemetry spans cover requests, agents and model calls in every service.
+- The bench's live gateway is traced in Langfuse.
+- Still open:
+  - Vertex (Q-04);
+  - real gold applications in CI (they are private);
+  - trace context over MCP;
+  - the gateway as a service;
+  - LISTEN/NOTIFY.
 
 | Design | Code |
 |---|---|
@@ -303,6 +319,9 @@ answers endpoint, re-entry at extract/resolve/translate, per-run budgets (`RunGa
 - The workbench gets what the bench has (gaps, Dremio source mapping, SQL next to the script).
 
 ### Step 5. Pack, evaluation, operations
+
+**In progress.** 5a (pack layout, versions, reproducibility) and 5b (CI evaluation, Langfuse, OpenTelemetry) are done
+on 2026-10-22; 5c (cross-application QVD chains) and 5d (PDF exports, front-end agents in the graph) follow.
 - Pack layout as in ADR-Q7, with model and prompt versions in the manifest, and a test that it regenerates identically.
 - CI runs the bench and a replayed gold-set evaluation; results into Langfuse; Langfuse and OpenTelemetry wired in
   every service.

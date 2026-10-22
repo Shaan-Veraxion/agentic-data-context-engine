@@ -71,7 +71,7 @@ class _Builder:
         self.qvd_columns = {k.lower(): v for k, v in (qvd_columns or {}).items()}
         self.dialect = sql_dialect  # None: detected per statement
         self.configured_dialects = connection_dialects or {}
-        self.app = BIApp(app_id=doc.app_id, variables=doc.variables)
+        self.app = BIApp(app_id=doc.app_id, variables=doc.variables, reload_time=doc.reload_time)
         self.connection: str | None = None
         self.pending: list[tuple[Statement, ParsedLoad]] = []
         self.last_table: str | None = None

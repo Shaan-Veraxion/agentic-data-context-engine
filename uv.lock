@@ -154,19 +154,30 @@ source = { editable = "packages/adce-core" }
 dependencies = [
     { name = "boto3" },
     { name = "duckdb" },
+    { name = "opentelemetry-api" },
     { name = "polars" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+]
+
+[package.optional-dependencies]
+telemetry = [
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-sdk" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.35" },
     { name = "duckdb", specifier = ">=1.1" },
+    { name = "opentelemetry-api", specifier = ">=1.27" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'telemetry'", specifier = ">=1.27" },
+    { name = "opentelemetry-sdk", marker = "extra == 'telemetry'", specifier = ">=1.27" },
     { name = "polars", specifier = ">=1.0" },
     { name = "pydantic", specifier = ">=2.8" },
     { name = "pydantic-settings", specifier = ">=2.4" },
 ]
+provides-extras = ["telemetry"]
 
 [[package]]
 name = "adce-gateway"

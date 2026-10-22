@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from adce_core import telemetry
 from adce_core.artifacts import ArtifactStore, get_json
 from adce_core.ports import KGPort
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFile
@@ -159,6 +160,7 @@ def create_app(svc: Services | None = None, cors_origins: list[str] | None = Non
                 await kg.close()
 
     app = FastAPI(title="ADCE API gateway", version="0.1.0", lifespan=lifespan)
+    telemetry.instrument(app, "api-gateway")
     app.add_middleware(CORSMiddleware, allow_origins=cors_origins or ["http://localhost:3001"],
                        allow_methods=["*"], allow_headers=["*"])
     app.include_router(review_router(review_service, reviewer_name), prefix="/review",
@@ -407,17 +409,21 @@ def create_app(svc: Services | None = None, cors_origins: list[str] | None = Non
                                   "via": f.value.get("via")})
         return {"nodes": list(nodes.values()), "edges": edges}
 
-    @app.get("/apps/{app_id}/packs/{run_id}/files/{path:path}")
-    async def pack_file(app_id: str, run_id: str, path: str, s: Services = Depends(services),
+    @app.get("/apps/{app_id}/packs/{pack}/files/{path:path}")
+    async def pack_file(app_id: str, pack: str, path: str, s: Services = Depends(services),
                         _p: Principal = Depends(require("viewer"))) -> Response:
-        if ".." in path:
+        """A file of a migration pack (`pack` is its folder name, `<app>__<reload_time>__pack-v<N>`)."""
+        if ".." in path or ".." in pack or "/" in pack:
             raise HTTPException(400, "bad path")
-        key = f"apps/{check_app_id(app_id)}/packs/{run_id}/{path}"
+        key = f"apps/{check_app_id(app_id)}/packs/{pack}/{path}"
         if not s.artifacts.exists(key):
             raise HTTPException(404, "file not found")
-        media = "application/json" if path.endswith(".json") else "text/markdown" if path.endswith(".md") \
-            else "text/plain"
-        return Response(s.artifacts.get(key), media_type=media)
+        media = {"json": "application/json", "md": "text/markdown", "csv": "text/csv", "sql": "text/plain",
+                 "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}.get(
+            path.rsplit(".", 1)[-1], "text/plain")
+        name = path.rsplit("/", 1)[-1]
+        headers = {"content-disposition": f'attachment; filename="{name}"'} if path.endswith(".xlsx") else None
+        return Response(s.artifacts.get(key), media_type=media, headers=headers)
 
     @app.get("/apps/{app_id}/tables")
     async def tables(app_id: str, s: Services = Depends(services),

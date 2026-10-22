@@ -50,6 +50,21 @@ class ReloadLog(BaseModel):
         parts = [e.text for e in self.echo if start <= e.line_no <= end]
         return "\n".join(parts) if parts else None
 
+    def reload_time(self) -> str | None:
+        """When the reload started, as YYYYMMDDTHHMMSS (both log formats; None without a start marker)."""
+        ts = self.started_at or (self.echo[0].timestamp if self.echo else None)
+        if not ts:
+            return None
+        if m := re.match(r"(\d{8}T\d{6})", ts):
+            return m.group(1)
+        m = re.match(r"(\d{1,4})[/.-](\d{1,2})[/.-](\d{1,4})\s+(\d{1,2}):(\d{2}):(\d{2})\s?([AaPp][Mm])?", ts)
+        if not m:
+            return None
+        a, b, c, hh, mm, ss, ampm = m.groups()
+        y, mo, d = (a, b, c) if len(a) == 4 else (c, b, a) if "." in ts.split()[0] else (c, a, b)  # D.M.Y or M/D/Y
+        h = int(hh) % 12 + (12 if ampm and ampm.lower() == "pm" else 0) if ampm else int(hh)
+        return f"{int(y):04d}{int(mo):02d}{int(d):02d}T{h:02d}{mm}{ss}"
+
     def fetched_for_table(self, table: str) -> list[int]:
         return [f.lines for f in self.fetches if (f.table or "").lower() == table.lower()]
 

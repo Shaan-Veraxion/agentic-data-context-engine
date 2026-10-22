@@ -47,6 +47,8 @@ from adce_reversesql.runtime import (
 )
 from adce_reversesql.semantics import chart_rules, script_rules
 
+from . import pack
+
 
 def table_key(app_id: str, name: str) -> str:
     return f"app:{app_id}/table:{name}"
@@ -388,98 +390,99 @@ class Publisher(BaseAgent):
                      group="definition", hitl_modes=["gate"])
 
     async def run(self, job: dict[str, Any], ctx: AgentContext) -> AgentResult:
+        """Build the pack in memory (pack.py), then write it as a new version, or reuse the version with the same
+        content (the same inputs and versions give the same bytes, ADR-Q7)."""
         result = AgentResult()
         loaded = load_translation(ctx.artifacts, job["bi_ir_key"], job.get("translation_key"))
-        base = f"apps/{ctx.app_id}/packs/{ctx.run_id}"
         validation = json.loads(ctx.artifacts.get(job["validation_key"])) if job.get("validation_key") else []
         figures = json.loads(ctx.artifacts.get(job["figures_key"])) if job.get("figures_key") else []
-        files: dict[str, str] = {}
         mappings = await known_mappings(ctx.kg, job.get("source_map"))
+        body: dict[str, bytes] = {}
         for name in output_tables(loaded):
             sql = loaded.translation.table_sql(name)
             if sql:
-                sql = apply_mappings(sql, mappings).sql
-                files[f"sql/{name}.sql"] = ctx.artifacts.put(f"{base}/sql/{name}.sql", sql.encode(), "application/sql")
+                body[f"sql/tables/{name}.sql"] = apply_mappings(sql, mappings).sql.encode()
         charts = translate_charts(loaded.app, loaded.translation)
-        for c in charts:
-            if c.sql:
-                files[f"sql/charts/{c.visual_id}.sql"] = ctx.artifacts.put(
-                    f"{base}/sql/charts/{c.visual_id}.sql", apply_mappings(c.sql, mappings).sql.encode(),
-                    "application/sql")
+        for ch in charts:
+            if ch.sql:
+                body[f"sql/measures/{ch.visual_id}.sql"] = apply_mappings(ch.sql, mappings).sql.encode()
         lin = lineage(ctx.app_id, loaded)
-        files["lineage.json"] = put_json(ctx.artifacts, f"{base}/lineage.json", lin)
+        body["lineage/lineage.json"] = json.dumps(lin, indent=2, sort_keys=True).encode()
+        body["lineage/lineage.md"] = pack.lineage_md(ctx.app_id, lin).encode()
+        body["validation/report.md"] = pack.validation_md(validation, figures).encode()
+        body["validation/report.xlsx"] = pack.validation_xlsx(validation, figures)
+        knowledge = await self._knowledge(ctx, loaded, lin)
+        body["review/untranslated.csv"] = pack.untranslated_csv(loaded, charts)
+        body["review/decisions.csv"] = pack.decisions_csv(knowledge["decisions"])
+        body["review/open-items.md"] = pack.open_items_md(
+            loaded, charts, unmapped=knowledge["unmapped"], missing_producers=knowledge["missing_producers"],
+            not_approved=knowledge["not_approved"]).encode()
+        content = pack.fingerprint(body)
+
+        root = f"apps/{ctx.app_id}/packs"
+        reload_time = loaded.app.reload_time
+        versions: dict[int, str] = {}  # this reload's versions -> their content fingerprint
+        for key in ctx.artifacts.list(f"{root}/"):
+            if key.endswith("/manifest.json"):
+                m = json.loads(ctx.artifacts.get(key))
+                if m.get("reload_time") == reload_time and m.get("version"):
+                    versions[int(m["version"])] = m.get("content_sha256", "")
+        same = [v for v, sha in versions.items() if sha == content]
+        version = same[0] if same else max(versions, default=0) + 1
+        name = pack.pack_name(ctx.app_id, reload_time, version)
+        base = f"{root}/{name}"
+        if not same:  # a new version: write it; an identical one is already there, byte for byte
+            for path, data in body.items():
+                ctx.artifacts.put(f"{base}/{path}", data, _content_type(path))
+            manifest = {"app_id": ctx.app_id, "pack": name, "version": version, "reload_time": reload_time,
+                        "run_id": ctx.run_id, "inputs": sorted(job.get("inputs", []), key=lambda i: i["name"]),
+                        "bi_ir_key": job["bi_ir_key"], "content_sha256": content,
+                        "models": knowledge["models"], **pack.versions(),
+                        "venue": "local (Dremio validation pending, phase PD)", "files": sorted(body)}
+            put_json(ctx.artifacts, f"{base}/manifest.json", manifest)
+        files = {path: f"{base}/{path}" for path in [*body, "manifest.json"]}
         for job_ in lin["jobs"]:  # lineage as knowledge (19-lite): what each Qlik table is derived from (DERIVED_FROM)
             table = job_["job"]["name"].removeprefix("load:")
             await self.propose(ctx, Fact(kind="lineage", subject=table_key(ctx.app_id, table), trust=Trust.DOCUMENTED,
                                          value={"inputs": job_["inputs"], "outputs": job_["outputs"],
                                                 "dropped": job_["dropped"]},
                                          evidence=[Evidence(kind="bi_ir", ref=job["bi_ir_key"])]), result)
-        files["validation.md"] = ctx.artifacts.put(f"{base}/validation.md",
-                                                   _validation_md(validation, figures).encode(), "text/markdown")
-        files["review.md"] = ctx.artifacts.put(f"{base}/review.md", _review_md(loaded, charts).encode(),
-                                               "text/markdown")
-        manifest = {"app_id": ctx.app_id, "run_id": ctx.run_id, "inputs": job.get("inputs", []),
-                    "bi_ir_key": job["bi_ir_key"], "translation_key": job.get("translation_key"),
-                    "software": {"adce": "0.1.0"}, "venue": "local (Dremio validation pending, phase PD)",
-                    "files": sorted(files)}
-        files["manifest.json"] = put_json(ctx.artifacts, f"{base}/manifest.json", manifest)
         await self.propose(ctx, Fact(kind="pack_published", subject=f"app:{ctx.app_id}", trust=Trust.DOCUMENTED,
-                                     value={"run_id": ctx.run_id, "files": sorted(files), "prefix": base},
+                                     value={"run_id": ctx.run_id, "pack": name, "version": version,
+                                            "reused": bool(same), "files": sorted(files), "prefix": base},
                                      evidence=[Evidence(kind="artifact", ref=files["manifest.json"])]), result)
-        result.outputs.update({"pack_prefix": base, "files": files})
+        result.outputs.update({"pack_prefix": base, "pack": name, "files": files})
+        result.metrics.update({"pack_version": version, "pack_reused": bool(same), "pack_files": len(files)})
         result.events.append("pack.published")
         return result
 
-
-def _validation_md(report: list[dict[str, Any]], figures: list[dict[str, Any]] | None = None) -> str:
-    lines = ["# Validation report", "",
-             "Levels: V0 parsed · V1 checked · V2 executes · V3 row counts · V4 data · V5 figures match exports.",
-             "Venue `local` means DuckDB over QVD and source extracts; results are re-earned in Dremio in phase PD.",
-             "", "| Table | Level | Venue | Comparisons | Failed |", "|---|---|---|---|---|"]
-    for r in report:
-        comps = r["comparisons"]
-        bad = [c for c in comps if not c["ok"]]
-        level = r["level"] if r.get("exact", True) else f"{r['level']} (within tolerance, drift)"
-        lines.append(f"| {r['table']} | {level} | {r['venue']} | {len(comps)} | {len(bad)} |")
-    for r in report:
-        bad = [c for c in r["comparisons"] if not c["ok"]]
-        failed_rules = [x for x in r["rules"] if not x["ok"]]
-        if bad or failed_rules or r["errors"]:
-            lines += ["", f"## {r['table']}"]
-            lines += [f"- rule `{x['name']}`: {x['message']}" for x in failed_rules]
-            lines += [f"- {c['check']} {c['subject']}: expected {c['expected']}, got {c['actual']}" for c in bad]
-            lines += [f"- error: {e}" for e in r["errors"]]
-    if figures:
-        lines += ["", "## Charts against exported reports", "",
-                  "| Export | Visual | Level | Figures | Totals | Rows (SQL / export) |", "|---|---|---|---|---|---|"]
-        for f in figures:
-            lines.append(f"| {f['export']} [{f['sheet']}] | {f['visual'] or '-'} | {f['level']} | "
-                         f"{f.get('matched', 0)}/{f.get('figures', 0)} | {f.get('totals_matched', 0)}/"
-                         f"{f.get('totals', 0)} | {f.get('rows_actual', '-')} / {f.get('rows_expected', '-')} |")
-        for f in figures:
-            if f["level"] != "V5":
-                lines += ["", f"### {f['export']} [{f['sheet']}]"]
-                lines += [f"- {p}" for p in f.get("problems", [])]
-                lines += [f"- {d['row']} {d['measure']}: expected {d['expected']}, got {d['actual']}"
-                          for d in f.get("diffs", [])]
-    return "\n".join(lines) + "\n"
+    async def _knowledge(self, ctx: AgentContext, loaded: Any, lin: dict[str, Any]) -> dict[str, Any]:
+        """What the review files need from the knowledge: decisions applied, unmapped sources, QVDs whose producer
+        is missing, tables not approved, and the models and prompt versions behind the app's facts."""
+        app_key = f"app:{ctx.app_id}"
+        mine = [f for f in await ctx.kg.facts() if f.subject == app_key or f.subject.startswith(app_key + "/")]
+        read = {f.object for f in mine if f.kind == "reads_source" and f.object}
+        decided = [f for f in await ctx.kg.facts(kind="resolves_to") if f.subject in read]
+        decisions = [f for f in mine + decided if "_decided_by" in f.value or f.kind == "auto_accepted"]
+        mapped = {f.subject for f in decided if f.trust == Trust.CONFIRMED}
+        unmapped = sorted({s for s in read if s.startswith("source:")} - mapped)
+        made = {o["name"] for j in lin["jobs"] for o in j["outputs"] if o["namespace"] == "qvd://"}
+        read_qvds = {i["name"] for j in lin["jobs"] for i in j["inputs"] if i["namespace"] == "qvd://"}
+        linked = {f.value.get("qvd") for f in mine if f.kind == "qvd_linkage"}
+        missing = sorted(q for q in read_qvds - made if q not in linked and f"qvd:{q}" not in linked)
+        not_approved = sorted(f.subject.split("/table:")[-1] for f in mine
+                              if f.kind == "report_sql" and f.trust != Trust.CONFIRMED)
+        models: dict[tuple[str, str], int] = {}
+        for f in mine:
+            m = f.model or f.value.get("model")
+            if m:
+                k = (str(m), str(f.prompt_version or f.value.get("prompt_version") or ""))
+                models[k] = models.get(k, 0) + 1
+        return {"decisions": decisions, "unmapped": unmapped, "missing_producers": missing,
+                "not_approved": not_approved,
+                "models": [{"model": m, "prompt_version": p, "facts": n} for (m, p), n in sorted(models.items())]}
 
 
-def _review_md(loaded: Any, charts: list[Any] | None = None) -> str:
-    lines = ["# Review record", "", "## Statements not translated", ""]
-    items = [(n, u) for n, r in loaded.translation.tables.items() for u in r.untranslated]
-    lines += [f"- {n}: statement {u.statement} ({u.span}) - {u.reason} [{u.tier}]" for n, u in items] or ["- none"]
-    if charts:
-        lines += ["", "## Charts not translated", ""]
-        lines += [f"- {c.visual_id} {c.title!r}: {'; '.join(c.untranslated)} [{c.tier}]" for c in charts
-                  if c.untranslated] or ["- none"]
-    if loaded.app.section_access:
-        lines += ["", "## Row-level security (Section Access): requirements, not translated", ""]
-        lines += [f"- {a.name}: data reduced on {', '.join(a.reduction_fields) or 'no field'} "
-                  f"(access fields: {', '.join(a.fields)})" for a in loaded.app.section_access]
-    lines += ["", "## Issues found while reading the script", ""]
-    lines += [f"- {i.code}: {i.message}" for i in loaded.app.issues] or ["- none"]
-    inputs = sorted({i for r in loaded.translation.tables.values() for i in r.inputs})
-    lines += ["", "## Inputs to resolve before running in Dremio", ""]
-    lines += [f"- {i}" for i in inputs] or ["- none"]
-    return "\n".join(lines) + "\n"
+def _content_type(path: str) -> str:
+    return {"sql": "application/sql", "json": "application/json", "md": "text/markdown", "csv": "text/csv",
+            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}[path.rsplit(".", 1)[-1]]

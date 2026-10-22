@@ -177,6 +177,9 @@ class Worker:
 
 
 async def _main(argv: list[str] | None = None) -> int:
+    from adce_core import telemetry
+
+    telemetry.setup("orchestrator-worker")
     p = argparse.ArgumentParser(prog="orchestrator.worker", description=__doc__,
                                 formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("--once", action="store_true", help="run what is queued, then stop")

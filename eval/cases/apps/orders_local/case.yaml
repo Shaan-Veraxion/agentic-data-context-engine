@@ -13,9 +13,9 @@ expect:
   measures: {metrics: {measures: 8, translated: 8}}
   reports: {metrics: {tables: 2}}
   metrics: {metrics: {exports: 2, mapped: 2}}
-  publish: {pack_contains: {validation.md: ["| Orders | V4 | local |", "## Charts against exported reports"]}}
+  publish: {pack_contains: {validation/report.md: ["| Orders | V4 | local |", "## Charts against exported reports"]}}
 when:
   - if: {data: no_qvd}
-    expect: {publish: {pack_contains: {validation.md: ["| Orders | V3 | local |", "## Charts against exported reports"]}}}
+    expect: {publish: {pack_contains: {validation/report.md: ["| Orders | V3 | local |", "## Charts against exported reports"]}}}
   - if: {data: script_only}
     expect: {publish: {pack_contains: {}}, reconcile: {metrics: {}}, reports: {metrics: {tables: 0}}, metrics: {metrics: {exports: 0, mapped: 0}}}

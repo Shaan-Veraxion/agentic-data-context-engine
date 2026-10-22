@@ -311,6 +311,7 @@ class BIApp(BaseModel):
     variables: dict[str, Variable] = Field(default_factory=dict)
     issues: list[Issue] = Field(default_factory=list)
     coverage: Coverage = Field(default_factory=Coverage)
+    reload_time: str | None = None  # when the reload log's run started (YYYYMMDDTHHMMSS), names the migration pack
     # front end (sheets and charts), when the app's objects are supplied
     measures: list[MasterMeasure] = Field(default_factory=list)
     dimensions: list[MasterDimension] = Field(default_factory=list)
@@ -331,3 +332,4 @@ class ScriptDocument(BaseModel):
     variables: dict[str, Variable] = Field(default_factory=dict)
     coverage: Coverage = Field(default_factory=Coverage)
     issues: list[Issue] = Field(default_factory=list)
+    reload_time: str | None = None

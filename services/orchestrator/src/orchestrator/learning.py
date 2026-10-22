@@ -113,6 +113,9 @@ async def memory_report(kg: KGPort) -> list[dict[str, Any]]:
 
 
 async def _main(argv: list[str] | None = None) -> int:
+    from adce_core import telemetry
+
+    telemetry.setup("orchestrator-learning")
     p = argparse.ArgumentParser(prog="orchestrator.learning", description=__doc__,
                                 formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("command", choices=["report", "rerun"])

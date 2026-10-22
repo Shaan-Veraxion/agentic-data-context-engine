@@ -62,7 +62,7 @@ files ─▶ intake (1) ─▶ extract (27) ─▶ resolve ─▶ translate (28)
 | 25 | check, repair | `QueryChecker` | Rule checks per table; with a model, repairs a table that fails a blocking rule. |
 | 26 | reconcile, diagnose, record | `ReconcilerAgent` | Runs each table's SQL on local data, compares with the reload log and QVDs (V0 to V5), classifies each mismatch, corrects a contradicted statement with a model, records the results. |
 | – | supervisor | (orchestrator) | Picks the next action among those code allows; the model decides when it is on. |
-| 20 | publish | `Publisher` | Writes the migration pack (SQL, validation.md, review.md, lineage, manifest). |
+| 20 | publish | `Publisher` | Writes the migration pack (ADR-Q7): SQL per table and chart, lineage, the validation report (md and xlsx), the review files, the manifest; a new version only when the content changed. |
 
 **Deterministic first, LLM second.** Most of the work is plain code (a Qlik parser and a translator built on
 sqlglot). The LLM is used where rules run out, and always through the model gateway:
@@ -445,8 +445,44 @@ reports (`figures_validated`), `validation.json`, `figures.json`, levels; emits 
 once at the end keeps one Gate item per table, whatever the loops did.
 
 #### publish → agent 20 `Publisher`
-Writes the pack under `apps/<app>/packs/<run>/`: `sql/<table>.sql`, `sql/charts/*.sql`, `lineage.json`
-(OpenLineage-shaped), `validation.md`, `review.md`, `manifest.json`. Fact `pack_published`.
+Writes the migration pack, the deliverable of the path (ADR-Q7). The files are rendered by
+[pack.py](../services/agents-reversesql/src/agents_reversesql/pack.py); `Publisher.run` builds them all in memory
+first, then decides which version they are.
+
+```
+apps/<app>/packs/<app>__<reload_time>__pack-v<N>/
+  manifest.json                 app, pack name and version, reload time, run id, inputs (name, class, sha256),
+                                content_sha256, models and prompt versions behind the app's facts, the prompt
+                                version of every route, ADCE package versions
+  sql/tables/<qlik_table>.sql   Dremio SQL per Qlik table, sources mapped to their Dremio datasets
+  sql/measures/<visual>.sql     SQL per chart (its measures over its dimensions)
+  lineage/lineage.json          OpenLineage-shaped jobs (one per Qlik table)
+  lineage/lineage.md            readable: what each table is built from and stored to, then the QVD chain
+                                (who makes each QVD, who reads it, which producers were not supplied)
+  validation/report.md          ladder level per table and chart, failed comparisons, comparisons within tolerance
+  validation/report.xlsx        the same as sheets: Tables, Comparisons, Rules, Figures
+  review/untranslated.csv       table, statement, span, tier, reason, text
+  review/decisions.csv          every decision applied: facts decided by a reviewer (`_decided_by`) and the
+                                auto-reviewer's acceptances, with the value decided
+  review/open-items.md          what is not resolved: untranslated statements and charts, sources without a
+                                dataset, QVDs whose producer is missing, owner questions, tables not approved,
+                                Section Access requirements, other issues
+```
+
+- `<reload_time>` comes from the reload log (`ReloadLog.reload_time()`, both Sense and QlikView formats, stored in
+  the BI IR as `BIApp.reload_time`); without a log it is `no-reload-log`.
+- **Versions and reproducibility.** `pack.fingerprint` hashes every file except the manifest. The Publisher reads
+  the manifests of this reload's earlier versions: one with the same fingerprint is **reused** (nothing is written;
+  the files are already there, byte for byte, and the manifest keeps the run that first wrote them). Otherwise the
+  next version `N` is written. Everything rendered is a pure function of the inputs: no clock, sorted orders, and
+  fixed dates inside the xlsx (`_stable_zip` rewrites the zip entry times and `docProps/core.xml`). So the same
+  inputs and versions give the same bytes, in any store; a decision that changes a file (for example an approval,
+  which appears in `decisions.csv`) gives `v<N+1>`. The test is `test_full_qlik_path_reaches_v4_and_publishes_a_pack`.
+- Model answers are reproducible through the gateway's recordings (section 7), which is what makes a pack built with
+  the model regenerate identically too.
+- Fact `pack_published` `{run_id, pack, version, reused, files, prefix}`; metrics `pack_version`, `pack_reused`.
+  The state's `pack_prefix` is the pack folder. API `GET /apps/{app}/packs/{pack}/files/{path}` serves a file (xlsx
+  as a download); the workbench overview lists the files by folder.
 
 #### summarize
 Writes `runs/<run>/summary.json` (status, artifact keys, levels, pending sources, events, metrics, decisions,
@@ -627,7 +663,7 @@ The level reached is the last one passed. A failure at V2 stops the ladder there
 **Drift tolerance** (`Reconciler(tolerance=...)`, setting `ADCE_VALIDATION_TOLERANCE`, `Deps.tolerance`): when the
 evidence (reload log, QVDs) and the data are not from the same moment, counts and sums within the relative
 tolerance pass with basis `within tolerance (drift)`; the table is then **not exact** (`TableValidation.exact`,
-`report_sql.exact`, "(within tolerance, drift)" in validation.md). Locally the tolerance is 0: the QVDs and the log
+`report_sql.exact`, "(within tolerance, drift)" in validation/report.md). Locally the tolerance is 0: the QVDs and the log
 come from the same reload. Phase PD sets it (0.5% by default in the design) for Dremio data.
 
 **Result cache**: `LocalVenue.run` caches results (up to 5,000 rows) by the data's fingerprint (the bytes of every
@@ -678,6 +714,10 @@ user = inputs as JSON) → provider (primary, then fallbacks) → validate again
   never rows.
 - **Tools** ([tools.py](../packages/adce-gateway/src/adce_gateway/tools.py)): with `--tools`, the model can call
   read-only tools (`check_sql`, `get_statements`, kg-mcp lookups) before it answers through `submit_answer`.
+- **Tracing**: every live call is a Langfuse generation (route, model, prompt version, tokens, cost;
+  [tracing.py](../packages/adce-gateway/src/adce_gateway/tracing.py)) when `LANGFUSE_*` is set and the `tracing` extra
+  is installed. `from_settings` attaches it, and the bench's live mode too. Every call, replayed or live, is also an
+  OpenTelemetry span `gateway.<route>` (section 12).
 - **Claude Code bridge** (local branch only, `tools/claude-code-bridge/bridge.py`): an OpenAI-compatible server on
   port 8790 that answers by running `claude -p`. It is slow (often 20 to 120 s per call) and has a timeout. A
   timeout shows as `ProviderError ... 504 claude timed out` and the statement becomes `skipped`.
@@ -893,7 +933,7 @@ TOTAL).
 | `GET /apps/{app}/runs` | the app's finished runs, newest first: status, levels, number of nodes and supervisor decisions, scope |
 | `GET /apps/{app}/tables/{table}` | one table from the latest run: its SQL, its CTEs in dependency order, each with the script lines of its spans, what is not translated, the `report_sql` validation |
 | `GET /apps/{app}/sources` | every source the app's SQL reads, with its confirmed Dremio dataset |
-| `GET /apps`, `/apps/{app}/overview`, `/lineage`, `/tables`, `/packs/{run}/files/...`, `/facts` | reads |
+| `GET /apps`, `/apps/{app}/overview`, `/lineage`, `/tables`, `/packs/{pack}/files/...`, `/facts` | reads |
 | `/review/...` | hitl-service router ([api.py](../services/hitl-service/src/hitl_service/api.py)): `GET items?status=open\|decided`, `POST items/{id}/decision`, `POST items/{id}/reopen`, `POST correct`, `POST apps/{app}/statement_sql`, `POST apps/{app}/sources`, `GET apps/{app}/auto` (section 9) |
 
 The **review workbench** ([apps/workbench](../apps/workbench/src)) is the product UI on top of these endpoints. Its
@@ -919,6 +959,21 @@ orchestrator.worker` takes queued requests from table `run_request` (migration 0
 several workers share the queue), runs or resumes the pipeline with the Postgres checkpointer, refreshes the review
 queue, and stores the outcome on the request. A request left running by a crash is taken again after 30 minutes and
 continues from its checkpoint. Helm: `worker` (Deployment `orchestrator-worker`); the API is set to queue.
+
+**Observability** ([adce_core/telemetry.py](../packages/adce-core/src/adce_core/telemetry.py)). OpenTelemetry is off
+unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set and the `telemetry` extra is installed (the image installs every extra);
+then each process exports spans over OTLP/HTTP:
+
+| Span | Where | Attributes |
+|------|-------|------------|
+| `<METHOD> <path>` (server) | `telemetry.instrument(app, service)` in the API gateway and hitl-service; continues the caller's `traceparent` | method, path, status code |
+| `agent.<name>` | `BaseAgent.__call__`, so every agent in every run | agent number and version, app id, run id, facts, events |
+| `gateway.<route>` | `ModelGateway.call` | route, task, mode, tools, model, cost, prompt version; errors recorded |
+
+The worker, the event consumer, the learning job and kg-mcp call `telemetry.setup(<service>)` at start. Langfuse
+accepts OTLP at `<LANGFUSE_HOST>/api/public/otel`, so one Langfuse can hold both the model generations and the
+spans (`deploy/compose/.env.example`). The trace context is not yet passed on calls to kg-mcp over MCP, so those show
+as separate traces. Spans carry ids and counts, never data.
 
 Auth: Keycloak bearer tokens with roles viewer / reviewer / approver / admin ([auth.py](../services/api-gateway/src/api_gateway/auth.py)).
 
@@ -956,6 +1011,15 @@ decisions (action, table, who decided, why, the options it had) and every node t
 "Model calls" lists every gateway call with route, source (`live`, `memo` = answered from a recording, `replay`),
 tokens, latency and error.
 
+**In CI** ([.github/workflows/ci.yml](../.github/workflows/ci.yml), job `bench`): `adce-bench run` (every case, default
+variants) and `adce-bench run apps/ --ai replay` (the gold-set applications with the model answers replayed from
+`eval/recordings`). A failure, an error or an unexpected pass fails the build, so a prompt, model or rule change that
+breaks a case is caught. The results are uploaded as the `bench-results` artifact and, with the `LANGFUSE_*` secrets,
+sent to Langfuse by `--langfuse <run name>` ([langfuse_report.py](../services/testbench/src/testbench/langfuse_report.py)):
+one trace per case named `bench:<case>`, scored `pass` (1 or 0) and `checks_ok` (the share of checks that held),
+tagged with the AI mode and data variant, grouped by commit. A private case (`eval/private`, git-ignored) runs only
+on your machine.
+
 ---
 
 ## 14. Debugging playbook
@@ -964,7 +1028,7 @@ tokens, latency and error.
 |---------|----------|---------|
 | `0 checks`, status `unchecked` | The case has no expectations, and/or the SQL could not run locally | Result notes; Rows tab errors; "Approve result" to set expectations |
 | `execution: no local data for: X` | Table X has no sample data in the case | Add `sources/<space>/<folder>/<table>.csv` to the case, or wait for Dremio (PD). Not a translation bug |
-| Level stays V1 | SQL checked but did not run (see the error) | `report_sql.errors`, `validation.md` |
+| Level stays V1 | SQL checked but did not run (see the error) | `report_sql.errors`, the pack's `validation/report.md` |
 | Level V2, not V3 | Runs, but row counts differ from the reload log / QVD header | `report_sql.failed` comparisons, then which step (`rows_step <action> <span>`) |
 | Level V3, not V4 | Counts match, values differ | `field_aggregate` comparisons: which field, `shapes`/`values` |
 | `untranslated` > 0 | Rules could not translate some statements | `bi_transform.untranslated[].reason`; then AI outcomes |
@@ -980,7 +1044,7 @@ tokens, latency and error.
 | Run status `waiting_for_owner` | An interactive run asked owner questions | `questions` in the run; answer with `POST .../answers` |
 | `sql_repaired` in AI outcomes | Agent 25 replaced a statement that failed a blocking rule | trace `repair`; the outcome's notes |
 | Level V1 with a `schema` comparison | The SQL runs but its columns differ from the Qlik table's fields | the comparison's expected vs got (missing / extra columns) |
-| `fan_out` failing on a chart | an aggregate over a join that can repeat records | the rule message; the chart's SQL (`sql/charts/<visual>.sql`) |
+| `fan_out` failing on a chart | an aggregate over a join that can repeat records | the rule message; the chart's SQL (`sql/measures/<visual>.sql`) |
 | `join_fields` warning | a JOIN/KEEP with no shared field (cartesian product in Qlik too) | the script lines named in the warning |
 | `loop_unrolled_from_log` issue | a file-list loop was unrolled with the values the reload log showed | the issue message lists them; check they are all the files |
 | Re-run validated fewer tables than expected | it was scoped to the tables the change touches | trace `scope` (hints, tables); the result's `validated` |
@@ -989,7 +1053,7 @@ tokens, latency and error.
 | A `conflict` review item | a proposal disagrees with a fact a person confirmed | the item's reason; keep the confirmed fact or accept the new one |
 | `ADCE_TENANT is not set` | the knowledge service starts only with a tenant | set `ADCE_TENANT` (local: `default`) |
 | `prj_object_not_understood` | a QlikView -prj object whose XML shape the reader does not know | send the file: the reader learns the shape |
-| `section_access` issue | the script has Section Access; it is a requirement, not SQL | review.md "Row-level security"; `rls_requirement` facts |
+| `section_access` issue | the script has Section Access; it is a requirement, not SQL | review/open-items.md "Row-level security"; `rls_requirement` facts |
 | Level shown "(within tolerance, drift)" | counts or sums differ within the tolerance | the comparisons with basis `within tolerance (drift)` |
 | Status `queued` for long | No orchestrator worker is running | `orchestrator-worker` pod / `python -m orchestrator.worker` |
 

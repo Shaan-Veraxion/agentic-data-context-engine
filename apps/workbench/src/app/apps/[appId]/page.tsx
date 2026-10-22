@@ -73,10 +73,24 @@ export default function AppOverview({ params }: { params: Promise<{ appId: strin
         <>
           <h2>Latest migration pack</h2>
           <div className="panel">
-            <span className="muted">Run {pack.run_id}: </span>
-            {pack.files.map((f) => (
-              <a key={f} className="chip" href={api.packFileUrl(appId, pack.run_id, f)} target="_blank" rel="noreferrer">{f}</a>
-            ))}
+            <div className="row">
+              <strong>{pack.pack ?? pack.run_id}</strong>
+              <span className="muted">written by run {pack.run_id}; the same inputs and versions give the same version</span>
+            </div>
+            {["sql", "lineage", "validation", "review", "manifest"].map((group) => {
+              const files = pack.files.filter((f) => (group === "manifest" ? !f.includes("/") : f.startsWith(group + "/")));
+              if (!files.length) return null;
+              return (
+                <div key={group} style={{ marginTop: 6 }}>
+                  <span className="muted small">{group}: </span>
+                  {files.map((f) => (
+                    <a key={f} className="chip" href={api.packFileUrl(appId, pack.pack ?? pack.run_id, f)} target="_blank" rel="noreferrer">
+                      {f.replace(group + "/", "")}
+                    </a>
+                  ))}
+                </div>
+              );
+            })}
           </div>
         </>
       )}

@@ -16,10 +16,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uv sync --all-packages
+      - run: uv sync --all-packages --all-extras
       - run: uv run ruff check .
       - run: uv run pyright
       - run: uv run pytest   # integration tests run against the service containers; S3 ones skip without it
+  bench:
+    # every case of the test bench (rules, checks, validation, pack), and the gold-set applications with the model
+    # answers replayed from eval/recordings: a prompt, model or rule change that breaks one fails the build.
+    # Results go to Langfuse (one scored trace per case, session = commit) when the LANGFUSE_* secrets are set.
+    runs-on: ubuntu-latest
+    env:
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --all-packages --all-extras
+      - run: mkdir -p eval/results/ci
+      - name: bench (default variants)
+        run: uv run adce-bench run --json eval/results/ci/bench.json --langfuse "ci-${GITHUB_SHA::8}"
+      - name: gold set, model answers replayed
+        run: uv run adce-bench run apps/ --ai replay --json eval/results/ci/gold-replay.json --langfuse "ci-${GITHUB_SHA::8}-gold"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: bench-results, path: eval/results/ci/ }
   workbench:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: apps/workbench } }

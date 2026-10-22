@@ -65,6 +65,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:
             json.dump(rows, fh, indent=1, default=str)
+    if args.langfuse:
+        from .langfuse_report import report
+
+        report(rows, args.langfuse)
     return 1 if totals.get("fail") or totals.get("error") or totals.get("xpass") else 0
 
 
@@ -126,6 +130,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--model", default="", help="with --ai live: a gateway config in deploy/gateway, e.g. "
                    "claude-code (default: ADCE_GATEWAY_CONFIG)")
     r.add_argument("--json", help="write the results to this file")
+    r.add_argument("--langfuse", metavar="RUN_NAME", help="send the results to Langfuse (LANGFUSE_* env), one "
+                   "scored trace per case, grouped under this run name")
     r.add_argument("-v", "--verbose", action="store_true")
     r.set_defaults(fn=cmd_run)
     e = sub.add_parser("eval", help="LLM evaluation: live runs in arms (plain, tools), fresh each trial")

@@ -163,6 +163,19 @@ class ModelGateway:
     async def call(self, route_name: str, inputs: dict[str, Any], output_model: type[BaseModel], *,
                    task: str = "default", tools: list[Any] | None = None, max_turns: int = 8) -> GatewayResult:
         """tools: read-only tools.Tool objects the model may call before answering (see tools.py)."""
+        from adce_core import telemetry
+
+        with telemetry.span(f"gateway.{route_name}", route=route_name, task=task, mode=self.mode,
+                            tools=len(tools or [])) as s:
+            r = await self._call(route_name, inputs, output_model, task=task, tools=tools, max_turns=max_turns)
+            if s is not None:
+                s.set_attribute("adce.model", r.model)
+                s.set_attribute("adce.cost_usd", r.cost_usd)
+                s.set_attribute("adce.prompt_version", r.prompt_version)
+            return r
+
+    async def _call(self, route_name: str, inputs: dict[str, Any], output_model: type[BaseModel], *,
+                    task: str, tools: list[Any] | None, max_turns: int) -> GatewayResult:
         if tools:
             return await self._call_tools(route_name, inputs, output_model, tools, task, max_turns)
         route = self.routes[route_name]

@@ -275,6 +275,9 @@ async def _knowledge_service() -> KGPort:
 
 
 def main() -> None:
+    from adce_core import telemetry
+
+    telemetry.setup("kg-mcp")
     port = int(os.environ.get("ADCE_KG_MCP_PORT", "8701"))
     create_server(_knowledge_service).run(transport="http", host="0.0.0.0", port=port, path="/mcp")
 

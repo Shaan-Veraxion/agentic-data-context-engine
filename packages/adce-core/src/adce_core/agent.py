@@ -158,7 +158,14 @@ class BaseAgent(ABC):
         if self.spec.context_budget and "get_context_pack" in self.spec.tools and ctx.context is None:
             # ADR-4: read the context pack first
             ctx = replace(ctx, context=await read_context(ctx.kg, f"app:{ctx.app_id}", self.spec.context_budget))
-        result = await self.run(job, ctx)
+        from . import telemetry
+
+        with telemetry.span(f"agent.{self.spec.name}", agent=self.spec.number, version=self.spec.version,
+                            app_id=ctx.app_id, run_id=ctx.run_id) as s:
+            result = await self.run(job, ctx)
+            if s is not None:
+                s.set_attribute("adce.facts", len(result.facts))
+                s.set_attribute("adce.events", len(result.events))
         if ctx.context is not None:
             result.metrics.setdefault("context_facts", len(ctx.context.get("facts", [])))
         self.check_events(result.events)

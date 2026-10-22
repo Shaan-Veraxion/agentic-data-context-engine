@@ -186,7 +186,10 @@ def make_gateway(ai: str, recordings: Path | None = None, model: str = "") -> An
         config = load_config(path)
     else:
         config = load_config(s.gateway_config) if s.gateway_config else default_config(s.vertex_region)
-    return ModelGateway("record", Recordings(recordings or ROOT / ".adce" / "recordings"), config=config)
+    from adce_gateway.tracing import langfuse_tracer
+
+    return ModelGateway("record", Recordings(recordings or ROOT / ".adce" / "recordings"), config=config,
+                        tracer=langfuse_tracer())
 
 
 def _jsonable(x: Any) -> Any:

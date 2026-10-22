@@ -25,6 +25,11 @@ config:
   ADCE_AUTH_MODE: keycloak
   ADCE_KEYCLOAK_ISSUER: https://auth.example.com/realms/adce
   GRAPHITI_TELEMETRY_ENABLED: "false"
+  # OpenTelemetry (adce_core/telemetry.py): spans for requests, agents and model calls, exported over OTLP/HTTP.
+  # Empty: off. Langfuse accepts OTLP at <LANGFUSE_HOST>/api/public/otel (with its basic-auth header in the secret).
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  ADCE_ENV: production
+  LANGFUSE_HOST: ""                                  # Langfuse keys (LANGFUSE_PUBLIC_KEY / _SECRET_KEY) go in the secret
 
 # Model gateway: which providers and models answer each tier (TOML, see deploy/gateway/*.toml). Empty: Claude on
 # Vertex AI with ADCE_VERTEX_PROJECT. Provider keys (e.g. ANTHROPIC_API_KEY, GROQ_API_KEY) go in the secret below.
