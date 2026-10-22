@@ -26,7 +26,7 @@ export default function Home() {
       }
       setBusy("Running the pipeline…");
       const run = await api.run(appId, appName);
-      setBusy(`Run ${run.run_id}: ${run.status} · ${Object.entries(run.levels).map(([t, l]) => `${t} ${l}`).join(", ")}`);
+      setBusy(`Run ${run.run_id}: ${run.status} · ${Object.entries(run.levels ?? {}).map(([t, l]) => `${t} ${l}`).join(", ")}`);
       await load();
     } catch (e) {
       setError((e as Error).message);

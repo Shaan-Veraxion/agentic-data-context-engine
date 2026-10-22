@@ -738,20 +738,110 @@ Fact kinds you will see, by writer:
 
 ## 9. Review (human in the loop)
 
-[hitl_service/service.py](../services/hitl-service/src/hitl_service/service.py). `ReviewService.refresh(app)` builds
-review items **from facts** after a run; nothing in the pipeline waits for a person.
+Two files: [hitl_service/service.py](../services/hitl-service/src/hitl_service/service.py) (the review items and what
+each decision writes) and [hitl_service/auto_review.py](../services/hitl-service/src/hitl_service/auto_review.py)
+(what the system decides or recommends itself). Nothing in the pipeline waits for a person, except `ask_owner` in an
+interactive run (4.4).
 
-| Mode | Item | From | Decisions → fact |
-|------|------|------|------------------|
-| Ask | unresolved variable | `bi_issue` | answer → `variable_value` |
-| Ask | gap | `gap_analysis` | answer → `gap_answer`; accept_gap → `bi_gap_accepted` |
-| Queue | untranslated statement | `bi_transform.untranslated` | provide_sql → `translation_override`; accept_gap |
-| Queue | other issues | `bi_issue` | acknowledge |
-| Gate | approve SQL | `report_sql` (proposed) | approve / reject (with reason) → decision on `report_sql` |
-| Seed | map source | `reads_source`, `sql_candidate.unmapped` | map → `resolves_to` |
+### 9.1 How items are built: `ReviewService.refresh(app)`
 
-Items are ranked by `impact × uncertainty`. Every decision goes through `KGPort.decide` or `propose`, so it lands
-in the outbox and triggers re-runs (section 10).
+`refresh` reads the facts of one application and builds the open review items from them. It runs after every run
+(the API and the worker call it) and from the workbench's "Refresh from knowledge" button. An item's id is a hash of
+the app, the kind and the subject, so the same question is never asked twice; `upsert_open` leaves an item that is
+already decided as it is.
+
+| Mode | Item kind | Built from | Decisions → fact written |
+|------|-----------|------------|--------------------------|
+| Ask | `unresolved_variable` | `bi_issue` code unresolved_variable | answer → `variable_value` (confirmed) |
+| Ask | `gap` | `gap_analysis` with questions | answer (`{answers: {question: answer}}`) → `gap_answer`; accept_gap → `bi_gap_accepted` |
+| Queue | `untranslated` | `bi_transform.untranslated` | provide_sql → `translation_override`; accept_gap → `bi_gap_accepted` |
+| Queue | `issue:<code>` | other `bi_issue` facts | acknowledge |
+| Queue | `conflict` | `conflict` facts (kg-mcp validator, section 8) | keep_confirmed (the new proposal is rejected) / accept_new (the old fact is invalidated, the new one confirmed) |
+| Gate | `approve_sql` | `report_sql` (proposed) | approve / reject (reason) → decision on `report_sql` |
+| Gate | `scope` | `bi_input` facts, until a `scope_confirmed` fact exists | confirm / reject → `scope_confirmed` (the files and the decision) |
+| Gate | `qvd_linkage` | a QVD the app reads whose `qvd_header` names its creator document | confirm / reject → `qvd_linkage` |
+| Seed | `map_source` | `reads_source`, `sql_candidate.unmapped` | map → `resolves_to` |
+
+Ranking is `impact × uncertainty`. Uncertainty comes from the item kind or, for `approve_sql`, from the level (V4 is
+less uncertain than V2). **The impact of an SQL gate is 4 + the number of tables downstream**
+(`queries.lineage(..., "downstream")` over the Publisher's lineage facts), so a table many others read is reviewed
+first; the count is in the item's detail as `tables_downstream`.
+
+**Ask blocks its dependents.** `ReconcilerAgent.validate` writes `blocked_by` into `report_sql`: the unresolved
+variables of the statements the table is built from. `refresh` does not open an `approve_sql` gate for a blocked
+table; the owner's answer comes first. The answer triggers a re-run from `extract` (section 10), after which the gate
+appears with the real value.
+
+Every decision goes through `KGPort.decide` or `propose_fact`, so it lands in the outbox and triggers the re-runs of
+section 10. `_confirmed(fact, reviewer)` proposes a fact and confirms it as the reviewer.
+
+### 9.2 Reopen and Correct
+
+- `reopen(item_id, reviewer)`: a decided item (a person's or the auto-reviewer's) is opened again. The fact the
+  decision wrote (`result_fact`) is **invalidated** (`KGPort.invalidate`: a superseded record with the reason), so the
+  next run no longer uses it. API `POST /review/items/{id}/reopen`; 409 if the item is not decided.
+- `correct(fact_id, correction, reviewer, reason)`: Correct mode on any fact. The changed fields go through
+  `KGPort.decide(..., CONFIRMED, correction)`: a confirmed fact with the corrected value supersedes the proposal. API
+  `POST /review/correct`.
+- `statement_sql(app, table, statement, span, sql, ...)`: Correct mode for SQL. Any statement, including one the rules
+  translated, gets a confirmed `translation_override` for its span. `ScriptTranslator.prepare` applies confirmed
+  overrides to untranslated statements ("reviewer-provided SQL") and, since step 4, to translated ones too
+  ("reviewer-corrected SQL"), so the reviewer's SQL replaces the rules' for that statement in the next run. The SQL
+  must be a SELECT (or WITH) that reads the statement's input as `src`. API `POST /review/apps/{app}/statement_sql`;
+  the workbench's table page sends it from "Correct SQL".
+- `map_source(subject, dataset, reviewer)`: a source mapped outside a review item. The workbench's Sources page calls
+  `POST /review/apps/{app}/sources` with several mappings at once, followed by a refresh that closes the matching Seed
+  items.
+
+A rejected translation is not reused: `learned.load_memory` skips memory facts whose status is rejected.
+
+### 9.3 The auto-reviewer ([auto_review.py](../services/hitl-service/src/hitl_service/auto_review.py))
+
+The auto-reviewer is the system deciding for itself where the design allows it (Overall Proposal §12). It records
+everything as `auto_reviewer`, never as a person, and everything it does can be undone.
+
+1. **Automatic acceptance** (`accept_facts(kg, app)`, called at the end of `refresh`). For the kinds in `AUTO_KINDS`
+   (`translation_memory`, `figures_validated`), a proposed fact that the trust gate routes `auto` gets an
+   `auto_accepted` fact `{fact_id, kind, app_id, rule}`. The trust gate (`queries.gate`) routes `auto` when the fact
+   is validated by data, its confidence is ≥ 0.9, its impact is ≤ 3, and its kind is not GATED. The original fact
+   stays proposed: the auto-reviewer **never confirms**; only a person does. `auto_accepted` is the record that says
+   "the system accepts this". Gated kinds (`report_sql`, `resolves_to`, `primary_key`, `rls_requirement`) are never
+   accepted automatically, whatever their evidence.
+2. **Reversal rate** (`stats(kg)`): how many auto-accepted facts a reviewer rejected afterwards, against the target of
+   less than 5%. Shown on the workbench overview and in `GET /review/apps/{app}/auto`.
+3. **Suggestions** (`suggest(item, kg)`): every open item gets `detail.suggestion = {decision, payload, reason,
+   confidence, by}`, from rules over the knowledge:
+   - `approve_sql`: approve at V4 or above with nothing failing (high), at V3 (medium); reject when comparisons fail;
+     no suggestion when the SQL could not run locally;
+   - `untranslated`: the gap analysis's proposed SQL for the same span, when it has no placeholders (low);
+   - `unresolved_variable`: a `variable_value` fact for the name (medium);
+   - `map_source`: another confirmed mapping with the same table name (low);
+   - `conflict`: keep the confirmed value; `scope` and `qvd_linkage`: confirm.
+
+   With a model gateway (`ReviewService(store, kg, gateway)`; the API, the hitl-service and the worker pass it),
+   `suggest_with_model` asks the route `review_suggest` ([prompt](../prompts/review_suggest/v1.md)) to refine the
+   rules' suggestion for non-gate items. The model must answer one of the item's options or null; any other answer,
+   or any failure, keeps the rules' suggestion. A model suggestion is kept across refreshes while the item's title
+   stays the same, so the model is not called again for the same question. The workbench shows the suggestion with
+   an **Apply suggestion** button, and can apply all high-confidence suggestions at once.
+4. **Automatic decisions** (`AUTO_DECIDE`): items that only inform, because the system already handled them
+   (`issue:loop_unrolled_from_log`, `issue:library_call`, `issue:section_access`), are acknowledged by the
+   auto-reviewer during `refresh`. They appear in the review queue's "Decided" view with a Reopen button.
+
+To make the system decide more over time, do one of these and watch the reversal rate afterwards:
+
+- add a kind to `AUTO_KINDS` (only when its facts carry data evidence);
+- add an issue code to `AUTO_DECIDE`;
+- add a rule in `suggest`.
+
+### 9.4 Debugging review
+
+- **An item you expected is missing.** Check its source fact with `GET /facts?kind=...&subject=...`. For SQL gates,
+  look for `blocked_by` in the `report_sql` value.
+- **A decision did not change the next run.** Find its `result_fact` (in the Decided view or the item JSON) and check
+  that the fact is current; `/facts?...&history=true` shows superseded records.
+- **The auto-reviewer decided something wrong.** Reopen it. If a kind or rule is wrong, change `AUTO_KINDS`,
+  `AUTO_DECIDE` or `suggest`.
 
 ---
 
@@ -800,13 +890,25 @@ TOTAL).
 | `POST /apps/{app}/runs` | run the LangGraph pipeline on the uploads (through kg-mcp when configured), then refresh review; with `ADCE_ORCHESTRATOR_MODE=worker` it queues the run instead (`status: queued`) |
 | `GET /apps/{app}/runs/{run}` | the run summary; for a queued run its request status (queued, running, waiting_for_owner, error) |
 | `POST /apps/{app}/runs/{run}/answers` | answers to a paused run's owner questions (`{answers: {review item id: value}}`): recorded as review decisions, then the run resumes (or a resume is queued) |
+| `GET /apps/{app}/runs` | the app's finished runs, newest first: status, levels, number of nodes and supervisor decisions, scope |
+| `GET /apps/{app}/tables/{table}` | one table from the latest run: its SQL, its CTEs in dependency order, each with the script lines of its spans, what is not translated, the `report_sql` validation |
+| `GET /apps/{app}/sources` | every source the app's SQL reads, with its confirmed Dremio dataset |
 | `GET /apps`, `/apps/{app}/overview`, `/lineage`, `/tables`, `/packs/{run}/files/...`, `/facts` | reads |
-| `/review/...` | hitl-service router ([api.py](../services/hitl-service/src/hitl_service/api.py)): items, decisions |
+| `/review/...` | hitl-service router ([api.py](../services/hitl-service/src/hitl_service/api.py)): `GET items?status=open\|decided`, `POST items/{id}/decision`, `POST items/{id}/reopen`, `POST correct`, `POST apps/{app}/statement_sql`, `POST apps/{app}/sources`, `GET apps/{app}/auto` (section 9) |
 
-The **review workbench** ([apps/workbench](../apps/workbench/src)) is the product UI on top of these endpoints: an app
-overview (inputs, coverage, level per table), the review queue (Ask, Queue, Gate, Seed items and decisions) and a lineage
-graph. Its `/api/...` route proxies to the API gateway. The test bench (section 13) is an internal debugging tool, not
-the product UI.
+The **review workbench** ([apps/workbench](../apps/workbench/src)) is the product UI on top of these endpoints. Its
+`/api/...` route proxies to the API gateway; [lib/api.ts](../apps/workbench/src/lib/api.ts) is the typed client.
+
+| Page | File (under `src/app/apps/[appId]/`) | Shows |
+|------|------|-------|
+| Overview | `page.tsx` | coverage, open items, issues, and the auto-reviewer (accepted, acknowledged, reversal rate); each table links to its table page |
+| Review queue | `review/page.tsx` | Open: every item with its detail, its suggestion (Apply suggestion, or apply all high-confidence ones) and the decision buttons; gap items have one answer box per question. Decided: who decided what (the auto-reviewer is marked), with Reopen |
+| Runs | `runs/page.tsx` | Run again; the runs list; a run's timeline (every node with its trace fields, and supervisor rows with the choice, the reason and the options); answering a run that waits for the owner |
+| Sources | `sources/page.tsx` | every source with its Dremio dataset, edited in bulk |
+| Lineage | `lineage/page.tsx` | the lineage graph (@xyflow/react) |
+| Table | `tables/[table]/page.tsx` | the table's validation, failing comparisons, what is not translated, every CTE next to its script lines with **Correct SQL**, and the full query |
+
+The test bench (section 13) is an internal debugging tool, not the product UI.
 
 A run paused by `ask_owner` answers `status: waiting_for_owner` with `questions` (`run_view`). Settings:
 `ADCE_INTERACTIVE_RUNS` (pause for owner questions), `ADCE_RUN_BUDGET_USD`, `ADCE_RUN_MAX_CALLS`, `ADCE_SUPERVISOR`
@@ -923,8 +1025,10 @@ Be aware of these when you read specs:
 - Translation is still composed for the whole application on a scoped re-run (it is one pure function of the BI IR
   and the overrides); only the model calls, checks and validation are limited to the affected tables.
 - The QlikView -prj reader is checked on synthetic samples only.
-- The trust gate routes proposals (`review` on the event), but nothing accepts `auto` facts automatically yet
-  (step 4); prompts do not include the context pack yet.
+- Prompts do not include the context pack yet (agents read it; section 8). The auto-reviewer accepts only the kinds
+  in `AUTO_KINDS`; other facts routed `auto` still wait in the queue.
+- Reviewer decisions are reused as examples by agent 28 only (translation memory and overrides). The other agents
+  read them as facts, not as few-shot examples.
 - No grain (key uniqueness) facts yet, so `fan_out` cannot accept pre-aggregated many-to-one joins (phase PD).
 - Grouped comparisons per dimension member (to pinpoint mismatching rows) are not built; the diagnosis gets
   per-field aggregates.

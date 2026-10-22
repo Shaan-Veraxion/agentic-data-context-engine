@@ -56,4 +56,19 @@ input, textarea { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1
 textarea { width: 100%; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 .error { color: var(--bad); }
 .mode { text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; }
+.small { font-size: 12px; }
+.ok-text { color: var(--ok); }
+.badge.agent, .chip.agent { color: var(--agent); }
+pre.code { margin: 4px 0 0; padding: 10px; border-radius: 6px; background: var(--chip); font: 12px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-word; overflow-x: auto; max-height: 420px; }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
+.split > div { min-width: 0; }
+.suggest { margin: 8px 0; padding: 10px 12px; border-left: 3px solid var(--agent); border-radius: 0 6px 6px 0; background: var(--chip); }
+.suggest.none { border-left-color: var(--muted); }
+.seg { display: inline-flex; }
+.seg button { border-radius: 0; }
+.seg button:first-child { border-radius: 6px 0 0 6px; }
+.seg button:last-child { border-radius: 0 6px 6px 0; border-left: none; }
+.seg button.on { background: var(--accent); color: var(--panel); border-color: var(--accent); }
+tr.sup td { background: color-mix(in srgb, var(--agent) 8%, transparent); }
+@media (max-width: 800px) { .split { grid-template-columns: 1fr; } }
 @media (max-width: 640px) { main { padding: 16px; } header.top { padding: 12px 16px; } }

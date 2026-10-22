@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from adce_core.facts import Evidence, Fact, Trust
+from adce_core.facts import Evidence, Fact, FactStatus, Trust
 
 from .ai_loop import MemoryEntry, TranslationMemory, memory_key, memory_stats
 
@@ -31,7 +31,7 @@ async def load_memory(kg: Any) -> TranslationMemory:
     stats = memory_stats(await kg.facts(kind="memory_check"))
     mem = TranslationMemory()
     for subject, f in latest.items():
-        if f.value.get("status") != "disproved":
+        if f.value.get("status") != "disproved" and f.status != FactStatus.REJECTED:  # a reviewer rejected it
             e = MemoryEntry(**{k: f.value[k] for k in ("statement", "input_columns", "sql", "status", "app_id",
                                                        "replaces_rule") if k in f.value},
                             learned_at=f.recorded_at.isoformat())

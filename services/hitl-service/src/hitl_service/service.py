@@ -19,9 +19,12 @@ import hashlib
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
+from adce_core import queries
 from adce_core.facts import Evidence, Fact, FactStatus, Trust
 from adce_core.ports import KGPort
 from pydantic import BaseModel, Field
+
+from . import auto_review
 
 Mode = Literal["ask", "queue", "gate", "seed", "correct"]
 
@@ -37,6 +40,8 @@ DECISIONS: dict[str, set[str]] = {
     "map_source": {"map"},
     "gap": {"answer", "accept_gap"},
     "conflict": {"keep_confirmed", "accept_new"},
+    "scope": {"confirm", "reject"},
+    "qvd_linkage": {"confirm", "reject"},
 }
 LEVEL_UNCERTAINTY = {"none": 1.0, "V0": 0.9, "V1": 0.7, "V2": 0.5, "V3": 0.25, "V4": 0.1, "V5": 0.05}
 
@@ -163,9 +168,10 @@ class DecisionError(ValueError):
 
 
 class ReviewService:
-    def __init__(self, store: ReviewStore, kg: KGPort) -> None:
+    def __init__(self, store: ReviewStore, kg: KGPort, gateway: Any | None = None) -> None:
         self.store = store
         self.kg = kg
+        self.gateway = gateway  # with a model: suggestions refined by the route review_suggest
 
     # ------------------------------------------------------------------ build the queue from knowledge
     async def refresh(self, app_id: str) -> int:
@@ -190,12 +196,15 @@ class ReviewService:
         for f in await self._facts_for_app(app_id, "report_sql"):
             if f.status != FactStatus.PROPOSED:
                 continue
+            if f.value.get("blocked_by"):  # an owner question it depends on is open: the Ask comes first
+                continue
             level = f.value.get("level", "none")
+            downstream = max(0, len(await queries.lineage(self.kg, f.subject, "downstream")) - 1)
             items.append(ReviewItem(
                 id=_id(app_id, "gate", f.subject), app_id=app_id, mode="gate", kind="approve_sql", subject=f.subject,
                 fact_id=f.id, title=f"Approve SQL for {f.subject.split(':')[-1]} ({level}, {f.value.get('venue')})",
-                detail=f.value, options=sorted(DECISIONS["approve_sql"]), impact=4,
-                uncertainty=LEVEL_UNCERTAINTY.get(level, 0.5)))
+                detail=f.value | {"tables_downstream": downstream}, options=sorted(DECISIONS["approve_sql"]),
+                impact=4 + downstream, uncertainty=LEVEL_UNCERTAINTY.get(level, 0.5)))
         for f in await self._facts_for_app(app_id, "gap_analysis"):
             v = f.value
             items.append(ReviewItem(
@@ -214,6 +223,25 @@ class ReviewService:
                 fact_id=f.id,
                 title=f"conflict on {v.get('kind')} {f.subject.split(':')[-1]}: {v.get('reason', '')[:120]}",
                 detail=v, options=sorted(DECISIONS["conflict"]), impact=4, uncertainty=1.0))
+        inputs = await self.kg.facts(kind="bi_input", subject=app_key)
+        if inputs and not await self.kg.facts(kind="scope_confirmed", subject=app_key):
+            files = sorted({(f.value["file"], f.value["class"]) for f in inputs})
+            items.append(ReviewItem(
+                id=_id(app_id, "scope"), app_id=app_id, mode="gate", kind="scope", subject=app_key,
+                title=f"Confirm the {len(files)} files that make up {app_id}",
+                detail={"files": [{"file": n, "class": c} for n, c in files]}, options=sorted(DECISIONS["scope"]),
+                impact=2, uncertainty=0.3))
+        read_qvds = {f.object for f in await self._facts_for_app(app_id, "reads_qvd") if f.object}
+        for q in sorted(read_qvds):
+            for h in await self.kg.facts(kind="qvd_header", subject=q):
+                creator = h.value.get("creator_doc")
+                if creator and not await self.kg.facts(kind="qvd_linkage", subject=f"{app_key}/{q}"):
+                    items.append(ReviewItem(
+                        id=_id(app_id, "qvd", q), app_id=app_id, mode="gate", kind="qvd_linkage",
+                        subject=f"{app_key}/{q}", fact_id=h.id,
+                        title=f"Confirm {q.removeprefix('qvd:')} comes from {creator}",
+                        detail={"qvd": q, "creator_doc": creator, "records": h.value.get("records")},
+                        options=sorted(DECISIONS["qvd_linkage"]), impact=3, uncertainty=0.4))
         for src in await self._pending_sources(app_id):
             items.append(ReviewItem(
                 id=_id(app_id, "map", src), app_id=app_id, mode="seed", kind="map_source", subject=src,
@@ -221,9 +249,67 @@ class ReviewService:
                 options=["map"], impact=3,
                 uncertainty=0.6, detail={"source": src, "note": "used when Dremio is connected (phase PD)"}))
         new = 0
-        for it in items:
+        for it in items:  # each item carries a suggested decision (auto_review.suggest; refined by a model)
+            old = await asyncio.to_thread(self.store.get, it.id)
+            kept = (old.detail or {}).get("suggestion") if old and old.title == it.title else None
+            if kept and str(kept.get("by", "")).startswith("llm"):
+                it.detail = {**it.detail, "suggestion": kept}
+            else:
+                s = await auto_review.suggest(it, self.kg)
+                if self.gateway is not None and it.mode != "gate":
+                    s = await auto_review.suggest_with_model(it, s, self.gateway)
+                it.detail = {**it.detail, "suggestion": s.model_dump()}
             new += self.store.upsert_open(it)
+        for it in self.store.list(app_id, "open"):  # what only informs is acknowledged by the auto-reviewer
+            if it.kind in auto_review.AUTO_DECIDE:
+                await self.decide(it.id, "acknowledge", auto_review.AUTO_REVIEWER,
+                                  {"auto": True, "reason": "handled by the system; reopen to review"})
+        await auto_review.accept_facts(self.kg, app_id)
         return new
+
+    async def reopen(self, item_id: str, reviewer: str) -> ReviewItem:
+        """Undo a decision (a person's or the auto-reviewer's): the fact it wrote is invalidated, the item is open
+        again."""
+        item = await asyncio.to_thread(self.store.get, item_id)
+        if item is None:
+            raise DecisionError(f"unknown review item {item_id}")
+        if item.status != "decided":
+            raise DecisionError(f"item is {item.status}, not decided")
+        if item.result_fact:
+            await self.kg.invalidate(item.result_fact, f"decision reopened by {reviewer}", f"reviewer:{reviewer}")
+        item = item.model_copy(update={"status": "open", "decision": None, "decided_by": None, "decided_at": None,
+                                       "payload": None, "result_fact": None})
+        await asyncio.to_thread(self.store.save_decision, item)
+        return item
+
+    async def map_source(self, subject: str, dataset: str, reviewer: str) -> str:
+        """A source mapped to its Dremio dataset (Seed), outside a review item (the sources page)."""
+        if not dataset.strip():
+            raise DecisionError("map needs the Dremio dataset path")
+        ev = [Evidence(kind="reviewer", ref=f"sources:{subject}", detail={"reviewer": reviewer})]
+        return await self._confirmed(Fact(kind="resolves_to", subject=subject, object=f"dremio:{dataset.strip()}",
+                                          trust=Trust.INFERRED, agent="hitl-service",
+                                          value={"dataset": dataset.strip()}, evidence=ev), reviewer)
+
+    async def correct(self, fact_id: str, correction: dict[str, Any], reviewer: str, reason: str = "") -> str:
+        """Correct mode: a reviewer edits any proposed fact's value; the edit is a confirmed fact superseding it."""
+        if not correction:
+            raise DecisionError("a correction needs the changed fields")
+        return await self.kg.decide(fact_id, FactStatus.CONFIRMED, reviewer,
+                                    {**correction, **({"_reason": reason} if reason else {})})
+
+    async def statement_sql(self, app_id: str, table: str, statement: int, span: str, sql: str, reviewer: str,
+                            text: str = "", input_columns: list[str] | None = None) -> str:
+        """Correct the SQL of any statement (translated or not): a confirmed translation_override for its span,
+        used by the next run instead of the rules (and reused for the same statement in other applications)."""
+        if not sql.strip().lower().startswith(("select", "with")):
+            raise DecisionError("the SQL must be a SELECT reading from the relation named src")
+        ev = [Evidence(kind="reviewer", ref=f"{app_id}/{span}", detail={"reviewer": reviewer})]
+        return await self._confirmed(Fact(kind="translation_override", subject=f"app:{app_id}/table:{table}",
+                                          trust=Trust.INFERRED, agent="hitl-service",
+                                          value={"statement": statement, "span": span, "sql": sql.strip(),
+                                                 "text": text, "input_columns": input_columns, "correction": True},
+                                          evidence=ev), reviewer)
 
     async def _facts_for_app(self, app_id: str, kind: str) -> list[Fact]:
         prefix = f"app:{app_id}/"
@@ -268,6 +354,12 @@ class ReviewService:
 
     async def _apply(self, item: ReviewItem, decision: str, reviewer: str, payload: dict[str, Any]) -> str | None:
         ev = [Evidence(kind="reviewer", ref=f"review_item:{item.id}", detail={"reviewer": reviewer})]
+        if item.kind in ("scope", "qvd_linkage"):
+            kind = "scope_confirmed" if item.kind == "scope" else "qvd_linkage"
+            return await self._confirmed(Fact(kind=kind, subject=item.subject, trust=Trust.INFERRED,
+                                              agent="hitl-service", value={**item.detail, "decision": decision,
+                                                                           "reason": payload.get("reason", "")},
+                                              evidence=ev), reviewer)
         if item.kind == "conflict":
             old_id, new_id = item.detail["facts"]
             if decision == "keep_confirmed":  # the proposal is rejected; the confirmed fact stays
@@ -328,6 +420,8 @@ class ReviewService:
 
     async def _confirmed(self, fact: Fact, reviewer: str) -> str:
         fid = await self.kg.propose_fact(fact)
+        if reviewer == auto_review.AUTO_REVIEWER:  # only people confirm: the auto-reviewer's decision stays proposed
+            return fid
         return await self.kg.decide(fid, FactStatus.CONFIRMED, reviewer)
 
 

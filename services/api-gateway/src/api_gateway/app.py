@@ -144,7 +144,8 @@ def create_app(svc: Services | None = None, cors_origins: list[str] | None = Non
 
                 queue = PostgresRunQueue(s.pg_dsn)
             app.state.services = Services(kg=kg, artifacts=artifacts_from_settings(s), queue=queue,
-                                          review=ReviewService(store, kg), checkpointer=saver, gateway=gateway,
+                                          review=ReviewService(store, kg, gateway), checkpointer=saver,
+                                          gateway=gateway,
                                           kg_mcp_url=s.kg_mcp_url if s.kg_transport == "mcp" else None,
                                           llm_tools=s.llm_tools, interactive=s.interactive_runs,
                                           budget_usd=s.run_budget_usd, max_calls=s.run_max_calls,
@@ -285,6 +286,97 @@ def create_app(svc: Services | None = None, cors_origins: list[str] | None = Non
         return {"app_id": app_id, "coverage": cov[-1].value, "tables": tables,
                 "issues": [i.value for i in issues], "open_review_items": len(open_items),
                 "latest_pack": packs[-1].value if packs else None}
+
+    @app.get("/apps/{app_id}/runs")
+    async def runs(app_id: str, s: Services = Depends(services),
+                   _p: Principal = Depends(require("viewer"))) -> list[dict[str, Any]]:
+        """The application's runs, newest first: status, levels, how many supervisor decisions and nodes."""
+        out = []
+        for key in s.artifacts.list(f"apps/{check_app_id(app_id)}/runs/"):
+            if not key.endswith("/summary.json"):
+                continue
+            sm = get_json(s.artifacts, key)
+            trace = sm.get("trace") or []
+            out.append({"run_id": sm.get("run_id"), "status": sm.get("status"), "levels": sm.get("levels") or {},
+                        "decisions": len(sm.get("decisions") or []), "steps": len(trace),
+                        "started": trace[0]["at"] if trace else None, "scope_tables": sm.get("scope_tables")})
+        return sorted(out, key=lambda r: r["started"] or 0, reverse=True)
+
+    @app.get("/apps/{app_id}/tables/{table}")
+    async def table_detail(app_id: str, table: str, s: Services = Depends(services),
+                           _p: Principal = Depends(require("viewer"))) -> dict[str, Any]:
+        """One table: its validation, what was not translated, and its SQL step by step next to the script lines each
+        step came from (from the latest run)."""
+        from adce_reversesql.compose import DIALECT
+        from adce_reversesql.runtime import load_translation
+
+        check_app_id(app_id)
+        tk = f"app:{app_id}/table:{table}"
+        latest_key = f"apps/{app_id}/latest.json"
+        if not s.artifacts.exists(latest_key):
+            raise HTTPException(404, "no run for this app")
+        sm = get_json(s.artifacts, get_json(s.artifacts, latest_key)["summary_key"])
+        loaded = load_translation(s.artifacts, sm["bi_ir_key"], sm.get("translation_key"))
+        r = loaded.translation.tables.get(table)
+        if r is None:
+            raise HTTPException(404, "table not found")
+        scripts: dict[str, list[str]] = {}
+        for f in sm.get("classified") or []:
+            if f.get("class") == "script":
+                scripts[f["name"]] = s.artifacts.get(f["key"]).decode("utf-8-sig", errors="replace").splitlines()
+
+        def lines(span: str) -> str:
+            file, _, rng = span.rpartition(":")
+            a, _, b = rng.partition("-")
+            src = scripts.get(file) or next((v for k, v in scripts.items() if k.endswith(file)), [])
+            if not a.isdigit():
+                return ""
+            lo, hi = int(a), int(b or a)
+            return "\n".join(f"{n}: {src[n - 1]}" for n in range(lo, min(hi, len(src)) + 1))
+
+        statements = {op.statement: op for qt in loaded.app.tables.values() for st in qt.steps for op in st.ops}
+        own = {n for st in r.steps for n in st.statements}  # this table's statements
+        ctes = loaded.translation.ctes
+        order: list[str] = []
+
+        def visit(n: str) -> None:  # the table's CTEs in dependency order (as in its SQL)
+            if n in order or n not in ctes:
+                return
+            for d in ctes[n].deps:
+                visit(d)
+            order.append(n)
+
+        if r.final_cte:
+            visit(r.final_cte)
+        steps = []
+        for name in order:
+            c = ctes[name]
+            if not set(c.statements) & own:
+                continue
+            op = statements.get(c.statements[0]) if c.statements else None
+            first_dep = ctes.get(c.deps[0]) if c.deps else None
+            steps.append({"cte": name, "kind": c.kind, "statements": c.statements, "spans": c.spans, "ai": c.ai,
+                          "sql": c.body.sql(dialect=DIALECT, pretty=True),
+                          "script": "\n".join(lines(sp) for sp in c.spans),
+                          "input_columns": first_dep.columns if first_dep else None, "text": op.text if op else ""})
+        rep = (await s.kg.facts(kind="report_sql", subject=tk) or [None])[-1]
+        return {"table": table, "key": tk, "sql": loaded.translation.table_sql(table),
+                "steps": steps, "untranslated": [u.__dict__ for u in r.untranslated],
+                "validation": rep.value if rep else None, "notes": r.notes}
+
+    @app.get("/apps/{app_id}/sources")
+    async def sources(app_id: str, s: Services = Depends(services),
+                      _p: Principal = Depends(require("viewer"))) -> list[dict[str, Any]]:
+        """Every source the application's SQL reads, with its Dremio dataset when it is mapped."""
+        prefix = f"app:{check_app_id(app_id)}/"
+        subjects: set[str] = {f.object for f in await s.kg.facts(kind="reads_source")
+                              if f.subject.startswith(prefix) and f.object and f.object.startswith("source:")}
+        for f in await s.kg.facts(kind="sql_candidate"):
+            if f.subject.startswith(prefix):
+                subjects |= set(f.value.get("unmapped", [])) | {f"sql:{u}" for u in f.value.get("unqualified", [])}
+        mapped = {f.subject: f.value.get("dataset") for f in await s.kg.facts(kind="resolves_to")
+                  if f.trust.value == "confirmed"}
+        return [{"source": x, "dataset": mapped.get(x)} for x in sorted(subjects)]
 
     @app.get("/apps/{app_id}/lineage")
     async def lineage_graph(app_id: str, s: Services = Depends(services),

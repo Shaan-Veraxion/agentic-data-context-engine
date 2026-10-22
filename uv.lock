@@ -198,6 +198,7 @@ version = "0.1.0"
 source = { editable = "services/hitl-service" }
 dependencies = [
     { name = "adce-core" },
+    { name = "adce-gateway" },
     { name = "adce-kg" },
     { name = "fastapi" },
     { name = "psycopg", extra = ["binary", "pool"] },
@@ -206,6 +207,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "adce-core", editable = "packages/adce-core" },
+    { name = "adce-gateway", editable = "packages/adce-gateway" },
     { name = "adce-kg", editable = "packages/adce-kg" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },

@@ -247,8 +247,13 @@ class ReconcilerAgent(BaseAgent):
             evidence.append({"kind": "reload_log", "ref": ev.log_key or "reload_log", "detail": {}})
         evidence += [{"kind": "qvd_header", "ref": t, "detail": {}} for t, _ in loaded.translation.tables[name].stores
                      if t in ev.headers]
+        qt = loaded.app.tables.get(name)
+        stmts = {op.statement for st in qt.steps for op in st.ops} if qt else set()
+        blocked = sorted({v.strip() for i in loaded.app.issues if i.code == "unresolved_variable"
+                          and i.statement in stmts for v in i.message.split("unresolved:", 1)[-1].split(",")
+                          if v.strip()})
         return {"table": name, "summary": tv.summary(), "level": tv.level.name if tv.level >= 0 else "none",
-                "exact": tv.exact,
+                "exact": tv.exact, "blocked_by": blocked,
                 "validated": tv.level >= Level.V3, "venue": tv.venue, "failed": failed, "errors": tv.errors,
                 "comparisons_ok": sum(c.ok for c in tv.comparisons), "comparisons": len(tv.comparisons),
                 "sql_sha256": hashlib.sha256((tv.sql or "").encode()).hexdigest(), "evidence": evidence,
@@ -300,6 +305,7 @@ class ReconcilerAgent(BaseAgent):
                 kind="report_sql", subject=table_key(ctx.app_id, e["table"]),
                 trust=Trust.VALIDATED if e["validated"] else Trust.INFERRED,
                 value={"level": e["level"], "venue": e["venue"], "exact": e.get("exact", True),
+                       "blocked_by": e.get("blocked_by", []),
                        "comparisons_ok": e["comparisons_ok"],
                        "comparisons": e["comparisons"], "failed": e["failed"][:20], "errors": e["errors"],
                        "sql_sha256": e["sql_sha256"]},

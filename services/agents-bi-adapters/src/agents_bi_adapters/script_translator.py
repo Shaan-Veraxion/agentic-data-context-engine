@@ -81,6 +81,13 @@ class ScriptTranslator(BaseAgent):
                 if u.span in reviewed:
                     overrides[u.statement] = reviewed[u.span]
                     ai_notes[u.statement] = "reviewer-provided SQL"
+        for qt in loaded.app.tables.values():  # Correct mode: reviewer SQL for statements the rules translated too
+            for step in qt.steps:
+                for op in step.ops:
+                    span = f"{op.span.file}:{op.span.start_line}-{op.span.end_line}"
+                    if span in reviewed and op.statement not in overrides:
+                        overrides[op.statement] = reviewed[span]
+                        ai_notes[op.statement] = "reviewer-corrected SQL"
         memory = await load_memory(ctx.kg)
         validator = validator_from_files(ctx.artifacts, job["files"], loaded.app) if job.get("files") else None
         use_tools = bool(job.get("llm_tools")) and ctx.gateway is not None

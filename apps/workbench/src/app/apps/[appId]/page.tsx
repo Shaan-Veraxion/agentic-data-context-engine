@@ -1,16 +1,19 @@
 "use client";
 
+import Link from "next/link";
 import { use, useEffect, useState } from "react";
 import { AppTabs, LevelBadge } from "@/components/AppTabs";
-import { api, type Overview } from "@/lib/api";
+import { api, type AutoReview, type Overview } from "@/lib/api";
 
 export default function AppOverview({ params }: { params: Promise<{ appId: string }> }) {
   const { appId } = use(params);
   const [data, setData] = useState<Overview | null>(null);
+  const [auto, setAuto] = useState<AutoReview | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api.overview(appId).then(setData).catch((e: Error) => setError(e.message));
+    api.autoReview(appId).then(setAuto).catch(() => setAuto(null));
   }, [appId]);
 
   if (error) return <p className="error">{error}</p>;
@@ -34,6 +37,15 @@ export default function AppOverview({ params }: { params: Promise<{ appId: strin
           <div className="muted">Issues found in the script</div>
           <strong>{data.issues.length}</strong>
         </div>
+        {auto && (
+          <div className="panel" title="Facts the trust gate routed auto (validated by data, confident, low impact) and items that only inform. Reopen any of them in the review queue.">
+            <div className="muted">Auto-reviewer</div>
+            <strong>{auto.accepted.length}</strong> accepted · <strong>{auto.decided_items.length}</strong> acknowledged
+            <div className={auto.stats.reversal_rate > auto.stats.target ? "error small" : "muted small"}>
+              reversed by reviewers: {auto.stats.reversed} ({Math.round(auto.stats.reversal_rate * 100)}%, target &lt; {Math.round(auto.stats.target * 100)}%)
+            </div>
+          </div>
+        )}
       </div>
 
       <h2>Tables</h2>
@@ -45,7 +57,7 @@ export default function AppOverview({ params }: { params: Promise<{ appId: strin
           <tbody>
             {data.tables.map((t) => (
               <tr key={t.key}>
-                <td>{t.name}{t.dropped && <span className="muted"> (dropped)</span>}</td>
+                <td><Link href={`/apps/${appId}/tables/${encodeURIComponent(t.name)}`}>{t.name}</Link>{t.dropped && <span className="muted"> (dropped)</span>}</td>
                 <td><LevelBadge level={t.level} venue={t.venue} /></td>
                 <td>{t.comparisons ?? "–"}</td>
                 <td>{t.checks_ok === null ? "–" : t.checks_ok ? "pass" : "fail"}</td>

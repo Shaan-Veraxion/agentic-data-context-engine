@@ -40,4 +40,5 @@ ROUTES: dict[str, Route] = {r.name: r for r in [
     Route(name="map_metric", tier="standard", effort="medium", max_tokens=8000),
     Route(name="explain_gap", tier="standard", effort="medium", max_tokens=6000),
     Route(name="plan_next", tier="standard", effort="low", max_tokens=2000),
+    Route(name="review_suggest", tier="standard", effort="low", max_tokens=2000),
 ]}

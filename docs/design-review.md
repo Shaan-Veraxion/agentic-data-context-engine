@@ -153,6 +153,20 @@ prompts that use the context pack.
 | Decisions reused as examples by every agent | Agent 28 only |
 | Workbench: overview, review queue, lineage, SQL next to the script | The Next.js workbench ([apps/workbench](../apps/workbench)) has the three screens but none of what was added later (gaps, Dremio source mapping, model runs); those went into the internal test bench instead |
 
+**Status 2026-10-17 (step 4): done, except reuse as examples.**
+- The auto-reviewer ([auto_review.py](../services/hitl-service/src/hitl_service/auto_review.py)):
+  - accepts `auto`-routed facts of safe kinds, recorded as `auto_accepted`; it never confirms and is reversible, and
+    the reversal rate is reported against 5%;
+  - suggests a decision for every item (rules, refined by the route `review_suggest`);
+  - acknowledges informational issues.
+- Correct mode for any fact and for the SQL of any statement; Reopen for any decision (its fact is invalidated).
+- SQL gate impact is 4 + the tables downstream. An SQL gate waits while its table is `blocked_by` an open owner
+  question.
+- Scope and QVD-linkage gates added.
+- The workbench now has the runs timeline, the sources page, the table page with SQL next to the script, suggestions,
+  and the decided view.
+- Still open: decisions as few-shot examples for agents other than 28.
+
 ### 1.8 Qlik coverage the stage commits to
 
 **Status: step 2** translated IntervalMatch (keyed too), Previous()/Peek() over the load's ORDER BY, Above() and
@@ -281,6 +295,8 @@ answers endpoint, re-entry at extract/resolve/translate, per-run budgets (`RunGa
   pack first.
 
 ### Step 4. Review that lets the system decide
+
+**Done 2026-10-17** (see the status note in 1.7).
 - Automatic acceptance policy: validated, high-confidence, low-impact facts are accepted by an auto-review agent,
   recorded as its decision and reversible. The reversal rate is tracked against the < 5% target.
 - Correct mode on any output; impact from dependent facts; Ask blocks its dependents; scope and QVD-linkage gates.

@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-export function AppTabs({ app, on }: { app: string; on: "overview" | "review" | "lineage" }) {
+export function AppTabs({ app, on }: { app: string; on: "overview" | "review" | "runs" | "sources" | "lineage" | "table" }) {
   const tab = (key: typeof on, href: string, label: string) => (
     <Link href={href} className={on === key ? "on" : ""}>
       {label}
@@ -10,6 +10,8 @@ export function AppTabs({ app, on }: { app: string; on: "overview" | "review" | 
     <nav className="tabs">
       {tab("overview", `/apps/${app}`, "Overview")}
       {tab("review", `/apps/${app}/review`, "Review queue")}
+      {tab("runs", `/apps/${app}/runs`, "Runs")}
+      {tab("sources", `/apps/${app}/sources`, "Sources")}
       {tab("lineage", `/apps/${app}/lineage`, "Lineage")}
     </nav>
   );

@@ -68,6 +68,9 @@ REQUIRED: dict[str, set[str]] = {
     "bi_issue_acknowledged": set(),
     "primary_key": set(),
     "scope_link": set(),
+    "scope_confirmed": {"files", "decision"},
+    "qvd_linkage": {"qvd", "decision"},
+    "auto_accepted": {"fact_id"},
     # knowledge service (kg-mcp)
     "conflict": {"facts", "reason"},
     "context": {"text"},
